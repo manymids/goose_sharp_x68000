@@ -1,0 +1,13 @@
+// Goose ビルド構成ファイル for X68000 ARCL Emulator
+c_sources = [
+    "x68k_bridge.c",
+    "x68k_config.c",
+    "sound/adpcm.c",
+    "sound/fmgen.cpp",
+    "sound/fmtimer.cpp",
+    "sound/opm.cpp",
+    "sound/x68k_sound.cpp"
+];
+c_include = [".", "sound"];
+c_libs_windows = ["kernel32", "user32", "gdi32", "comdlg32", "winmm"];
+output = "arcl_windows_x68k_goose";
