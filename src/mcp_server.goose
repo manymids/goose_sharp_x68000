@@ -570,7 +570,8 @@ fn tv_ink(x: i32, y: i32) -> bool {
     let row = y & 1023;
     let col_byte = (x & 1023) >> 3;
     let bit = 7 - (x & 7);
-    let addr = ((row * 128 + col_byte) ^ 1) as i32;
+    // TVRAM is stored in bus order, so byte x/8 of a raster is at offset x/8.
+    let addr = (row * 128 + col_byte) as i32;
     var v: u8 = 0;
     if (c_mem_read_tvram(addr) & ((1 << bit) as u8)) != 0 { v = v | 1; }
     if (c_mem_read_tvram(addr + 0x20000) & ((1 << bit) as u8)) != 0 { v = v | 2; }
@@ -635,7 +636,19 @@ fn console_decode(emu: X68kEmulator&, text: u8[>..]&) -> i32 {
                 if byte != 0 { blank = false; }
                 glyph.push(byte);
             }
-            let code = match_ank(glyph);
+            var code = match_ank(glyph);
+            if code < 0 && !blank {
+                // Human68k draws the cursor by inverting the whole cell, so
+                // read a cursor cell as the character underneath it.
+                var inv: u8[>..] = [];
+                var inv_blank = true;
+                for gy in 16 {
+                    let b = glyph[gy] ^ 0xFF;
+                    if b != 0 { inv_blank = false; }
+                    inv.push(b);
+                }
+                code = if inv_blank { 0x20 } else { match_ank(inv) };
+            }
             if code >= 0x20 && code <= 0x7E {
                 text.push(code as u8);
             } else if code == 0xA0 {
@@ -650,6 +663,32 @@ fn console_decode(emu: X68kEmulator&, text: u8[>..]&) -> i32 {
         text.push(10);
     }
     return cols;
+}
+
+fn video_object(emu: X68kEmulator&, obj: u8[>..]&) {
+    let hstart = ((emu.mmu.crtc_regs[0x04] as i32) << 8) | (emu.mmu.crtc_regs[0x05] as i32);
+    let hend = ((emu.mmu.crtc_regs[0x06] as i32) << 8) | (emu.mmu.crtc_regs[0x07] as i32);
+    let vstart = ((emu.mmu.crtc_regs[0x0C] as i32) << 8) | (emu.mmu.crtc_regs[0x0D] as i32);
+    let vend = ((emu.mmu.crtc_regs[0x0E] as i32) << 8) | (emu.mmu.crtc_regs[0x0F] as i32);
+    var dot_x = 768;
+    var dot_y = 512;
+    if hend > hstart { dot_x = (hend - hstart) * 8; }
+    if vend > vstart { dot_y = vend - vstart; }
+    let sx = (((emu.mmu.crtc_regs[0x14] as i32) << 8) | (emu.mmu.crtc_regs[0x15] as i32)) & 1023;
+    let sy = (((emu.mmu.crtc_regs[0x16] as i32) << 8) | (emu.mmu.crtc_regs[0x17] as i32)) & 1023;
+    format(obj, "{\"text\":{\"dot_x\":", dot_x, ",\"dot_y\":", dot_y, ",\"scroll_x\":", sx, ",\"scroll_y\":", sy, "},\"graphic\":{\"scroll\":[");
+    let xhi: i32[4] = [0x18, 0x1c, 0x20, 0x24];
+    let yhi: i32[4] = [0x1a, 0x1e, 0x22, 0x26];
+    for page in 4 {
+        if page != 0 { obj.append(","); }
+        let gx = ((emu.mmu.crtc_regs[xhi[page]] as i32) << 8) | (emu.mmu.crtc_regs[xhi[page] + 1] as i32);
+        let gy = ((emu.mmu.crtc_regs[yhi[page]] as i32) << 8) | (emu.mmu.crtc_regs[yhi[page] + 1] as i32);
+        format(obj, "{\"page\":", page, ",\"x\":", gx, ",\"y\":", gy, "}");
+    }
+    obj.append("]},\"crtc\":{\"vstart\":");
+    format(obj, vstart, ",\"vend\":", vend, ",\"hstart\":", hstart, ",\"hend\":", hend, "}");
+    append_machine(obj, emu, 0, false, true);
+    obj.append("}");
 }
 
 fn command_line(emu: X68kEmulator&, out: u8[>..]&) {
@@ -1969,30 +2008,8 @@ fn mcp_dispatch(emu: X68kEmulator&, line: const u8[:], is_running: bool&) {
         }
 
         if tool_name == "arcl_video" {
-            let hstart = ((emu.mmu.crtc_regs[0x04] as i32) << 8) | (emu.mmu.crtc_regs[0x05] as i32);
-            let hend = ((emu.mmu.crtc_regs[0x06] as i32) << 8) | (emu.mmu.crtc_regs[0x07] as i32);
-            let vstart = ((emu.mmu.crtc_regs[0x0C] as i32) << 8) | (emu.mmu.crtc_regs[0x0D] as i32);
-            let vend = ((emu.mmu.crtc_regs[0x0E] as i32) << 8) | (emu.mmu.crtc_regs[0x0F] as i32);
-            var dot_x = 768;
-            var dot_y = 512;
-            if hend > hstart { dot_x = (hend - hstart) * 8; }
-            if vend > vstart { dot_y = vend - vstart; }
-            let sx = (((emu.mmu.crtc_regs[0x14] as i32) << 8) | (emu.mmu.crtc_regs[0x15] as i32)) & 1023;
-            let sy = (((emu.mmu.crtc_regs[0x16] as i32) << 8) | (emu.mmu.crtc_regs[0x17] as i32)) & 1023;
             var obj: u8[>..] = [];
-            format(obj, "{\"text\":{\"dot_x\":", dot_x, ",\"dot_y\":", dot_y, ",\"scroll_x\":", sx, ",\"scroll_y\":", sy, "},\"graphic\":{\"scroll\":[");
-            let xhi: i32[4] = [0x18, 0x1c, 0x20, 0x24];
-            let yhi: i32[4] = [0x1a, 0x1e, 0x22, 0x26];
-            for page in 4 {
-                if page != 0 { obj.append(","); }
-                let gx = ((emu.mmu.crtc_regs[xhi[page]] as i32) << 8) | (emu.mmu.crtc_regs[xhi[page] + 1] as i32);
-                let gy = ((emu.mmu.crtc_regs[yhi[page]] as i32) << 8) | (emu.mmu.crtc_regs[yhi[page] + 1] as i32);
-                format(obj, "{\"page\":", page, ",\"x\":", gx, ",\"y\":", gy, "}");
-            }
-            obj.append("]},\"crtc\":{\"vstart\":");
-            format(obj, vstart, ",\"vend\":", vend, ",\"hstart\":", hstart, ",\"hend\":", hend);
-            append_machine(obj, emu, 0, false, true);
-            obj.append("}");
+            video_object(emu, obj);
             mcp_write_object(id_buf, obj);
             return;
         }
