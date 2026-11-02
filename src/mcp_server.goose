@@ -300,49 +300,105 @@ fn extract_json_int(line: const u8[:], key: const u8[:], default_val: i32) -> i3
     return json_read_long(line, at);
 }
 
-fn extract_json_addr(line: const u8[:], key: const u8[:], default_val: u32) -> u32 {
+// Number or address argument, read as XEiJ does: a JSON number, or a string that is hex
+// with 0x/$ prefix, h suffix or any a-f digit, and decimal otherwise. 0 = absent,
+// 1 = read into out, -1 = present but not a 32-bit value.
+fn json_addr_parse(line: const u8[:], key: const u8[:], out: u32&) -> i32 {
     let at = json_key_value(line, 0, key);
-    if at < 0 || at >= line.len { return default_val; }
+    if at < 0 || at >= line.len { return 0; }
+    var text: u8[>..] = [];
     if json_read_long_ok(line, at) {
-        // CPU registers span u32: an i32 accumulator traps on valid high bits.
         var p = at;
-        let neg = line[p] == '-';
-        if neg { p += 1; }
-        var n: u64 = 0;
-        while p < line.len && line[p] >= '0' && line[p] <= '9' {
-            let digit = (line[p] - '0') as u64;
-            if n > (0xFFFFFFFF as u64 - digit) / 10 { return default_val; }
-            n = n * 10 + digit;
+        while p < line.len && (line[p] == '-' || (line[p] >= '0' && line[p] <= '9')) {
+            text.push(line[p]);
             p += 1;
         }
-        if neg { return (0x100000000 as u64 - n) as! u32; }
-        return n as u32;
+    } else if !json_read_string(line, at, text) {
+        return -1;
     }
-    var text: u8[>..] = [];
-    if !json_read_string(line, at, text) || text.len == 0 { return default_val; }
-    var idx: i32 = 0;
+    var lo: i32 = 0;
+    var hi: i32 = text.len as i32;
+    while lo < hi && (text[lo] == ' ' || text[lo] == 9) { lo += 1; }
+    while hi > lo && (text[hi - 1] == ' ' || text[hi - 1] == 9) { hi -= 1; }
     var hex = false;
-    if text.len >= 2 && text[0] == '0' && (text[1] == 'x' || text[1] == 'X') {
-        idx = 2;
+    if hi - lo >= 2 && text[lo] == '0' && (text[lo + 1] == 'x' || text[lo + 1] == 'X') {
         hex = true;
+        lo += 2;
+    } else if hi - lo >= 1 && text[lo] == '$' {
+        hex = true;
+        lo += 1;
+    } else if hi - lo >= 1 && (text[hi - 1] == 'h' || text[hi - 1] == 'H') {
+        hex = true;
+        hi -= 1;
+    } else {
+        var i = lo;
+        while i < hi {
+            let c = text[i];
+            if (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F') { hex = true; }
+            i += 1;
+        }
     }
-    if idx >= text.len { return default_val; }
-    var addr: u32 = 0;
-    var saw = false;
-    while idx < text.len {
-        let c = text[idx];
-        var nibble = -1;
-        if c >= '0' && c <= '9' { nibble = (c - '0') as i32; }
-        else if hex && c >= 'a' && c <= 'f' { nibble = (c - 'a' + 10) as i32; }
-        else if hex && c >= 'A' && c <= 'F' { nibble = (c - 'A' + 10) as i32; }
-        else { return default_val; }
-        if hex { addr = (addr << 4) | (nibble as u32); }
-        else { addr = addr * 10 + (nibble as u32); }
-        saw = true;
-        idx = idx + 1;
+    var neg = false;
+    if !hex && lo < hi && text[lo] == '-' {
+        neg = true;
+        lo += 1;
     }
-    if !saw { return default_val; }
-    return addr;
+    if lo >= hi { return -1; }
+    let base: u64 = if hex { 16 } else { 10 };
+    var n: u64 = 0;
+    while lo < hi {
+        let c = text[lo];
+        var digit: i32 = -1;
+        if c >= '0' && c <= '9' { digit = (c - '0') as i32; }
+        else if hex && c >= 'a' && c <= 'f' { digit = (c - 'a' + 10) as i32; }
+        else if hex && c >= 'A' && c <= 'F' { digit = (c - 'A' + 10) as i32; }
+        if digit < 0 { return -1; }
+        n = n * base + (digit as u64);
+        if n > 0xFFFFFFFF as u64 { return -1; }
+        lo += 1;
+    }
+    out = if neg { (0x100000000 as u64 - n) as! u32 } else { n as u32 };
+    return 1;
+}
+
+fn extract_json_addr(line: const u8[:], key: const u8[:], default_val: u32) -> u32 {
+    var v: u32 = 0;
+    if json_addr_parse(line, key, v) != 1 { return default_val; }
+    return v;
+}
+
+fn mcp_bad_key(args: const u8[:], key: const u8[:], bad: u8[>..]&) -> bool {
+    var v: u32 = 0;
+    if json_addr_parse(args, key, v) >= 0 { return false; }
+    bad.append(str("invalid numeric or hex value for '", key, "'"));
+    return true;
+}
+
+// Every argument read with extract_json_addr. A bad value fails the whole call up front.
+fn mcp_bad_number(args: const u8[:], bad: u8[>..]&) -> bool {
+    return mcp_bad_key(args, "address", bad) ||
+        mcp_bad_key(args, "pc", bad) ||
+        mcp_bad_key(args, "sr", bad) ||
+        mcp_bad_key(args, "usp", bad) ||
+        mcp_bad_key(args, "ssp", bad) ||
+        mcp_bad_key(args, "isp", bad) ||
+        mcp_bad_key(args, "sp", bad) ||
+        mcp_bad_key(args, "d0", bad) ||
+        mcp_bad_key(args, "d1", bad) ||
+        mcp_bad_key(args, "d2", bad) ||
+        mcp_bad_key(args, "d3", bad) ||
+        mcp_bad_key(args, "d4", bad) ||
+        mcp_bad_key(args, "d5", bad) ||
+        mcp_bad_key(args, "d6", bad) ||
+        mcp_bad_key(args, "d7", bad) ||
+        mcp_bad_key(args, "a0", bad) ||
+        mcp_bad_key(args, "a1", bad) ||
+        mcp_bad_key(args, "a2", bad) ||
+        mcp_bad_key(args, "a3", bad) ||
+        mcp_bad_key(args, "a4", bad) ||
+        mcp_bad_key(args, "a5", bad) ||
+        mcp_bad_key(args, "a6", bad) ||
+        mcp_bad_key(args, "a7", bad);
 }
 
 // 16進数フォーマットヘルパー (32bit)
@@ -1563,6 +1619,17 @@ fn mcp_dispatch(emu: X68kEmulator&, line: const u8[:], is_running: bool&) {
             mcp_write_text(id_buf, "this tool's layer was not enabled via --mcp-layers for this session (see tools/list for what's available)", true);
             return;
         }
+        // XEiJ takes the registers as {"registers": {...}}; accept that as well as flat keys.
+        var inner: u8[>..] = [];
+        if tool_name == "arcl_write_registers" && json_extract_object(args, "registers", inner) {
+            args.clear();
+            args.append(inner);
+        }
+        var bad: u8[>..] = [];
+        if mcp_bad_number(args, bad) {
+            mcp_write_text(id_buf, bad, true);
+            return;
+        }
 
         if mcp_control_call(emu, tool_name, args, id_buf) { return; }
         if mcp_input_call(emu, tool_name, args, id_buf) { return; }
@@ -1835,21 +1902,31 @@ fn mcp_dispatch(emu: X68kEmulator&, line: const u8[:], is_running: bool&) {
         }
 
         if tool_name == "arcl_write_registers" {
+            if json_key_value(args, 0, "msp") >= 0 { mcp_write_text(id_buf, "the 68000 has no 'msp' register; nothing was written", true); return; }
+            if json_key_value(args, 0, "vbr") >= 0 { mcp_write_text(id_buf, "the 68000 has no 'vbr' register; nothing was written", true); return; }
+            if json_key_value(args, 0, "sfc") >= 0 { mcp_write_text(id_buf, "the 68000 has no 'sfc' register; nothing was written", true); return; }
+            if json_key_value(args, 0, "dfc") >= 0 { mcp_write_text(id_buf, "the 68000 has no 'dfc' register; nothing was written", true); return; }
+            if json_key_value(args, 0, "cacr") >= 0 { mcp_write_text(id_buf, "the 68000 has no 'cacr' register; nothing was written", true); return; }
+            if json_key_value(args, 0, "caar") >= 0 { mcp_write_text(id_buf, "the 68000 has no 'caar' register; nothing was written", true); return; }
+            if json_key_value(args, 0, "pref_addr") >= 0 { mcp_write_text(id_buf, "the 68000 has no 'pref_addr' register; nothing was written", true); return; }
+            if json_key_value(args, 0, "pref_data") >= 0 { mcp_write_text(id_buf, "the 68000 has no 'pref_data' register; nothing was written", true); return; }
             var wrote = false;
             if json_key_value(args, 0, "pc") >= 0 { emu.cpu.pc = extract_json_addr(args, "pc", emu.cpu.pc); wrote = true; }
-            if json_key_value(args, 0, "sr") >= 0 { emu.cpu.sr = extract_json_addr(args, "sr", emu.cpu.sr as u32) as u16; wrote = true; }
-            if json_key_value(args, 0, "usp") >= 0 { emu.cpu.usp = extract_json_addr(args, "usp", emu.cpu.usp); wrote = true; }
+            if json_key_value(args, 0, "sr") >= 0 { cpu_set_sr(emu.cpu, extract_json_addr(args, "sr", emu.cpu.sr as u32) as u16); wrote = true; }
+            // A7 is the stack pointer of the current mode; USP and SSP name one stack each.
+            let sup = cpu_is_supervisor(emu.cpu);
+            if json_key_value(args, 0, "usp") >= 0 {
+                let v = extract_json_addr(args, "usp", 0);
+                if sup { emu.cpu.usp = v; } else { emu.cpu.a[7] = v; }
+                wrote = true;
+            }
+            if json_key_value(args, 0, "ssp") >= 0 || json_key_value(args, 0, "isp") >= 0 {
+                let v = extract_json_addr(args, "isp", extract_json_addr(args, "ssp", 0));
+                if sup { emu.cpu.a[7] = v; } else { emu.cpu.ssp = v; }
+                wrote = true;
+            }
+            if json_key_value(args, 0, "sp") >= 0 { emu.cpu.a[7] = extract_json_addr(args, "sp", emu.cpu.a[7]); wrote = true; }
             if json_key_value(args, 0, "a7") >= 0 { emu.cpu.a[7] = extract_json_addr(args, "a7", emu.cpu.a[7]); wrote = true; }
-            if json_key_value(args, 0, "sp") >= 0 { wrote = true; }
-            if json_key_value(args, 0, "isp") >= 0 { wrote = true; }
-            if json_key_value(args, 0, "msp") >= 0 { wrote = true; }
-            if json_key_value(args, 0, "vbr") >= 0 { wrote = true; }
-            if json_key_value(args, 0, "sfc") >= 0 { wrote = true; }
-            if json_key_value(args, 0, "dfc") >= 0 { wrote = true; }
-            if json_key_value(args, 0, "cacr") >= 0 { wrote = true; }
-            if json_key_value(args, 0, "caar") >= 0 { wrote = true; }
-            if json_key_value(args, 0, "pref_addr") >= 0 { wrote = true; }
-            if json_key_value(args, 0, "pref_data") >= 0 { wrote = true; }
             if json_key_value(args, 0, "d0") >= 0 { emu.cpu.d[0] = extract_json_addr(args, "d0", emu.cpu.d[0]); wrote = true; }
             if json_key_value(args, 0, "d1") >= 0 { emu.cpu.d[1] = extract_json_addr(args, "d1", emu.cpu.d[1]); wrote = true; }
             if json_key_value(args, 0, "d2") >= 0 { emu.cpu.d[2] = extract_json_addr(args, "d2", emu.cpu.d[2]); wrote = true; }
