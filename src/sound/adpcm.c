@@ -54,6 +54,14 @@ static int ADPCM_DifBuf = 0;
 
 static int ADPCM_Pan = 0x00;
 static int OldR = 0, OldL = 0;
+
+/* With no new sample, step the held level one unit toward zero per output
+   sample, as the analog output does, instead of holding a DC offset. */
+static INLINE int ADPCM_Decay(int v)
+{
+   return v + (v < 0) - (v > 0);
+}
+
 static int Outs[8];
 static int OutsIp[4];
 static int OutsIpR[4];
@@ -247,8 +255,8 @@ void ADPCM_Update(int16_t *buffer, size_t length, uint8_t *pbsp, uint8_t *pbep)
          }
          else
          {
-            outr = OldR;
-            outl = OldL;
+            outr = OldR = ADPCM_Decay(OldR);
+            outl = OldL = ADPCM_Decay(OldL);
          }
 
          outr       = (int)(outr*40*ADPCM_VolumeShift);
@@ -310,8 +318,8 @@ void ADPCM_Update(int16_t *buffer, size_t length, uint8_t *pbsp, uint8_t *pbep)
          }
          else
          {
-            outr = OldR;
-            outl = OldL;
+            outr = OldR = ADPCM_Decay(OldR);
+            outl = OldL = ADPCM_Decay(OldL);
          }
 
          outs       = (int)(outr*ADPCM_VolumeShift);
@@ -351,6 +359,14 @@ void ADPCM_Update(int16_t *buffer, size_t length, uint8_t *pbsp, uint8_t *pbep)
 
 static INLINE void ADPCM_WriteOne(uint8_t val)
 {
+   /* Silence written as 0x00/0x88 while the step is large walks the level to
+      a rail. Read a zero nibble as the opposite sign when it would move the
+      level away from zero (XEiJ's zero-data correction). */
+   if ( val==0 && ADPCM_Out>=0 )
+      val = 8;
+   else if ( val==8 && ADPCM_Out<0 )
+      val = 0;
+
    ADPCM_Out += dif_table[(ADPCM_Step << 4) + val];
 	if ( ADPCM_Out>ADPCMMAX )
       ADPCM_Out = ADPCMMAX;
