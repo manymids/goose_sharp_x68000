@@ -257,14 +257,19 @@ void c_dmac_ack_irq(void) {
     dma_vec_store(-1);
 }
 
+/* px68k's default levels (OPM_VOL 12 = -8 dB, PCM_VOL 15). At the maximum the OPM
+   alone exceeds 16 bits and ADPCM reaches full scale, so the mix clips. */
+#define OPM_VOLUME (-(16 - 12) * 4)
+#define ADPCM_VOLUME 15
+
 void x68k_sound_init(void) {
     if (!g_opm) {
         g_opm = new MyOPM();
         g_opm->Init(4000000, 44100);
-        g_opm->SetVolume(0); // 0dB (max)
+        g_opm->SetVolume(OPM_VOLUME);
     }
     ADPCM_Init();
-    ADPCM_SetVolume(16); // max
+    ADPCM_SetVolume(ADPCM_VOLUME);
     g_opm_irq_flag = 0;
 }
 
@@ -273,10 +278,10 @@ void x68k_sound_reset(void) {
         g_opm->Reset();
         g_opm->CurReg = 0;
         g_opm->CurCount = 0;
-        g_opm->SetVolume(0);
+        g_opm->SetVolume(OPM_VOLUME);
     }
     ADPCM_Init();
-    ADPCM_SetVolume(16);
+    ADPCM_SetVolume(ADPCM_VOLUME);
     g_opm_irq_flag = 0;
     memset(DMA, 0, sizeof(DMA));
     dma_vec_store(-1);
