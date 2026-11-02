@@ -227,15 +227,22 @@ fn ea_bw_extra(mode: i32, reg: i32) -> i32 {
     return 4;
 }
 
+// Effective address time; a long operand in memory (or a long immediate) adds 4.
 fn ea_extra_cycles(mode: i32, reg: i32, size: i32) -> i32 {
     let bw = ea_bw_extra(mode, reg);
-    if size == 4 && mode != 0 && mode != 1 { return bw + 6; }
+    if size == 4 && mode != 0 && mode != 1 { return bw + 4; }
     return bw;
 }
 
-// <ea>,Dn の ADD/SUB/AND/OR/CMP。バイト/ワードは 4、ロングは 6、プラス EA。
+fn ea_is_reg_or_imm(mode: i32, reg: i32) -> bool {
+    return mode == 0 || mode == 1 || (mode == 7 && reg == 4);
+}
+
+// <ea>,Dn の ADD/SUB/AND/OR。バイト/ワードは 4、ロングは 6、プラス EA。
+// ロングでソースがレジスタか即値のときは 8 (XEiJ)。
 fn alu_read_cycles(size: i32, mode: i32, reg: i32) -> i32 {
-    let base: i32 = if size == 4 { 6 } else { 4 };
+    var base: i32 = if size == 4 { 6 } else { 4 };
+    if size == 4 && ea_is_reg_or_imm(mode, reg) { base = 8; }
     return base + ea_extra_cycles(mode, reg, size);
 }
 
@@ -258,14 +265,18 @@ fn alu_bin_cycles(size: i32, mode: i32, reg: i32, to_ea: bool) -> i32 {
     return alu_read_cycles(size, mode, reg);
 }
 
+// ADDA/SUBA: .W 8, .L 6 (8 from a register or immediate), plus EA.
 fn adda_cycles(is_long: bool, mode: i32, reg: i32) -> i32 {
     let size: i32 = if is_long { 4 } else { 2 };
-    let base: i32 = if is_long { 6 } else { 8 };
+    var base: i32 = if is_long { 6 } else { 8 };
+    if is_long && ea_is_reg_or_imm(mode, reg) { base = 8; }
     return base + ea_extra_cycles(mode, reg, size);
 }
 
+// CMP <ea>,Dn: 4 (.L 6) plus EA, with no register/immediate surcharge.
 fn cmp_cycles(size: i32, mode: i32, reg: i32) -> i32 {
-    return alu_read_cycles(size, mode, reg);
+    let base: i32 = if size == 4 { 6 } else { 4 };
+    return base + ea_extra_cycles(mode, reg, size);
 }
 
 // MOVE の src 成分と dst 成分。-(An) の書き込みだけ EA 加算と違う。
@@ -282,29 +293,63 @@ fn move_cycles(size: i32, src_mode: i32, src_reg: i32, dst_mode: i32, dst_reg: i
     return src + dst;
 }
 
-fn movem_base(to_mem: bool, is_long: bool, mode: i32, reg: i32) -> i32 {
-    var base: i32 = 12;
+// MOVEM (XEiJ): to memory -(An) 8, else 4 (.L 0) + EA; to registers (An)+ 12 (.L 8),
+// else 8 (.L 4) + EA; plus 4 (.L 8) per register.
+fn movem_cycles(is_long: bool, nregs: i32, mode: i32, to_mem: bool, reg: i32) -> i32 {
+    let size: i32 = if is_long { 4 } else { 2 };
+    let per: i32 = if is_long { 8 } else { 4 };
+    var base: i32 = 0;
     if to_mem {
-        if mode == 2 { base = 12; }
-        else if mode == 4 { base = 8; }
-        else if mode == 5 || (mode == 7 && reg == 0) { base = 20; }
-        else if mode == 6 { base = 24; }
-        else if mode == 7 && reg == 1 { base = 28; }
+        if mode == 4 { base = 8; }
+        else { base = (if is_long { 0 } else { 4 }) + ea_extra_cycles(mode, reg, size); }
     } else {
-        if mode == 2 { base = 16; }
-        else if mode == 3 { base = 12; }
-        else if mode == 5 || (mode == 7 && reg == 0) { base = 24; }
-        else if mode == 6 { base = 28; }
-        else if mode == 7 && reg == 1 { base = 32; }
+        if mode == 3 { base = if is_long { 8 } else { 12 }; }
+        else { base = (if is_long { 4 } else { 8 }) + ea_extra_cycles(mode, reg, size); }
     }
-    let same = (to_mem && mode == 4) || (!to_mem && mode == 3);
-    if is_long && !same { base += 4; }
-    return base;
+    return base + per * nregs;
 }
 
-fn movem_cycles(is_long: bool, nregs: i32, mode: i32, to_mem: bool, reg: i32) -> i32 {
-    let per: i32 = if is_long { 8 } else { 4 };
-    return movem_base(to_mem, is_long, mode, reg) + per * nregs;
+// LEA/PEA address time: (An) 4, d16 8, index 12, abs.W 8, abs.L 12, PC 8 / 12.
+fn lea_cycles(mode: i32, reg: i32) -> i32 {
+    if mode == 2 { return 4; }
+    if mode == 6 || (mode == 7 && reg == 3) { return 12; }
+    if mode == 7 && reg == 1 { return 12; }
+    return 8;
+}
+
+// JMP address time: (An) 8, d16 10, index 14, abs.W 10, abs.L 12, PC 10 / 14. JSR adds 8.
+fn jmp_cycles(mode: i32, reg: i32) -> i32 {
+    if mode == 2 { return 8; }
+    if mode == 6 || (mode == 7 && reg == 3) { return 14; }
+    if mode == 7 && reg == 1 { return 12; }
+    return 10;
+}
+
+// MULU: 38 + 2 per one bit of the source. MULS: 38 + 2 per one bit in the low 16 bits of
+// source ^ (source << 1), i.e. 01/10 pairs with a 0 appended (XEiJ irpMulsWord).
+fn mul_cycles(mode: i32, reg: i32, src: u32, signed: bool) -> i32 {
+    var t = src & 0xFFFF;
+    if signed { t = (t ^ (t << 1)) & 0xFFFF; }
+    var n: i32 = 0;
+    while t != 0 {
+        n += (t & 1) as! i32;
+        t = t >> 1;
+    }
+    return 38 + 2 * n + ea_extra_cycles(mode, reg, 2);
+}
+
+// BTST/BCHG/BCLR/BSET (XEiJ). Register: dynamic BTST 6, BCHG/BSET 6/8, BCLR 8/10 (bit < 16 /
+// above); static adds 4. Memory: dynamic BTST 4, others 8; static adds 4; plus EA.
+fn bit_cycles(op_type: i32, is_static: bool, mode: i32, reg: i32, bit: u32) -> i32 {
+    let st: i32 = if is_static { 4 } else { 0 };
+    if mode == 0 {
+        let hi: i32 = if bit >= 16 { 2 } else { 0 };
+        if op_type == 0 { return 6 + st; }
+        if op_type == 2 { return 8 + hi + st; }
+        return 6 + hi + st;
+    }
+    let base: i32 = if op_type == 0 { 4 } else { 8 };
+    return base + st + ea_bw_extra(mode, reg);
 }
 
 fn shift_reg_cycles(size: i32, count: i32) -> i32 {
@@ -313,25 +358,51 @@ fn shift_reg_cycles(size: i32, count: i32) -> i32 {
 }
 
 fn shift_mem_cycles(mode: i32, reg: i32) -> i32 {
-    let sink = mode + reg;
-    if sink < -1 { return 12; }
-    return 12;
+    return 8 + ea_bw_extra(mode, reg);
 }
 
-// kind: 0=成功, 1=オーバーフロー, 2=ゼロ除算, 3=DIVS の 0x80000000/-1。
-fn divu_cycles(mode: i32, reg: i32, kind: i32) -> i32 {
+// DIVU/DIVS cycles from the 68000's shift-subtract loop (XEiJ irpDivuCyclesModified /
+// irpDivsCycles), plus the effective address time. Zero divide keeps the old count.
+fn divu_cycles(mode: i32, reg: i32, x: u32, y: u32) -> i32 {
     let extra = ea_extra_cycles(mode, reg, 2);
-    if kind == 2 { return 48 + extra; }
-    if kind == 1 { return 70 + extra; }
-    return 90 + extra;
+    let d = y & 0xFFFF;
+    if d == 0 { return 38 + extra; }
+    var r = x >> 16;
+    if d <= r { return 10 + extra; }
+    var c: i32 = 76;
+    var i: i32 = 15;
+    while i > 0 {
+        r = (r << 1) | ((x >> (i as! u32)) & 1);
+        if r >= 0x10000 {
+            r -= d;
+        } else if d <= r {
+            r -= d;
+            c += 2;
+        } else {
+            c += 4;
+        }
+        i -= 1;
+    }
+    return c + extra;
 }
 
-fn divs_cycles(mode: i32, reg: i32, kind: i32) -> i32 {
+fn divs_cycles(mode: i32, reg: i32, x: i32, y: i32) -> i32 {
     let extra = ea_extra_cycles(mode, reg, 2);
-    if kind == 2 { return 48 + extra; }
-    if kind == 1 { return 80 + extra; }
-    if kind == 3 { return 50 + extra; }
-    return 108 + extra;
+    if y == 0 { return 38 + extra; }
+    let ax = if x < 0 { (0 as! u32) - (x as! u32) } else { x as! u32 };
+    let ay = if y < 0 { (0 as! u32) - (y as! u32) } else { y as! u32 };
+    let q = ax / ay;
+    if (q & 0xFFFF0000) != 0 {
+        let ovf: i32 = if x < 0 { 18 } else { 16 };
+        return ovf + extra;
+    }
+    var t = ~q;
+    t = (t & 0x5554) + ((t >> 1) & 0x5555);
+    t = (t & 0x3333) + ((t >> 2) & 0x3333);
+    t = (t & 0x0F0F) + ((t >> 4) & 0x0F0F);
+    t = (t & 0x00FF) + ((t >> 8) & 0x00FF);
+    let base: i32 = if x < 0 { if y < 0 { 124 } else { 126 } } else { if y < 0 { 122 } else { 120 } };
+    return base + ((t as! i32) << 1) + extra;
 }
 
 fn bcc_cycles(word_disp: bool, taken: bool) -> i32 {
@@ -346,10 +417,10 @@ fn imm_alu_cycles(size: i32, mode: i32, reg: i32) -> i32 {
     return clr_cycles(size, mode, reg) + add;
 }
 
-// CMPI。Dn は即値 EA の CMP。メモリは <ea>,Dn の CMP に 4 を足す。
+// CMPI (XEiJ): Dn 8 (.L 14); memory 8 (.L 12) plus EA.
 fn cmpi_cycles(size: i32, mode: i32, reg: i32) -> i32 {
-    if mode == 0 { return alu_read_cycles(size, 7, 4); }
-    return alu_read_cycles(size, mode, reg) + 4;
+    if mode == 0 { return if size == 4 { 14 } else { 8 }; }
+    return (if size == 4 { 12 } else { 8 }) + ea_extra_cycles(mode, reg, size);
 }
 
 fn addq_cycles(size: i32, mode: i32, reg: i32) -> i32 {
@@ -377,29 +448,46 @@ fn ea_is_data(mode: i32, reg: i32) -> bool {
 
 fn raise_illegal(cpu: M68kCPU&, mmu: M68kMMU&) -> i32 {
     m68k_trigger_exception(cpu, mmu, 4, cpu.pc - 2);
-    return 8;
+    return 34;
 }
 
 // ABCD/SBCD/NBCD。Z は結果が 0 以外のときだけクリアする。keep_z のときは Z を変えない。V は変えない。
-fn bcd_set_flags(cpu: M68kCPU&, res: u32, carry: bool, keep_z: bool) {
-    if (res & 0x80) != 0 { cpu.sr |= (SR_N as! u16); } else { cpu.sr &= ~(SR_N as! u16); }
-    if !keep_z && (res & 0xFF) != 0 { cpu.sr &= ~(SR_Z as! u16); }
-    if carry { cpu.sr |= ((SR_C | SR_X) as! u16); }
-    else { cpu.sr &= ~((SR_C | SR_X) as! u16); }
+// 68000 BCD flags as XEiJ computes them: X/C carry, Z cleared on a non-zero result,
+// N the result's top bit, V overflow from adding the decimal correction.
+fn bcd_flags(cpu: M68kCPU&, t: i32, z: i32, carry: bool) {
+    if carry { cpu.sr |= ((SR_C | SR_X) as! u16); } else { cpu.sr &= ~((SR_C | SR_X) as! u16); }
+    if z != 0 { cpu.sr &= ~(SR_Z as! u16); }
+    if (z & 0x80) != 0 { cpu.sr |= (SR_N as! u16); } else { cpu.sr &= ~(SR_N as! u16); }
+    let a = z - t;
+    if (((t ^ z) & (a ^ z)) & 0x80) != 0 { cpu.sr |= (SR_V as! u16); } else { cpu.sr &= ~(SR_V as! u16); }
 }
 
-fn bcd_add(dst: u32, src: u32, x: u32) -> u32 {
-    var res: u32 = (dst & 0x0F) + (src & 0x0F) + x;
-    if res > 9 { res += 6; }
-    res += (dst & 0xF0) + (src & 0xF0);
-    return res;
+fn bcd_add(cpu: M68kCPU&, dst: u32, src: u32) -> u32 {
+    let c: i32 = if cpu_flag_x(cpu) { 1 } else { 0 };
+    let x = (dst & 0xFF) as! i32;
+    let y = (src & 0xFF) as! i32;
+    let t = x + y + c;
+    var z = t;
+    if (x & 0x0F) + (y & 0x0F) + c >= 0x0A { z += 0x10 - 0x0A; }
+    let carry = z >= 0xA0;
+    if carry { z += 0x100 - 0xA0; }
+    z &= 0xFF;
+    bcd_flags(cpu, t, z, carry);
+    return z as! u32;
 }
 
-fn bcd_sub(dst: u32, src: u32, x: u32) -> u32 {
-    var res: u32 = (dst & 0x0F) - (src & 0x0F) - x;
-    if res > 9 { res -= 6; }
-    res += (dst & 0xF0) - (src & 0xF0);
-    return res;
+fn bcd_sub(cpu: M68kCPU&, dst: u32, src: u32) -> u32 {
+    let b: i32 = if cpu_flag_x(cpu) { 1 } else { 0 };
+    let x = (dst & 0xFF) as! i32;
+    let y = (src & 0xFF) as! i32;
+    let t = x - y - b;
+    var z = t;
+    if (x & 0x0F) - (y & 0x0F) - b < 0 { z -= 0x10 - 0x0A; }
+    let borrow = z < 0;
+    if borrow && t < 0 { z -= 0x100 - 0xA0; }
+    z &= 0xFF;
+    bcd_flags(cpu, t, z, borrow);
+    return z as! u32;
 }
 
 fn predec_byte(cpu: M68kCPU&, reg: i32) -> u32 {
@@ -419,7 +507,7 @@ fn exec_movep(cpu: M68kCPU&, mmu: M68kMMU&, op: u16) -> i32 {
         let hi = mmu_read8(mmu, adr) as! u32;
         let lo = mmu_read8(mmu, adr + 2) as! u32;
         cpu.d[dreg] = (cpu.d[dreg] & 0xFFFF0000) | (hi << 8) | lo;
-        return 24;
+        return 16;
     }
     if kind == 1 {
         let b0 = mmu_read8(mmu, adr) as! u32;
@@ -427,19 +515,19 @@ fn exec_movep(cpu: M68kCPU&, mmu: M68kMMU&, op: u16) -> i32 {
         let b2 = mmu_read8(mmu, adr + 4) as! u32;
         let b3 = mmu_read8(mmu, adr + 6) as! u32;
         cpu.d[dreg] = (b0 << 24) | (b1 << 16) | (b2 << 8) | b3;
-        return 32;
+        return 24;
     }
     let res = cpu.d[dreg];
     if kind == 2 {
         mmu_write8(mmu, adr, ((res >> 8) & 0xFF) as! u8);
         mmu_write8(mmu, adr + 2, (res & 0xFF) as! u8);
-        return 24;
+        return 16;
     }
     mmu_write8(mmu, adr, ((res >> 24) & 0xFF) as! u8);
     mmu_write8(mmu, adr + 2, ((res >> 16) & 0xFF) as! u8);
     mmu_write8(mmu, adr + 4, ((res >> 8) & 0xFF) as! u8);
     mmu_write8(mmu, adr + 6, (res & 0xFF) as! u8);
-    return 32;
+    return 24;
 }
 
 fn exec_op0(cpu: M68kCPU&, mmu: M68kMMU&, op: u16) -> i32 {
@@ -460,7 +548,7 @@ fn exec_op0(cpu: M68kCPU&, mmu: M68kMMU&, op: u16) -> i32 {
             if op_type == 1 { cpu.d[reg] ^= mask; }
             else if op_type == 2 { cpu.d[reg] &= ~mask; }
             else if op_type == 3 { cpu.d[reg] |= mask; }
-            return 8;
+            return bit_cycles(op_type, true, mode, reg, b);
         } else { // Memory (8-bit)
             let b = bit_num & 7;
             let mask = ((1 as! u32) << b) as! u8;
@@ -468,7 +556,7 @@ fn exec_op0(cpu: M68kCPU&, mmu: M68kMMU&, op: u16) -> i32 {
                 let cur = ea_read(cpu, mmu, mode, reg, 1) as! u8;
                 let z = (cur & mask) == 0;
                 if z { cpu.sr |= (SR_Z as! u16); } else { cpu.sr &= ~(SR_Z as! u16); }
-                return 8;
+                return bit_cycles(op_type, true, mode, reg, 0);
             }
             let addr = ea_calc_addr(cpu, mmu, mode, reg, 1);
             let cur = mmu_read8(mmu, addr);
@@ -478,7 +566,7 @@ fn exec_op0(cpu: M68kCPU&, mmu: M68kMMU&, op: u16) -> i32 {
             if op_type == 1 { mmu_write8(mmu, addr, cur ^ mask); }
             else if op_type == 2 { mmu_write8(mmu, addr, cur & ~mask); }
             else if op_type == 3 { mmu_write8(mmu, addr, cur | mask); }
-            return 12;
+            return bit_cycles(op_type, true, mode, reg, 0);
         }
     }
 
@@ -496,7 +584,7 @@ fn exec_op0(cpu: M68kCPU&, mmu: M68kMMU&, op: u16) -> i32 {
             if op_type == 1 { cpu.d[reg] ^= mask; }
             else if op_type == 2 { cpu.d[reg] &= ~mask; }
             else if op_type == 3 { cpu.d[reg] |= mask; }
-            return 8;
+            return bit_cycles(op_type, false, mode, reg, b);
         } else { // Memory (8-bit)
             let b = (cpu.d[dreg] & 7) as! u32;
             let mask = ((1 as! u32) << b) as! u8;
@@ -504,7 +592,7 @@ fn exec_op0(cpu: M68kCPU&, mmu: M68kMMU&, op: u16) -> i32 {
                 let cur = ea_read(cpu, mmu, mode, reg, 1) as! u8;
                 let z = (cur & mask) == 0;
                 if z { cpu.sr |= (SR_Z as! u16); } else { cpu.sr &= ~(SR_Z as! u16); }
-                return 8;
+                return bit_cycles(op_type, false, mode, reg, 0);
             }
             let addr = ea_calc_addr(cpu, mmu, mode, reg, 1);
             let cur = mmu_read8(mmu, addr);
@@ -514,7 +602,7 @@ fn exec_op0(cpu: M68kCPU&, mmu: M68kMMU&, op: u16) -> i32 {
             if op_type == 1 { mmu_write8(mmu, addr, cur ^ mask); }
             else if op_type == 2 { mmu_write8(mmu, addr, cur & ~mask); }
             else if op_type == 3 { mmu_write8(mmu, addr, cur | mask); }
-            return 8;
+            return bit_cycles(op_type, false, mode, reg, 0);
         }
     }
 
@@ -533,7 +621,7 @@ fn exec_op0(cpu: M68kCPU&, mmu: M68kMMU&, op: u16) -> i32 {
         if size == 2 && mode == 7 && reg == 4 && (imm_op == 0 || imm_op == 1 || imm_op == 5) {
             if !cpu_is_supervisor(cpu) {
                 m68k_trigger_exception(cpu, mmu, 8, cpu.pc);
-                return 20;
+                return 34;
             }
         }
         let imm_val = if size == 1 { (fetch16(cpu, mmu) & 0xFF) as! u32 }
@@ -637,7 +725,7 @@ fn exec_op4(cpu: M68kCPU&, mmu: M68kMMU&, op: u16) -> i32 {
     if op == 0x4E70 {
         if !cpu_is_supervisor(cpu) {
             m68k_trigger_exception(cpu, mmu, 8, cpu.pc);
-            return 132;
+            return 34;
         }
         return 132;
     }
@@ -658,7 +746,7 @@ fn exec_op4(cpu: M68kCPU&, mmu: M68kMMU&, op: u16) -> i32 {
     if op == 0x4E73 {
         if !cpu_is_supervisor(cpu) {
             m68k_trigger_exception(cpu, mmu, 8, cpu.pc);
-            return 20;
+            return 34;
         }
         let new_sr = pop16(cpu, mmu);
         let new_pc = pop32(cpu, mmu);
@@ -685,21 +773,21 @@ fn exec_op4(cpu: M68kCPU&, mmu: M68kMMU&, op: u16) -> i32 {
     // JMP (0100 1110 11 eee eee)
     if (op & 0xFFC0) == 0x4EC0 {
         cpu.pc = ea_calc_addr(cpu, mmu, mode, reg, 4);
-        return 8;
+        return jmp_cycles(mode, reg);
     }
     // JSR (0100 1110 10 eee eee)
     if (op & 0xFFC0) == 0x4E80 {
         let target = ea_calc_addr(cpu, mmu, mode, reg, 4);
         push32(cpu, mmu, cpu.pc);
         cpu.pc = target;
-        return 16;
+        return 8 + jmp_cycles(mode, reg);
     }
 
     // LEA (0100 rrr1 11 eee eee)
     if (op & 0xF1C0) == 0x41C0 {
         let areg = ((op >> 9) & 0x07) as! i32;
         cpu.a[areg] = ea_calc_addr(cpu, mmu, mode, reg, 4);
-        return 8;
+        return lea_cycles(mode, reg);
     }
     // SWAP (0100 1000 0100 0rrr: mode == 0)
     if (op & 0xFFF8) == 0x4840 {
@@ -714,7 +802,7 @@ fn exec_op4(cpu: M68kCPU&, mmu: M68kMMU&, op: u16) -> i32 {
     if (op & 0xFFC0) == 0x4840 && mode >= 2 {
         let addr = ea_calc_addr(cpu, mmu, mode, reg, 4);
         push32(cpu, mmu, addr);
-        return 12;
+        return 8 + lea_cycles(mode, reg);
     }
 
     // LINK (0100 1110 0101 0rrr)
@@ -739,7 +827,7 @@ fn exec_op4(cpu: M68kCPU&, mmu: M68kMMU&, op: u16) -> i32 {
     if (op & 0xFFF0) == 0x4E60 {
         if !cpu_is_supervisor(cpu) {
             m68k_trigger_exception(cpu, mmu, 8, cpu.pc);
-            return 4;
+            return 34;
         }
         let areg = (op & 0x07) as! i32;
         let to_usp = (op & 0x08) == 0;
@@ -839,22 +927,23 @@ fn exec_op4(cpu: M68kCPU&, mmu: M68kMMU&, op: u16) -> i32 {
     if (op & 0xFFC0) == 0x46C0 {
         if !cpu_is_supervisor(cpu) {
             m68k_trigger_exception(cpu, mmu, 8, cpu.pc);
-            return 12;
+            return 34;
         }
         let val = ea_read(cpu, mmu, mode, reg, 2) as! u16;
         cpu_set_sr(cpu, val);
-        return 12;
+        return 12 + ea_bw_extra(mode, reg);
     }
     // MOVE to CCR (0100 0100 11 eee eee)
     if (op & 0xFFC0) == 0x44C0 {
         let ccr = ea_read(cpu, mmu, mode, reg, 2) as! u16;
         cpu_set_ccr(cpu, ccr as! u8);
-        return 12;
+        return 12 + ea_bw_extra(mode, reg);
     }
     // MOVE from SR (0100 0000 11 eee eee)
     if (op & 0xFFC0) == 0x40C0 {
         ea_write(cpu, mmu, mode, reg, 2, cpu.sr as! u32);
-        return 8;
+        if mode == 0 { return 6; }
+        return 8 + ea_bw_extra(mode, reg);
     }
 
     // NEGX (0100 0000 ss eee eee: ss <= 2)
@@ -869,7 +958,7 @@ fn exec_op4(cpu: M68kCPU&, mmu: M68kMMU&, op: u16) -> i32 {
         if size == 1 { cpu_flags_subx8(cpu, cur as! u8, 0, res as! u8); }
         else if size == 2 { cpu_flags_subx16(cpu, cur as! u16, 0, res as! u16); }
         else { cpu_flags_subx32(cpu, cur, 0, res); }
-        return 8;
+        return clr_cycles(size, mode, reg);
     }
 
     // CLR (0100 0010 ss eee eee: ss <= 2)
@@ -918,39 +1007,37 @@ fn exec_op4(cpu: M68kCPU&, mmu: M68kMMU&, op: u16) -> i32 {
         if size == 1 { cpu_set_nz8(cpu, val as! u8); }
         else if size == 2 { cpu_set_nz16(cpu, val as! u16); }
         else { cpu_set_nz32(cpu, val); }
-        return 4;
+        return 4 + ea_extra_cycles(mode, reg, size);
     }
 
-    // NBCD (0100 1000 00 eee eee)。C68K は 0x9A - src - X。
+    // NBCD (0100 1000 00 eee eee): 0 - <ea> - X with SBCD's flags.
     if (op & 0xFFC0) == 0x4800 {
         if !ea_is_alterable(mode, reg) { return raise_illegal(cpu, mmu); }
-        let x: u32 = if cpu_flag_x(cpu) { 1 } else { 0 };
         let ea_res = ea_read_for_rmw(cpu, mmu, mode, reg, 1);
-        var res: u32 = (0x9A as! u32) - ea_res.val - x;
-        if res != 0x9A {
-            if (res & 0x0F) == 0x0A { res = (res & 0xF0) + 0x10; }
-            res &= 0xFF;
-            ea_write_for_rmw(cpu, mmu, mode, reg, 1, ea_res.addr, res);
-            bcd_set_flags(cpu, res, true, false);
-        } else {
-            bcd_set_flags(cpu, res, false, true);
-        }
+        let res = bcd_sub(cpu, 0, ea_res.val);
+        ea_write_for_rmw(cpu, mmu, mode, reg, 1, ea_res.addr, res);
         if mode == 0 { return 6; }
-        return 8;
+        return 8 + ea_bw_extra(mode, reg);
     }
 
-    // CHK.W (0100 rrr1 10 eee eee)。C68K はワードをゼロ拡張して比較する。
+    // CHK.W (0100 rrr1 10 eee eee): signed bounds. N/Z from Dn, V/C from bound - Dn (XEiJ).
     if (op & 0xF1C0) == 0x4180 {
         if !ea_is_data(mode, reg) { return raise_illegal(cpu, mmu); }
         let dn = ((op >> 9) & 0x07) as! i32;
-        let src = ea_read(cpu, mmu, mode, reg, 2) & 0xFFFF;
-        let val = cpu.d[dn] & 0xFFFF;
-        if val > src {
-            if (val & 0x8000) != 0 { cpu.sr |= (SR_N as! u16); } else { cpu.sr &= ~(SR_N as! u16); }
+        let x = (ea_read(cpu, mmu, mode, reg, 2) as! i16) as! i32;
+        let y = (cpu.d[dn] as! i16) as! i32;
+        let z = ((x - y) as! i16) as! i32;
+        var ccr = cpu.sr & (SR_X as! u16);
+        if y < 0 { ccr |= (SR_N as! u16); }
+        if y == 0 { ccr |= (SR_Z as! u16); }
+        if ((x ^ y) & (x ^ z)) < 0 { ccr |= (SR_V as! u16); }
+        if ((x & (y ^ z)) ^ (y | z)) < 0 { ccr |= (SR_C as! u16); }
+        cpu.sr = (cpu.sr & 0xFF00) | ccr;
+        if y < 0 || x < y {
             m68k_trigger_exception(cpu, mmu, 6, cpu.pc);
-            return 40;
+            return 38 + ea_bw_extra(mode, reg);
         }
-        return 10;
+        return 10 + ea_bw_extra(mode, reg);
     }
 
     // TAS (0100 1010 11 eee eee)。4AFC など無効 EA は Illegal。
@@ -963,7 +1050,7 @@ fn exec_op4(cpu: M68kCPU&, mmu: M68kMMU&, op: u16) -> i32 {
         cpu.sr &= ~((SR_V | SR_C) as! u16);
         ea_write_for_rmw(cpu, mmu, mode, reg, 1, ea_res.addr, cur | 0x80);
         if mode == 0 { return 4; }
-        return 10;
+        return 10 + ea_bw_extra(mode, reg);
     }
 
     return raise_illegal(cpu, mmu);
@@ -980,72 +1067,81 @@ fn exec_op8_or_div(cpu: M68kCPU&, mmu: M68kMMU&, op: u16) -> i32 {
 
     // SBCD (1000 rrr1 0000 mrrr)。この形を OR.B に落とさない。
     if (op & 0x01F0) == 0x0100 {
-        let x: u32 = if cpu_flag_x(cpu) { 1 } else { 0 };
         let mem = (op & 0x0008) != 0;
         if mem {
             let src_addr = predec_byte(cpu, reg);
             let dst_addr = predec_byte(cpu, dreg);
             let src = mmu_read8(mmu, src_addr) as! u32;
             let dst = mmu_read8(mmu, dst_addr) as! u32;
-            var res = bcd_sub(dst, src, x);
-            let carry = res > 0x99;
-            if carry { res += 0xA0; }
-            mmu_write8(mmu, dst_addr, (res & 0xFF) as! u8);
-            bcd_set_flags(cpu, res & 0xFF, carry, false);
+            let res = bcd_sub(cpu, dst, src);
+            mmu_write8(mmu, dst_addr, res as! u8);
             return 18;
         }
-        let src = cpu.d[reg] & 0xFF;
-        let dst = cpu.d[dreg] & 0xFF;
-        var res = bcd_sub(dst, src, x);
-        let carry = res > 0x99;
-        if carry { res += 0xA0; }
-        cpu.d[dreg] = (cpu.d[dreg] & 0xFFFFFF00) | (res & 0xFF);
-        bcd_set_flags(cpu, res & 0xFF, carry, false);
+        let res = bcd_sub(cpu, cpu.d[dreg], cpu.d[reg]);
+        cpu.d[dreg] = (cpu.d[dreg] & 0xFFFFFF00) | res;
         return 6;
     }
 
     if opmode == 3 { // DIVU.W
         let src = ea_read(cpu, mmu, mode, reg, 2);
+        let x = cpu.d[dreg];
+        let cycles = divu_cycles(mode, reg, x, src);
+        // Zero divide and overflow leave Dq; N/Z/V as the 68000 sets them (XEiJ).
         if src == 0 {
+            var ccr = (cpu.sr & (SR_X as! u16)) | (SR_V as! u16);
+            if (x & 0x80000000) != 0 { ccr |= (SR_N as! u16); }
+            if (x >> 16) == 0 { ccr |= (SR_Z as! u16); }
+            cpu.sr = (cpu.sr & 0xFF00) | ccr;
             m68k_trigger_exception(cpu, mmu, 5, cpu.pc);
-            return divu_cycles(mode, reg, 2);
+            return cycles;
         }
-        let q = cpu.d[dreg] / src;
-        let r = cpu.d[dreg] % src;
+        let q = x / src;
+        let r = x % src;
         if q > 0xFFFF {
-            cpu.sr |= (SR_V as! u16);
-            cpu.sr &= ~(SR_C as! u16);
-            return divu_cycles(mode, reg, 1);
+            var ccr = (cpu.sr & (SR_X as! u16)) | (SR_V as! u16);
+            if (x & 0x80000000) != 0 { ccr |= (SR_N as! u16); }
+            cpu.sr = (cpu.sr & 0xFF00) | ccr;
         } else {
             cpu.d[dreg] = (r << 16) | (q & 0xFFFF);
             cpu_set_nz16(cpu, q as! u16);
         }
-        return divu_cycles(mode, reg, 0);
+        return cycles;
     }
     if opmode == 7 { // DIVS.W
         let src = (ea_read(cpu, mmu, mode, reg, 2) as! i16) as! i32;
-        if src == 0 {
-            m68k_trigger_exception(cpu, mmu, 5, cpu.pc);
-            return divs_cycles(mode, reg, 2);
-        }
-        // C68K は 0x80000000 / -1 を商 0・Z=1 にする。ここで割ると debug が trap する。
-        if cpu.d[dreg] == 0x80000000 && src == -1 {
-            cpu.d[dreg] = 0;
-            cpu_set_nz16(cpu, 0);
-            return divs_cycles(mode, reg, 3);
-        }
         let dst = cpu.d[dreg] as! i32;
-        let q = dst / src;
-        let r = rem(dst, src);
-        if q > 32767 || q < -32768 {
-            cpu.sr |= (SR_V as! u16);
-            cpu.sr &= ~(SR_C as! u16);
-            return divs_cycles(mode, reg, 1);
+        let cycles = divs_cycles(mode, reg, dst, src);
+        // Zero divide and overflow leave Dq; N/Z/V as the 68000 sets them (XEiJ).
+        if src == 0 {
+            let x = cpu.d[dreg];
+            var v = (cpu.sr & (SR_V as! u16)) != 0;
+            if x == 0x00008000 { v = !v; }
+            else if (dst >= 0 && x != 0x7FFFFFFF) || x == 0x80000000 { v = true; }
+            var ccr = (cpu.sr & (SR_X as! u16)) | (SR_Z as! u16);
+            if v { ccr |= (SR_V as! u16); }
+            cpu.sr = (cpu.sr & 0xFF00) | ccr;
+            m68k_trigger_exception(cpu, mmu, 5, cpu.pc);
+            return cycles;
+        }
+        // 64-bit so that $80000000 / -1 is an overflow, not a trap.
+        let q64 = (dst as! i64) / (src as! i64);
+        if q64 > 32767 || q64 < -32768 {
+            let z = (q64 as! i32) as! u32;
+            var ccr = (cpu.sr & (SR_X as! u16)) | (SR_V as! u16);
+            if cpu.d[dreg] == 0x80000000 || (z & 0xFFFF0080) == 0x00000080 || (z & 0xFFFF0080) == 0xFFFF0080 {
+                ccr |= (SR_N as! u16);
+            }
+            if z == 0x00008000 || (((z & 0xFFFF00FF) == 0 || (z & 0xFFFF00FF) == 0xFFFF0000) && (z & 0xFF00) != 0) {
+                ccr |= (SR_Z as! u16);
+            }
+            cpu.sr = (cpu.sr & 0xFF00) | ccr;
         } else {
+            let q = q64 as! i32;
+            let r = dst - q * src;
             cpu.d[dreg] = (((r as! u32) & 0xFFFF) << 16) | ((q as! u32) & 0xFFFF);
             cpu_set_nz16(cpu, (q as! i16) as! u16);
         }
-        return divs_cycles(mode, reg, 0);
+        return cycles;
     }
 
     // OR
@@ -1079,27 +1175,18 @@ fn exec_opC_and_mul_exg(cpu: M68kCPU&, mmu: M68kMMU&, op: u16) -> i32 {
 
     // ABCD (1100 rrr1 0000 mrrr)。EXG のマスクに掛かるが、そちらへ落とさない。
     if (op & 0x01F0) == 0x0100 {
-        let x: u32 = if cpu_flag_x(cpu) { 1 } else { 0 };
         let mem = (op & 0x0008) != 0;
         if mem {
             let src_addr = predec_byte(cpu, reg);
             let dst_addr = predec_byte(cpu, dreg);
             let src = mmu_read8(mmu, src_addr) as! u32;
             let dst = mmu_read8(mmu, dst_addr) as! u32;
-            var res = bcd_add(dst, src, x);
-            let carry = res > 0x99;
-            if carry { res -= 0xA0; }
-            mmu_write8(mmu, dst_addr, (res & 0xFF) as! u8);
-            bcd_set_flags(cpu, res & 0xFF, carry, false);
+            let res = bcd_add(cpu, dst, src);
+            mmu_write8(mmu, dst_addr, res as! u8);
             return 18;
         }
-        let src = cpu.d[reg] & 0xFF;
-        let dst = cpu.d[dreg] & 0xFF;
-        var res = bcd_add(dst, src, x);
-        let carry = res > 0x99;
-        if carry { res -= 0xA0; }
-        cpu.d[dreg] = (cpu.d[dreg] & 0xFFFFFF00) | (res & 0xFF);
-        bcd_set_flags(cpu, res & 0xFF, carry, false);
+        let res = bcd_add(cpu, cpu.d[dreg], cpu.d[reg]);
+        cpu.d[dreg] = (cpu.d[dreg] & 0xFFFFFF00) | res;
         return 6;
     }
 
@@ -1124,7 +1211,7 @@ fn exec_opC_and_mul_exg(cpu: M68kCPU&, mmu: M68kMMU&, op: u16) -> i32 {
         let res = (cpu.d[dreg] & 0xFFFF) * (src & 0xFFFF);
         cpu.d[dreg] = res;
         cpu_set_nz32(cpu, res);
-        return 70;
+        return mul_cycles(mode, reg, src, false);
     }
     if opmode == 7 { // MULS.W
         let src = (ea_read(cpu, mmu, mode, reg, 2) as! i16) as! i32;
@@ -1132,7 +1219,7 @@ fn exec_opC_and_mul_exg(cpu: M68kCPU&, mmu: M68kMMU&, op: u16) -> i32 {
         let res = (dst * src) as! u32;
         cpu.d[dreg] = res;
         cpu_set_nz32(cpu, res);
-        return 70;
+        return mul_cycles(mode, reg, src as! u32, true);
     }
 
     // AND
@@ -1368,7 +1455,7 @@ fn exec_opB_cmp_eor(cpu: M68kCPU&, mmu: M68kMMU&, op: u16) -> i32 {
         let dst = cpu.a[reg_field];
         let res = dst - ext_src;
         cpu_flags_sub32(cpu, ext_src, dst, res, false);
-        return 6;
+        return 6 + ea_extra_cycles(mode, reg, if is_long { 4 } else { 2 });
     }
 
     // CMPM (Ay)+, (Ax)+: 1011 rrr 1 ss 001 rrr
@@ -1396,7 +1483,7 @@ fn exec_opB_cmp_eor(cpu: M68kCPU&, mmu: M68kMMU&, op: u16) -> i32 {
         if size == 1 { cpu_flags_sub8(cpu, src as! u8, dst as! u8, res as! u8, false); }
         else if size == 2 { cpu_flags_sub16(cpu, src as! u16, dst as! u16, res as! u16, false); }
         else { cpu_flags_sub32(cpu, src, dst, res, false); }
-        return 12;
+        return if size == 4 { 20 } else { 12 };
     }
 
     let size: i32 = if (opmode & 3) == 0 { 1 } else if (opmode & 3) == 1 { 2 } else { 4 };
@@ -1509,7 +1596,7 @@ fn exec_opE_shift_rotate(cpu: M68kCPU&, mmu: M68kMMU&, op: u16) -> i32 {
         if size == 1 { cpu_set_nz8_only(cpu, cpu.d[dreg] as! u8); }
         else if size == 2 { cpu_set_nz16_only(cpu, cpu.d[dreg] as! u16); }
         else { cpu_set_nz32_only(cpu, cpu.d[dreg]); }
-        return 6;
+        return shift_reg_cycles(size, 0);
     }
 
     var v = cpu.d[dreg];
@@ -1704,7 +1791,8 @@ fn m68k_step_core(cpu: M68kCPU&, mmu: M68kMMU&) -> i32 {
             let reg = (op & 0x07) as! i32;
             let set = cpu_check_condition(cpu, cond);
             ea_write(cpu, mmu, mode, reg, 1, if set { 0xFF } else { 0 });
-            return 8;
+            if mode == 0 { return if set { 6 } else { 4 }; }
+            return 8 + ea_bw_extra(mode, reg);
         }
 
         // ADDQ / SUBQ
@@ -1809,13 +1897,13 @@ fn m68k_step_core(cpu: M68kCPU&, mmu: M68kMMU&) -> i32 {
     // Op A: Line 1010 Emulator Exception (Vector 10)
     if hi4 == 0x0A {
         m68k_trigger_exception(cpu, mmu, 10, inst_pc);
-        return 8;
+        return 34;
     }
 
     // Op F: Line 1111 Emulator Exception (Vector 11, Human68k DOS call)
     if hi4 == 0x0F {
         m68k_trigger_exception(cpu, mmu, 11, inst_pc);
-        return 8;
+        return 34;
     }
 
     // 未知・未実装オプコード: Illegal Instruction Exception (Vector 4)
@@ -1869,6 +1957,8 @@ fn m68k_step(cpu: M68kCPU&, mmu: M68kMMU&) -> i32 {
         cycles += 50;
     }
     mmu.cpu_access = false;
+    cycles += mmu.wait40 / 40;
+    mmu.wait40 = mmu.wait40 % 40;
     return cycles;
 }
 

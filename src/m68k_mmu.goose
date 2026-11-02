@@ -10,6 +10,7 @@ import .x68k_dmac;
 import .x68k_sasi;
 import .x68k_ram;
 import .x68k_rom;
+import .x68k_rtc;
 
 struct M68kMMU {
     reset_overlay: bool = true,
@@ -49,6 +50,8 @@ struct M68kMMU {
     fault_addr: u32 = 0,
     fault_write: bool = false,
     cur_ir: u16 = 0,
+    // Bus wait of the current instruction in 1/40 cycles (m68k_step adds whole cycles).
+    wait40: i32 = 0,
     // Main RAM below this is supervisor-only ($E86001, 8 KB units).
     svs_limit: u32 = 0x2000,
     // $EAFF81-$EAFF89: supervisor-only 256 KB blocks from $200000 (index = address >> 18).
@@ -56,7 +59,9 @@ struct M68kMMU {
     xb2_area: u8[16] = [0; 16],
     debug_io: bool = false,
     debug_pc: u32 = 0,
-    trace_steps: i32 = 0
+    trace_steps: i32 = 0,
+    // Battery-backed: mmu_init leaves it running across machine resets.
+    rtc: X68kRTC = X68kRTC {}
 }
 
 fn mmu_init(mmu: M68kMMU&) {
@@ -78,6 +83,7 @@ fn mmu_init(mmu: M68kMMU&) {
     mmu.fault_addr = 0;
     mmu.fault_write = false;
     mmu.cur_ir = 0;
+    mmu.wait40 = 0;
     mmu.svs_limit = 0x2000;
     mmu.ram_super = [0; 48];
     mmu.xb2_area = [0; 16];
@@ -415,10 +421,35 @@ fn mmu_check_wide(mmu: M68kMMU&, a: u32, write: bool) -> bool {
     return false;
 }
 
+// Wait per CPU bus access on a 68000 X68000, in 1/40 cycles (XEiJ mpuSetWait, measured on
+// hardware): DRAM refresh 1/8, video controller 0.6, CRTC/ports/sprites/SRAM/ROM 1, GVRAM 1.1,
+// RTC/OPM/ADPCM/FDC/HDC/PPI/IOI 1.7, TVRAM 2, SRAM 2, palette 2.6, MFP 4.3, SCC 6, DMAC 15.
+fn mmu_wait40(a: u32) -> i32 {
+    if a < 0xC00000 { return 5; }
+    if a < 0xE00000 { return 44; }
+    if a < 0xE80000 { return 80; }
+    if a < 0xE82000 { return 40; }
+    if a < 0xE82400 { return 104; }
+    if a < 0xE84000 { return 24; }
+    if a < 0xE86000 { return 600; }
+    if a < 0xE88000 { return 40; }
+    if a < 0xE8A000 { return 172; }
+    if a < 0xE8C000 { return 68; }
+    if a < 0xE90000 { return 40; }
+    if a < 0xE98000 { return 68; }
+    if a < 0xE9A000 { return 240; }
+    if a < 0xE9E000 { return 68; }
+    if a >= 0xED0000 && a < 0xED4000 { return 80; } // SRAM: XEiJ charges its wait twice
+    return 40;
+}
+
 // 8-bit Read
 fn mmu_read8(mmu: M68kMMU&, addr: u32) -> u8 {
     let a = addr & 0x00FFFFFF;
-    if mmu.cpu_access && (mmu.fault != 0 || mmu.user_mode || a >= 0xE86000) && mmu_check8(mmu, a, false) { return 0xFF; }
+    if mmu.cpu_access {
+        if (mmu.fault != 0 || mmu.user_mode || a >= 0xE86000) && mmu_check8(mmu, a, false) { return 0xFF; }
+        mmu.wait40 += mmu_wait40(a);
+    }
 
     // Reset overlay for vector table (0x000000 - 0x000007)
     if mmu.reset_overlay && a < 8 {
@@ -496,7 +527,10 @@ fn mmu_read8(mmu: M68kMMU&, addr: u32) -> u8 {
     if (a & 0xFFFFC0) == 0xE88000 {
         if (a & 1) != 0 {
             let reg = ((a & 0x3F) >> 1) as i32;
-            return mfp_read(mmu.mfp, reg);
+            let v = mfp_read(mmu.mfp, reg);
+            // GPIP0 is the RTC ALARM output.
+            if reg == 0 { return (v & 0xFE) | (if rtc_alarm_pin(mmu.rtc) { 1 } else { 0 }); }
+            return v;
         }
         return 0xFF;
     }
@@ -550,9 +584,9 @@ fn mmu_read8(mmu: M68kMMU&, addr: u32) -> u8 {
         return 0xFF;
     }
 
-    // 0x00E8A000: RTC
-    if (a & 0xFFFF00) == 0xE8A000 {
-        return 0;
+    // 0x00E8A000 - 0x00E8BFFF: RTC (RP5C15)
+    if (a & 0xFFE000) == 0xE8A000 {
+        return rtc_read(mmu.rtc, (a & 31) as i32);
     }
 
     // 0x00E84000: DMAC
@@ -591,7 +625,10 @@ fn mmu_read8(mmu: M68kMMU&, addr: u32) -> u8 {
 // 8-bit Write
 fn mmu_write8(mmu: M68kMMU&, addr: u32, val: u8) {
     let a = addr & 0x00FFFFFF;
-    if mmu.cpu_access && (mmu.fault != 0 || mmu.user_mode || a >= 0xE86000) && mmu_check8(mmu, a, true) { return; }
+    if mmu.cpu_access {
+        if (mmu.fault != 0 || mmu.user_mode || a >= 0xE86000) && mmu_check8(mmu, a, true) { return; }
+        mmu.wait40 += mmu_wait40(a);
+    }
 
     // Reset overlay is disabled on any write to RAM
     if a < 0xC00000 {
@@ -734,6 +771,12 @@ fn mmu_write8(mmu: M68kMMU&, addr: u32, val: u8) {
         return;
     }
 
+    // 0x00E8A000 - 0x00E8BFFF: RTC (RP5C15)
+    if (a & 0xFFE000) == 0xE8A000 {
+        rtc_write(mmu.rtc, (a & 31) as i32, val);
+        return;
+    }
+
     // 0x00E9A000 - 0x00E9A007: JoyPort / PIA (8255)
     if (a & 0xFFFF00) == 0xE9A000 {
         if a == 0xE9A005 || a == 0xE9A007 {
@@ -835,14 +878,20 @@ fn mmu_read16(mmu: M68kMMU&, addr: u32) -> u16 {
     let a = addr & 0x00FFFFFF;
     if mmu.cpu_access && (mmu.fault != 0 || (a & 1) != 0 || mmu.user_mode) && mmu_check_wide(mmu, a, false) { return 0xFFFF; }
     if !(mmu.reset_overlay && a < 8) && mmu_ram16(addr) {
+        if mmu.cpu_access { mmu.wait40 += 5; }
         return x68k_ram_read16(a as i32);
     }
+    let wait = mmu.wait40 + mmu_wait40(a);
+    var v: u16 = 0;
     if mmu_byte_port(a) {
-        return 0xFF00 | (mmu_read8(mmu, addr + 1) as u16);
+        v = 0xFF00 | (mmu_read8(mmu, addr + 1) as u16);
+    } else {
+        let hi = mmu_read8(mmu, addr) as u16;
+        let lo = mmu_read8(mmu, addr + 1) as u16;
+        v = (hi << 8) | lo;
     }
-    let hi = mmu_read8(mmu, addr) as u16;
-    let lo = mmu_read8(mmu, addr + 1) as u16;
-    return (hi << 8) | lo;
+    if mmu.cpu_access { mmu.wait40 = wait; }
+    return v;
 }
 
 // 16-bit Big-Endian Write
@@ -850,16 +899,19 @@ fn mmu_write16(mmu: M68kMMU&, addr: u32, val: u16) {
     let a = addr & 0x00FFFFFF;
     if mmu.cpu_access && (mmu.fault != 0 || (a & 1) != 0 || mmu.user_mode) && mmu_check_wide(mmu, a, true) { return; }
     if mmu_ram16(addr) {
+        if mmu.cpu_access { mmu.wait40 += 5; }
         mmu.reset_overlay = false;
         x68k_ram_write16(a as i32, val);
         return;
     }
+    let wait = mmu.wait40 + mmu_wait40(a);
     if mmu_byte_port(a) {
         mmu_write8(mmu, addr + 1, (val & 0xFF) as u8);
-        return;
+    } else {
+        mmu_write8(mmu, addr, ((val >> 8) & 0xFF) as u8);
+        mmu_write8(mmu, addr + 1, (val & 0xFF) as u8);
     }
-    mmu_write8(mmu, addr, ((val >> 8) & 0xFF) as u8);
-    mmu_write8(mmu, addr + 1, (val & 0xFF) as u8);
+    if mmu.cpu_access { mmu.wait40 = wait; }
 }
 
 // 32-bit Big-Endian Read
@@ -867,6 +919,7 @@ fn mmu_read32(mmu: M68kMMU&, addr: u32) -> u32 {
     let a = addr & 0x00FFFFFF;
     if mmu.cpu_access && (mmu.fault != 0 || (a & 1) != 0 || mmu.user_mode) && mmu_check_wide(mmu, a, false) { return 0xFFFFFFFF; }
     if !(mmu.reset_overlay && a < 8) && mmu_ram32(addr) {
+        if mmu.cpu_access { mmu.wait40 += 10; }
         return x68k_ram_read32(a as i32);
     }
     let hi = mmu_read16(mmu, addr) as u32;
@@ -879,6 +932,7 @@ fn mmu_write32(mmu: M68kMMU&, addr: u32, val: u32) {
     let a = addr & 0x00FFFFFF;
     if mmu.cpu_access && (mmu.fault != 0 || (a & 1) != 0 || mmu.user_mode) && mmu_check_wide(mmu, a, true) { return; }
     if mmu_ram32(addr) {
+        if mmu.cpu_access { mmu.wait40 += 10; }
         mmu.reset_overlay = false;
         x68k_ram_write32(a as i32, val);
         return;

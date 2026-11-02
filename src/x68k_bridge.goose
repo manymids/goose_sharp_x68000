@@ -48,6 +48,7 @@ extern fn c_get_cpu_mhz() -> i32;
 extern fn c_file_read(path: const u8&, path_len: i32, out_buf: u8&, max_len: i32) -> i32;
 extern fn c_file_write(path: const u8&, path_len: i32, buf: const u8&, len: i32) -> i32;
 extern fn c_last_path_len() -> i32;
+extern fn c_host_local_seconds() -> i64;
 
 extern fn c_save_fb_bmp(path: const u8&, path_len: i32) -> i32;
 extern fn c_save_fb_png(path: const u8&, path_len: i32) -> i32;

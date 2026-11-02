@@ -115,7 +115,7 @@ hdd=
 | CPU / RAM | Motorola 68000、RAM 12MB固定 |
 | クロック | 10 / 16 / 25 / 50 / 75 / 100 / 150 / 200 / 250 MHz |
 | 映像 | TVRAM/GVRAM、CRTC、パレット、スプライト、BG、面の合成 |
-| 周辺機器 | MFP、FDC、DMAC、SASIの実装 |
+| 周辺機器 | MFP、FDC、DMAC、SASI、RTC（RP5C15）の実装 |
 | フロッピー | FD0・FD1、raw `.2HD` / `.xdf`、DIM、D88。rawイメージとして `.img` / `.bin` も選択可能 |
 | HDD | SASI、`.hdf` / `.hds`、最大40MiB。GUIのHDDメニューでは `.img` も選択可能 |
 | 音声 | YM2151 / ADPCMの合成、Win32 waveOut出力 |
@@ -218,7 +218,7 @@ Gooseがソースと同じフォルダの [src/main.build](src/main.build) を�
 |---|---|
 | [src/main.goose](src/main.goose) | 起動引数・GUI/ARCLのイベントループ |
 | `src/m68k_*` | CPU命令・MMU |
-| `src/x68k_mfp/fdc/dmac/sasi.goose` | 周辺機器 |
+| `src/x68k_mfp/fdc/dmac/sasi/rtc.goose` | 周辺機器 |
 | [src/x68k_ppu.goose](src/x68k_ppu.goose) | 走査線・描画合成 |
 | [src/x68k_emu.goose](src/x68k_emu.goose) | フレーム進行と共通リセット |
 | [src/x68k_state.goose](src/x68k_state.goose) | 通常保存・snapshot・rewindの共通保存 |

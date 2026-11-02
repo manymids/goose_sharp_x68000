@@ -63,6 +63,8 @@ void c_startup_error(void);
 int c_file_read(const uint8_t *path, int path_len, void *out_buf, int max_len);
 int c_file_write(const uint8_t *path, int path_len, const void *buf, int len);
 int c_last_path_len(void);
+/* Host local time as seconds since 1970-01-01 of the local calendar. */
+int64_t c_host_local_seconds(void);
 
 // BMP screenshot saver
 int c_save_fb_bmp(const uint8_t *path, int path_len);

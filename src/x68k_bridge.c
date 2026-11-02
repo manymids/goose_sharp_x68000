@@ -7,6 +7,7 @@
 #include <string.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <time.h>
 #include "x68k_bridge.h"
 #include "sound/x68k_sound.h"
 
@@ -134,6 +135,14 @@ void c_io_write_line(const void *data, int len) {
 static int g_last_path_len;
 
 int c_last_path_len(void) { return g_last_path_len; }
+
+int64_t c_host_local_seconds(void) {
+    time_t now = time(NULL);
+    struct tm local;
+    if (localtime_s(&local, &now) != 0) return (int64_t)now;
+    /* _mkgmtime reads the local fields as UTC: seconds of the local calendar. */
+    return (int64_t)_mkgmtime(&local);
+}
 
 static void bind_path(const uint8_t *p, int len, char *dst, int cap) {
     int n;

@@ -841,12 +841,13 @@ fn mcp_control_call(emu: X68kEmulator&, tool_name: const u8[:], args: const u8[:
 
     if tool_name == "arcl_step" {
         let pc_before = emu.cpu.pc;
-        x68k_emu_step(emu);
+        let cycles = x68k_emu_step(emu);
         var before_str: u8[>..] = []; hex_u32(pc_before, before_str);
         var after_str: u8[>..] = []; hex_u32(emu.cpu.pc, after_str);
         var sr_str: u8[>..] = []; hex_u16(emu.cpu.sr, sr_str);
         var obj: u8[>..] = [];
-        format(obj, "{\"pc_before\":\"", before_str, "\",\"pc\":\"", after_str, "\",\"sr\":\"", sr_str, "\"");
+        // cycles: CPU clocks the instruction took, bus waits included.
+        format(obj, "{\"pc_before\":\"", before_str, "\",\"pc\":\"", after_str, "\",\"sr\":\"", sr_str, "\",\"cycles\":", cycles);
         append_machine(obj, emu, 0, false, true);
         obj.append("}");
         mcp_write_object(id_buf, obj);
@@ -1412,7 +1413,7 @@ fn mcp_checkpoint_call(emu: X68kEmulator&, tool_name: const u8[:], args: const u
     }
 
     if tool_name == "arcl_speed" {
-        let nom = if (emu.mmu.crtc_regs[0x29] & 0x10) != 0 { 55 } else { 61 };
+        let nom = (10000000 / x68k_frame_cycles10(emu.mmu)) as i32;
         var fps: i32 = 0;
         var pct: i32 = 0;
         var running = false;
@@ -2134,7 +2135,8 @@ fn mcp_dispatch(emu: X68kEmulator&, line: const u8[:], is_running: bool&) {
             let crtc_line = (((emu.mmu.crtc_regs[0x12] as i32) << 8) | (emu.mmu.crtc_regs[0x13] as i32)) & 1023;
             var obj: u8[>..] = [];
             obj.append("{\"mfp\":{\"gpip\":");
-            push_hex_byte(obj, emu.mmu.mfp.regs[MFP_GPIP] as i32);
+            // The live input lines as the CPU reads them (V-DISP, H-SYNC, raster, RTC ALARM).
+            push_hex_byte(obj, mmu_read8(emu.mmu, 0xE88001) as i32);
             obj.append(",\"aer\":");
             push_hex_byte(obj, emu.mmu.mfp.regs[MFP_AER] as i32);
             obj.append(",\"ddr\":");

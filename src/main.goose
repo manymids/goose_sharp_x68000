@@ -193,6 +193,9 @@ fn main() {
     var emu = X68kEmulator {};
     emu.clock_mhz = c_get_cpu_mhz();
     x68k_emu_init(emu);
+    // The GUI clock follows the host; ARCL and headless runs start at XEiJ's fixed 2026-01-01
+    // so that runs replay identically.
+    if !mcp_mode && !no_window { rtc_init(emu.mmu.rtc, c_host_local_seconds()); }
 
     if !mcp_mode {
         print("=================================================");
@@ -329,10 +332,8 @@ fn main() {
             // 画面描画
             win32_ui_render_fb();
 
-            // CRTC 0x29 bit4 が立っているときが 31kHz（約 55.46Hz、18031 us）。
-            // 落ちているときが 15kHz（超連射68K、約 61.46Hz、16271 us）。
-            let is_31k = (emu.mmu.crtc_regs[0x29] & 0x10) != 0;
-            let frame_period_us: u64 = if is_31k { 18031 } else { 16271 };
+            // The frame the CRTC programs (768x512 31 kHz: about 18031 us, 55.46 Hz).
+            let frame_period_us: u64 = (x68k_frame_cycles10(emu.mmu) / 10) as u64;
 
             target_time_us += frame_period_us;
             let now_us = win32_ui_get_time_us();

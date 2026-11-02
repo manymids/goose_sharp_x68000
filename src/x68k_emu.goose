@@ -124,6 +124,7 @@ fn x68k_emu_step_core(emu: X68kEmulator&) -> i32 {
     emu.clk_used -= usedclk * mhz;
     if usedclk > 0 {
         mfp_step_timers(emu.mmu.mfp, usedclk);
+        emu.mmu.rtc.now += usedclk as i64; // 0.1 us
     }
 
     // MFP 割り込みチェック (Level 6)
@@ -187,20 +188,39 @@ fn x68k_emu_step_core(emu: X68kEmulator&) -> i32 {
     return cycles;
 }
 
+// Lines per frame: R04 + 1.
+fn x68k_frame_lines(mmu: M68kMMU&) -> i32 {
+    let v = ((((mmu.crtc_regs[8] as i32) << 8) | (mmu.crtc_regs[9] as i32)) & 1023) + 1;
+    return if v > 1 { v } else { 568 };
+}
+
+// Frame length in 0.1 us (10 MHz clocks) from the CRTC, as XEiJ derives it: the oscillator and
+// divider chosen by HRL ($E8E007 bit 1) and R20 (bit 4 high resolution, bits 1-0 horizontal),
+// times 8 dots, R00 + 1 columns and R04 + 1 lines.
+fn x68k_frame_cycles10(mmu: M68kMMU&) -> i64 {
+    let oscs: i64[3] = [38863632, 69551900, 50349800];
+    let osc_of: i32[16] = [0, 0, 0, 0, 1, 1, 1, 2, 0, 0, 0, 0, 1, 1, 1, 2];
+    let div_of: i64[16] = [8, 4, 8, 8, 6, 3, 2, 2, 8, 4, 8, 8, 8, 4, 2, 2];
+    let r20 = mmu.crtc_regs[0x29] as i32;
+    let hrl = ((mmu.sysport_keyctrl >> 1) & 1) as i32;
+    let k = (hrl << 3) | ((r20 >> 2) & 4) | (r20 & 3);
+    let columns = (mmu.crtc_regs[0x01] as i64) + 1;
+    let lines = x68k_frame_lines(mmu) as i64;
+    if columns < 2 { return if (r20 & 0x10) != 0 { 180310 } else { 162707 }; }
+    return 8 * div_of[k] * columns * lines * 10000000 / oscs[osc_of[k]];
+}
+
 // 1フレーム分のエミュレーション実行 (px68k WinX68k_Exec 走査線駆動準拠)
 fn x68k_emu_run_frame(emu: X68kEmulator&) {
     assert(x68k_emu_active(emu));
     c_set_current_frame(emu.total_frames as i32);
     // bit4 が立っているのは 31kHz（px68k VID_MODE = MODE_HIGH）。サイクル予算の数値はそのまま。
     let is_31k = (emu.mmu.crtc_regs[0x29] & 0x10) != 0;
-    let vsync_base: i32 = if is_31k { 180310 } else { 162707 };
+    let vsync_base: i32 = x68k_frame_cycles10(emu.mmu) as i32;
     let mhz = if emu.clock_mhz > 0 { emu.clock_mhz } else { 10 };
     let clk_total = (vsync_base * mhz) / 10;
 
-    var vline_total = ((((emu.mmu.crtc_regs[8] as i32) << 8) | (emu.mmu.crtc_regs[9] as i32)) & 1023);
-    if vline_total <= 0 {
-        vline_total = if is_31k { 263 } else { 567 };
-    }
+    let vline_total = x68k_frame_lines(emu.mmu);
 
     // ゲームはフレーム途中でラスタ割り込みラインを書き換える。px68k は毎ライン
     // CRTC_IntLine / VSTART / VEND を読む。先頭で固定すると下側のスプライト更新が走らない。
@@ -210,8 +230,9 @@ fn x68k_emu_run_frame(emu: X68kEmulator&) {
 
     let hsync_clk = clk_total / vline_total;
     let htotal = if emu.mmu.crtc_regs[0x01] > 0 { emu.mmu.crtc_regs[0x01] as i32 } else { 137 };
-    let hstart = ((emu.mmu.crtc_regs[0x05] as i32) * hsync_clk) / htotal;
-    let hend   = ((emu.mmu.crtc_regs[0x07] as i32) * hsync_clk) / htotal;
+    // GPIP7 is high during the horizontal sync pulse only (XEiJ): R01 + 1 of R00 + 1 columns.
+    let hstart = (((emu.mmu.crtc_regs[0x03] as i32) + 1) * hsync_clk) / (htotal + 1);
+    let hend   = hsync_clk;
 
     emu.mmu.mfp.hsync_clk = hsync_clk;
     emu.mmu.mfp.hsync_start = hstart;
