@@ -152,6 +152,7 @@ fn ea_write_for_rmw(cpu: M68kCPU&, mmu: M68kMMU&, mode: i32, reg: i32, size: i32
         return;
     }
     if mode == 1 { // An
+        if mmu.fault != 0 { return; }
         if size == 2 {
             cpu.a[reg] = ((val as! i16) as! i32) as! u32;
         } else {
@@ -199,6 +200,7 @@ fn ea_write(cpu: M68kCPU&, mmu: M68kMMU&, mode: i32, reg: i32, size: i32, val: u
         return;
     }
     if mode == 1 { // An
+        if mmu.fault != 0 { return; }
         if size == 2 {
             cpu.a[reg] = ((val as! i16) as! i32) as! u32;
         } else {
@@ -608,6 +610,8 @@ fn exec_op0(cpu: M68kCPU&, mmu: M68kMMU&, op: u16) -> i32 {
 }
 
 fn m68k_trigger_exception(cpu: M68kCPU&, mmu: M68kMMU&, vector: i32, return_pc: u32) {
+    if mmu.fault != 0 { return; }
+    mmu.user_mode = false;
     if !cpu_is_supervisor(cpu) {
         cpu.usp = cpu.a[REG_A7];
         cpu.a[REG_A7] = cpu.ssp;
@@ -726,7 +730,8 @@ fn exec_op4(cpu: M68kCPU&, mmu: M68kMMU&, op: u16) -> i32 {
     if (op & 0xFFF8) == 0x4E58 {
         let areg = (op & 0x07) as! i32;
         cpu.a[REG_A7] = cpu.a[areg];
-        cpu.a[areg] = pop32(cpu, mmu);
+        let saved = pop32(cpu, mmu);
+        if mmu.fault == 0 { cpu.a[areg] = saved; }
         return 12;
     }
 
@@ -799,15 +804,15 @@ fn exec_op4(cpu: M68kCPU&, mmu: M68kMMU&, op: u16) -> i32 {
                     if is_long {
                         let val = mmu_read32(mmu, addr);
                         addr += 4;
-                        if i < 8 { cpu.d[i] = val; } else { cpu.a[i - 8] = val; }
+                        if i < 8 { cpu.d[i] = val; } else if mmu.fault == 0 { cpu.a[i - 8] = val; }
                     } else {
                         let val = (mmu_read16(mmu, addr) as! i16) as! i32 as! u32;
                         addr += 2;
-                        if i < 8 { cpu.d[i] = val; } else { cpu.a[i - 8] = val; }
+                        if i < 8 { cpu.d[i] = val; } else if mmu.fault == 0 { cpu.a[i - 8] = val; }
                     }
                 }
             }
-            if mode == 3 { // (An)+ postincrement
+            if mode == 3 && mmu.fault == 0 { // (An)+ postincrement
                 cpu.a[reg] = addr;
             }
             return movem_cycles(is_long, nregs, mode, false, reg);
@@ -1167,7 +1172,7 @@ fn exec_op9_sub(cpu: M68kCPU&, mmu: M68kMMU&, op: u16) -> i32 {
         let is_long = (opmode == 7);
         let src = ea_read(cpu, mmu, mode, reg, if is_long { 4 } else { 2 });
         let ext_src = if is_long { src } else { ((src as! i16) as! i32) as! u32 };
-        cpu.a[reg_field] -= ext_src;
+        if mmu.fault == 0 { cpu.a[reg_field] -= ext_src; }
         return adda_cycles(is_long, mode, reg);
     }
 
@@ -1262,7 +1267,7 @@ fn exec_opD_add(cpu: M68kCPU&, mmu: M68kMMU&, op: u16) -> i32 {
         let is_long = (opmode == 7);
         let src = ea_read(cpu, mmu, mode, reg, if is_long { 4 } else { 2 });
         let ext_src = if is_long { src } else { ((src as! i16) as! i32) as! u32 };
-        cpu.a[reg_field] += ext_src;
+        if mmu.fault == 0 { cpu.a[reg_field] += ext_src; }
         return adda_cycles(is_long, mode, reg);
     }
 
@@ -1612,7 +1617,9 @@ fn exec_opE_shift_rotate(cpu: M68kCPU&, mmu: M68kMMU&, op: u16) -> i32 {
 // 1命令を実行して消費サイクル数を返す
 // -------------------------------------------------------------
 fn m68k_step_core(cpu: M68kCPU&, mmu: M68kMMU&) -> i32 {
-    cpu.pc &= 0x00FFFFFF;
+    // The 68000 keeps all 32 PC bits even though it drives 24 address lines. The IPL
+    // exception handlers rely on it: vectors such as $02FF0540 carry the vector number
+    // in the top byte, which BSR then pushes for the handler to read.
     if cpu.halted {
         return 4;
     }
@@ -1620,6 +1627,7 @@ fn m68k_step_core(cpu: M68kCPU&, mmu: M68kMMU&) -> i32 {
     let inst_pc = cpu.pc;
     mmu.debug_pc = inst_pc;
     let op = fetch16(cpu, mmu);
+    mmu.cur_ir = op;
     let hi4 = (op >> 12) & 0x0F;
 
     if mmu.trace_steps > 0 {
@@ -1816,32 +1824,51 @@ fn m68k_step_core(cpu: M68kCPU&, mmu: M68kMMU&) -> i32 {
     return 8;
 }
 
-// バスエラーの 14 バイトフレーム。比較 C68K は Vector 2 を取らないので、m68k_step からは呼ばない。
-fn m68k_bus_error(cpu: M68kCPU&, mmu: M68kMMU&, bad_addr: u32, is_write: bool) {
+// Group 0 exception (2 = bus error, 3 = address error) after a faulted instruction.
+// Matches XEiJ: data registers and SR are rolled back, address register updates made
+// before the fault stay, and the frame holds the opcode and the instruction address.
+fn m68k_group0(cpu: M68kCPU&, mmu: M68kMMU&, d: u32[8], sr: u16) {
+    let vector = mmu.fault;
+    let addr = mmu.fault_addr;
+    let write = mmu.fault_write;
+    mmu.fault = 0;
+    mmu.user_mode = false;
+    cpu.d = d;
+    cpu_set_sr(cpu, sr);
     if !cpu_is_supervisor(cpu) {
         cpu.usp = cpu.a[REG_A7];
         cpu.a[REG_A7] = cpu.ssp;
     }
-
-    // Bus error stack frame (7 words = 14 bytes)
-    push32(cpu, mmu, cpu.pc);
-    push16(cpu, mmu, cpu.sr);
-    push16(cpu, mmu, 0);
-    push32(cpu, mmu, bad_addr);
-    let fc: u16 = if is_write { 0 } else { 0x10 };
-    push16(cpu, mmu, fc);
-
+    push32(cpu, mmu, mmu.debug_pc);
+    push16(cpu, mmu, sr);
+    push16(cpu, mmu, mmu.cur_ir);
+    push32(cpu, mmu, addr);
+    push16(cpu, mmu, if write { 0 } else { 0x10 });
+    if mmu.fault != 0 { // fault while stacking: the 68000 halts
+        mmu.fault = 0;
+        cpu.halted = true;
+        return;
+    }
     cpu.sr |= (SR_S as! u16);
     cpu.sr &= ~(SR_T as! u16);
-
-    let handler = mmu_read32(mmu, 8);
-    cpu.pc = handler;
+    cpu.pc = mmu_read32(mmu, ((vector * 4) as! u32));
 }
 
 fn m68k_step(cpu: M68kCPU&, mmu: M68kMMU&) -> i32 {
-    let cycles = m68k_step_core(cpu, mmu);
-    // 比較 C68K は BusErrHandling を読まない。フラグが残っていても Vector 2 にはしない。
-    mmu.bus_error = false;
+    let d = cpu.d;
+    let sr = cpu.sr;
+    mmu.user_mode = !cpu_is_supervisor(cpu);
+    mmu.cpu_access = true;
+    var cycles = m68k_step_core(cpu, mmu);
+    // A jump to an odd address faults in the jumping instruction.
+    if mmu.fault == 0 && (cpu.pc & 1) != 0 && !cpu.halted {
+        mmu_fault(mmu, 3, cpu.pc & 0x00FFFFFF, false);
+    }
+    if mmu.fault != 0 {
+        m68k_group0(cpu, mmu, d, sr);
+        cycles += 50;
+    }
+    mmu.cpu_access = false;
     return cycles;
 }
 
