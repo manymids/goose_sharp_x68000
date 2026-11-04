@@ -1,5 +1,7 @@
 # Goose Sharp X68000
 
+*[English README](README.en.md)*
+
 Goose 言語で CPU・メモリ・周辺機器・描画を実装した、Windows 向けの Sharp X68000 エミュレータです。Win32 GUI と、stdio 経由で外部ツールから操作する ARCL MCP に対応します。`arcl_windows_x68k` からの移植を基に開発しています。
 
 互換性は開発中です。超連射68KとフロッピーなしのX68000版Doomで起動・保存復帰を検証していますが、すべてのソフトや実機の動作を保証するものではありません。BIOS・CG-ROM・OS・ゲーム・ディスクイメージは同梱しません。
