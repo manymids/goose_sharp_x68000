@@ -299,7 +299,9 @@ fn fdc_read(fdc: X68kFDC&, reg: i32) -> u8 {
     return 0;
 }
 
-fn fdc_write_buffer(fdc: X68kFDC&) {
+// data_buf に 1 セクタ分そろったら書き込む。last は DMAC の転送カウンタが尽きたとき (TC)。
+// TC なら EOT を待たずに結果相へ進む。CPU が 1 バイトずつ書く経路は last = false。
+fn fdc_write_buffer(fdc: X68kFDC&, last: bool) {
     if fdc.cmd == 5 || fdc.cmd == 9 {
         let hd = (fdc.prm_buf[1] >> 2) & 1;
         let trk = fdc.cyl * 2 + hd;
@@ -311,6 +313,8 @@ fn fdc_write_buffer(fdc: X68kFDC&) {
         if ok == 0 {
             fdc.st0 |= 0x40;
             fdc.st1 |= 0x04;
+            fdc_ephase_end(fdc);
+        } else if last {
             fdc_ephase_end(fdc);
         } else {
             fdc_next_track(fdc);
@@ -330,7 +334,7 @@ fn fdc_write(fdc: X68kFDC&, reg: i32, val: u8) {
             fdc.data_buf[fdc.wrptr] = val;
             fdc.wrptr++;
             if fdc.wrptr >= fdc.bufnum {
-                fdc_write_buffer(fdc);
+                fdc_write_buffer(fdc, false);
                 fdc.wrptr = 0;
             }
         } else {

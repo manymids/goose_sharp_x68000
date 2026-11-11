@@ -733,7 +733,7 @@ fn mmu_write8(mmu: M68kMMU&, addr: u32, val: u8) {
     // 0x00E84000 - 0x00E840FF: DMAC (HD63450)
     if (a & 0xFFFF00) == 0xE84000 {
         dmac_write(mmu.dmac, a, val);
-        if (mmu.dmac.ch[0].csr & 0x08) != 0 && mmu.fdc.bufnum > 0 && mmu.fdc.wexec == 0 {
+        if (mmu.dmac.ch[0].csr & 0x08) != 0 && mmu.fdc.bufnum > 0 {
             let cpu_access = mmu.cpu_access;
             mmu.cpu_access = false;
             dmac_exec_fdc(mmu.dmac, mmu.fdc, mmu);
@@ -796,7 +796,7 @@ fn mmu_write8(mmu: M68kMMU&, addr: u32, val: u8) {
     if (a & 0xFFFF00) == 0xE94000 {
         let reg = (a & 0x07) as i32;
         fdc_write(mmu.fdc, reg, val);
-        if (mmu.dmac.ch[0].csr & 0x08) != 0 && mmu.fdc.bufnum > 0 && mmu.fdc.wexec == 0 {
+        if (mmu.dmac.ch[0].csr & 0x08) != 0 && mmu.fdc.bufnum > 0 {
             let cpu_access = mmu.cpu_access;
             mmu.cpu_access = false;
             dmac_exec_fdc(mmu.dmac, mmu.fdc, mmu);

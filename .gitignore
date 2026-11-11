@@ -19,6 +19,7 @@
 *.img
 *.xdf
 *.hdf
+*.hdm
 *.hds
 *.bin
 *.dim

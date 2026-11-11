@@ -288,10 +288,17 @@ fn dmac_exec_fdc(dmac: X68kDMAC&, fdc: X68kFDC&, mmu: M68kMMU&) -> bool {
 
     // 1 セクタ転送するたびに FDC_NextTrack。MTC が残っていれば次セクタも続ける。
     while (dmac.ch[0].csr & 0x08) != 0 && fdc.bufnum > 0 {
+    // WriteData 実行中はメモリ → FDC。OCR bit7 (デバイス → メモリ) が立っていれば方向が合わない。
+    let to_disk = fdc.wexec != 0;
+    if to_disk && (dmac.ch[0].ocr & 0x80) != 0 {
+        return false;
+    }
     for i in fdc.bufnum {
-        let b = fdc.data_buf[i];
         let addr = dmac.ch[0].mar & 0x00FFFFFF;
-        if dma_in_ram(addr, 1) {
+        let b = fdc.data_buf[i];
+        if to_disk {
+            fdc.data_buf[i] = mmu_read8(mmu, addr);
+        } else if dma_in_ram(addr, 1) {
             x68k_ram_write(addr as! i32, b);
         } else if addr >= 0xC00000 && addr < 0xE00000 {
             mmu_gvram_cpu_write(mmu, (addr - 0xC00000) as! i32, b, mmu.crtc_regs[0x28]);
@@ -353,7 +360,12 @@ fn dmac_exec_fdc(dmac: X68kDMAC&, fdc: X68kFDC&, mmu: M68kMMU&) -> bool {
         }
     }
 
-    fdc_next_track(fdc);
+    if to_disk {
+        // 転送カウンタが尽きたら TC。残っていれば次のセクタを待つ。
+        fdc_write_buffer(fdc, dmac.ch[0].mtc == 0);
+    } else {
+        fdc_next_track(fdc);
+    }
     }
 
     return true;

@@ -115,10 +115,13 @@ fn type_scancode(ch: u8, code: i32&, shift: i32&) -> bool {
     if ch == '?' { code = 0x33; shift = 1; return true; }
     if ch == ';' { code = 0x27; return true; }
     if ch == '+' { code = 0x27; shift = 1; return true; }
-    if ch == ':' { return true; }
-    if ch == '*' { shift = 1; return true; }
+    if ch == ':' { code = 0x28; return true; }
+    if ch == '*' { code = 0x28; shift = 1; return true; }
     if ch == '@' { code = 0x1b; return true; }
-    if ch == '`' { shift = 1; return true; }
+    if ch == '`' { code = 0x1b; shift = 1; return true; }
+    if ch == '^' { code = 0x0d; return true; }
+    if ch == '~' { code = 0x0d; shift = 1; return true; }
+    if ch == '_' { code = 0x34; shift = 1; return true; }
     if ch == '[' { code = 0x1c; return true; }
     if ch == '{' { code = 0x1c; shift = 1; return true; }
     if ch == '\\' { code = 0x0e; return true; }
