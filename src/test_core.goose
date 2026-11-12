@@ -274,6 +274,56 @@ fn test_exceptions() {
     check_eq("address error stacks the opcode", x68k_ram_read16(0x8000 - 8), 0x3010);
     check_eq("address error stacks the instruction address", x68k_ram_read32(0x8000 - 4), CODE + 6);
 
+    // ILLEGAL はベクタ 4。その命令自身のアドレスを積む。
+    fresh();
+    x68k_ram_write32(0x10, 0x6200);
+    poke(CODE, [0x4AFC]);
+    m68k_step(g_cpu, g_mmu);
+    check_eq("illegal instruction vector", g_cpu.pc, 0x6200);
+    check_eq("illegal instruction stacks its own address", x68k_ram_read32(0x7FFC), CODE);
+
+    // 特権命令をユーザモードで実行するとベクタ 8。どの命令でもその命令自身のアドレスを積む。
+    // RESET / STOP #$2000 / MOVE A0,USP / RTE / MOVE #$2700,SR
+    let privileged: u16[5] = [0x4E70, 0x4E72, 0x4E60, 0x4E73, 0x46FC];
+    for i in privileged.len {
+        fresh();
+        g_cpu.usp = 0x7000;
+        cpu_set_sr(g_cpu, 0x0000);
+        x68k_ram_write32(0x20, 0x6400);
+        // ユーザモードは $2000 未満 (スーパーバイザ領域) を読めないので、その上に置く。
+        poke(0x4800, [privileged[i], 0x2700]);
+        g_cpu.pc = 0x4800;
+        m68k_step(g_cpu, g_mmu);
+        check_eq("privilege violation vector", g_cpu.pc, 0x6400);
+        check_eq("privilege violation stacks the instruction address", x68k_ram_read32(0x7FFC), 0x4800);
+        check_eq("privilege violation stacks the user SR", x68k_ram_read16(0x7FFA), 0x0000);
+        check("privilege violation enters supervisor mode", cpu_is_supervisor(g_cpu));
+    }
+
+    // トレース: T が立っていると 1 命令ごとにベクタ 9。次の命令のアドレスと T 付きの SR を積む。
+    // MOVEQ #1,D0 / MOVEQ #2,D1
+    fresh();
+    g_cpu.sr = 0xA700;
+    x68k_ram_write32(0x24, 0x6600);
+    poke(CODE, [0x7001, 0x7202]);
+    m68k_step(g_cpu, g_mmu);
+    check_eq("traced instruction still runs", g_cpu.d[0], 1);
+    check_eq("trace vector", g_cpu.pc, 0x6600);
+    check_eq("trace stacks the next instruction", x68k_ram_read32(0x7FFC), CODE + 2);
+    check_eq("trace stacks SR with T set", x68k_ram_read16(0x7FFA), 0xA700);
+    check_eq("trace handler runs with T clear", g_cpu.sr & SR_T, 0);
+    check_eq("second instruction has not run", g_cpu.d[1], 0);
+
+    // 命令が自分で例外に入ったときはトレースを重ねない。 TRAP #0
+    fresh();
+    g_cpu.sr = 0xA700;
+    x68k_ram_write32(0x80, 0x6000);
+    x68k_ram_write32(0x24, 0x6600);
+    poke(CODE, [0x4E40]);
+    m68k_step(g_cpu, g_mmu);
+    check_eq("TRAP under trace goes to the TRAP handler", g_cpu.pc, 0x6000);
+    check_eq("TRAP under trace builds one frame", g_cpu.a[REG_A7], 0x7FFA);
+
     // ユーザモードから割り込みを受けると SSP に切り替わる。
     fresh();
     g_cpu.usp = 0x7000;
@@ -328,7 +378,23 @@ fn test_fdc_tables() {
     fdc_write(fdc, 3, 0x05);
     check("Seek raises the interrupt", fdc.int_pending);
     fdc_write(fdc, 3, 0x08);
+    check("peeking the result does not consume it", fdc_peek(fdc, 3) == 0x48 && fdc_peek(fdc, 3) == 0x48);
     check("SenseIntStatus: ST0 abnormal, not ready", fdc_read(fdc, 3) == 0x48);
+    check("reading moves on to the cylinder byte", fdc_peek(fdc, 3) == 0x00 && fdc.rdnum == 1);
+}
+
+// デバッガ用の読み出しは、読むと状態が変わるレジスタを進めない。
+fn test_peek() {
+    fresh();
+    g_mmu.mfp.last_key = 0x41;
+    g_mmu.mfp.key_int_flag = true;
+    check("peek of MFP UDR returns the key", mmu_peek8(g_mmu, 0xE8802F) == 0x41);
+    check("peek of MFP UDR keeps the receive flag", g_mmu.mfp.key_int_flag);
+    check("read of MFP UDR returns the key", mmu_read8(g_mmu, 0xE8802F) == 0x41);
+    check("read of MFP UDR clears the receive flag", !g_mmu.mfp.key_int_flag);
+
+    x68k_ram_write(0x2000, 0x5A);
+    check("peek of RAM is an ordinary read", mmu_peek8(g_mmu, 0x2000) == 0x5A);
 }
 
 fn test_dmac() {
@@ -404,6 +470,7 @@ fn main() {
     test_exceptions();
     test_input();
     test_fdc_tables();
+    test_peek();
     test_dmac();
     test_rtc();
     print(g_checks - g_failures, " / ", g_checks, " checks passed");

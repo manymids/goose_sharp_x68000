@@ -267,6 +267,14 @@ fn fdc_read(fdc: X68kFDC&, reg: i32) -> u8 {
     return 0;
 }
 
+// デバッガ用。データレジスタの次のバイトを、読み位置を進めずに返す。
+fn fdc_peek(fdc: X68kFDC&, reg: i32) -> u8 {
+    if reg != 3 { return fdc_read(fdc, reg); }
+    if fdc.bufnum > 0 { return fdc.data_buf[fdc.rdptr]; }
+    if fdc.rdnum > 0 { return fdc.rsp_buf[fdc.rdptr]; }
+    return 0;
+}
+
 // data_buf に 1 セクタ分そろったら書き込む。last は DMAC の転送カウンタが尽きたとき (TC)。
 // TC なら EOT を待たずに結果相へ進む。CPU が 1 バイトずつ書く経路は last = false。
 fn fdc_write_buffer(fdc: X68kFDC&, last: bool) {

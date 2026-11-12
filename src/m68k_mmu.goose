@@ -617,6 +617,18 @@ fn mmu_read8(mmu: M68kMMU&, addr: u32) -> u8 {
     return 0;
 }
 
+// デバッガ用の読み出し。読むと状態が変わるレジスタ (MFP の UDR、FDC のデータ、SASI) は
+// 状態を進めずに値だけ返す。それ以外は mmu_read8 と同じ。
+fn mmu_peek8(mmu: M68kMMU&, addr: u32) -> u8 {
+    let a = addr & 0x00FFFFFF;
+    if (a & 0xFFFFC0) == 0xE88000 && (a & 1) != 0 && ((a & 0x3F) >> 1) == MFP_UDR {
+        return mmu.mfp.last_key;
+    }
+    if (a & 0xFFFF00) == 0xE94000 { return fdc_peek(mmu.fdc, (a & 0x07) as i32); }
+    if (a & 0x00FFE000) == 0x00E96000 { return sasi_peek(mmu.sasi, a); }
+    return mmu_read8(mmu, addr);
+}
+
 // 8-bit Write
 fn mmu_write8(mmu: M68kMMU&, addr: u32, val: u8) {
     let a = addr & 0x00FFFFFF;

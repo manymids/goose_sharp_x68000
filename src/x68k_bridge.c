@@ -686,7 +686,12 @@ int x68k_mem_init(const uint8_t *sys_bytes, int sys_len, const uint8_t *floppy_b
 
 
 
+// GUI だけが sram.dat を書き戻す。ARCL とヘッドレス実行は再現性のために書かない。
+static int g_sram_persist = 1;
+void c_sram_set_persist(int enabled) { g_sram_persist = enabled != 0; }
+
 static void save_sram_file(void) {
+    if (!g_sram_persist) return;
     char path[MAX_PATH];
     FILE *f;
     if (!g_mem_ready || !g_sram || !g_sys_dir[0]) return;

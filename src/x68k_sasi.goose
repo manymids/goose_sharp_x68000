@@ -205,6 +205,18 @@ fn sasi_note_status(sasi: X68kSASI&) {
     if sasi.phase == SasiPhase.Status { sasi.status_edge = true; }
 }
 
+// デバッガ用。フェーズもバッファ位置も進めずに、次に読めるはずの値を返す。
+fn sasi_peek(sasi: X68kSASI&, adr: u32) -> u8 {
+    if adr == 0xE96003 { return sasi_bus_status(sasi); }
+    if adr != 0xE96001 { return 0; }
+    match sasi.phase {
+        Data => if sasi.direction == SasiDirection.DiskToHost { sasi.buf[sasi.buf_ptr] } else { 0 },
+        Status => if sasi.error != 0 { 0x02 } else { sasi.stat },
+        Sense => sasi.sense[sasi.sense_ptr],
+        BusFree, Selected, Command, Message, Specify => 0,
+    }
+}
+
 fn sasi_read(sasi: X68kSASI&, adr: u32) -> u8 {
     sasi_pull_host_reset(sasi);
     var ret: u8 = 0;

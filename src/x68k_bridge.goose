@@ -61,6 +61,7 @@ extern fn c_host_list_dir(path: const u8&, path_len: i32, out: u8&, cap: i32) ->
 extern fn x68k_mem_init(sys_dir: const u8&, sys_len: i32, floppy_path: const u8&, floppy_len: i32) -> i32;
 extern fn c_mem_set_ram_mb(mb: i32) -> i32;
 extern fn x68k_mem_destroy();
+extern fn c_sram_set_persist(enabled: i32);
 
 extern fn c_mem_read_tvram(off: i32) -> u8;
 extern fn c_frame_ready() -> i32;

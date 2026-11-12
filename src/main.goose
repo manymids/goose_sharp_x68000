@@ -288,6 +288,8 @@ fn main() {
     }
     let gui_preferences = !mcp_mode && !no_window;
     c_gui_settings_open(if gui_preferences { 1 } else { 0 });
+    // ARCL とヘッドレス実行は毎回同じ SRAM から始める。終了時に sram.dat を書き戻すのは GUI だけ。
+    c_sram_set_persist(if gui_preferences { 1 } else { 0 });
     if !sys_set { sys_dir = gui_settings_path(GUI_BIOS); }
     if !clock_set { clock_mhz = c_gui_settings_int(GUI_CLOCK); }
     if !mode_set { screen_w = c_gui_settings_int(GUI_WIDTH); }

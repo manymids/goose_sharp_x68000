@@ -1779,7 +1779,7 @@ fn mcp_debug_call(emu: X68kEmulator&, tool_name: const u8[:], args: const u8[:],
         let hex_chars = "0123456789abcdef";
         var data_hex: u8[>..] = [];
         for i in read_len {
-            let b = mmu_read8(emu.mmu, addr + (i as u32));
+            let b = mmu_peek8(emu.mmu, addr + (i as u32));
             data_hex.push(hex_chars[((b >> 4) & 0x0F) as i32]);
             data_hex.push(hex_chars[(b & 0x0F) as i32]);
         }

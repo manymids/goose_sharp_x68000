@@ -463,7 +463,8 @@ fn ea_is_data(mode: i32, reg: i32) -> bool {
 }
 
 fn raise_illegal(cpu: M68kCPU&, mmu: M68kMMU&) -> i32 {
-    m68k_trigger_exception(cpu, mmu, 4, cpu.pc - 2);
+    // 不当命令と特権違反は、その命令自身のアドレスを積む。
+    m68k_trigger_exception(cpu, mmu, 4, mmu.inst_pc);
     return 34;
 }
 
@@ -630,7 +631,7 @@ fn exec_op0(cpu: M68kCPU&, mmu: M68kMMU&, op: u16) -> i32 {
         // ORI/ANDI/EORI to SR はユーザーモードで Vector 8。即値は読まない（C68K と同じ）。
         if size == 2 && mode == 7 && reg == 4 && (imm_op == 0 || imm_op == 1 || imm_op == 5) {
             if !cpu_is_supervisor(cpu) {
-                m68k_trigger_exception(cpu, mmu, 8, cpu.pc);
+                m68k_trigger_exception(cpu, mmu, 8, mmu.inst_pc);
                 return 34;
             }
         }
@@ -697,6 +698,7 @@ fn exec_op0(cpu: M68kCPU&, mmu: M68kMMU&, op: u16) -> i32 {
 
 fn m68k_trigger_exception(cpu: M68kCPU&, mmu: M68kMMU&, vector: i32, return_pc: u32) {
     if mmu.fault != 0 { return; }
+    cpu.took_exception = true;
     mmu.user_mode = false;
     if !cpu_is_supervisor(cpu) {
         cpu.usp = cpu.a[REG_A7];
@@ -722,7 +724,7 @@ fn exec_op4(cpu: M68kCPU&, mmu: M68kMMU&, op: u16) -> i32 {
     // RESET (0x4E70)。px68k の Reset_CallBack は C68k_Reset_Dummy で、周辺は変えない。
     if op == 0x4E70 {
         if !cpu_is_supervisor(cpu) {
-            m68k_trigger_exception(cpu, mmu, 8, cpu.pc);
+            m68k_trigger_exception(cpu, mmu, 8, mmu.inst_pc);
             return 34;
         }
         return 132;
@@ -730,7 +732,7 @@ fn exec_op4(cpu: M68kCPU&, mmu: M68kMMU&, op: u16) -> i32 {
     // STOP #imm (0x4E72)
     if op == 0x4E72 {
         if !cpu_is_supervisor(cpu) {
-            m68k_trigger_exception(cpu, mmu, 8, cpu.pc - 2);
+            m68k_trigger_exception(cpu, mmu, 8, mmu.inst_pc);
             return 34;
         }
         let imm = fetch16(cpu, mmu);
@@ -743,7 +745,7 @@ fn exec_op4(cpu: M68kCPU&, mmu: M68kMMU&, op: u16) -> i32 {
     // RTE (0x4E73)
     if op == 0x4E73 {
         if !cpu_is_supervisor(cpu) {
-            m68k_trigger_exception(cpu, mmu, 8, cpu.pc);
+            m68k_trigger_exception(cpu, mmu, 8, mmu.inst_pc);
             return 34;
         }
         let new_sr = pop16(cpu, mmu);
@@ -824,7 +826,7 @@ fn exec_op4(cpu: M68kCPU&, mmu: M68kMMU&, op: u16) -> i32 {
     // MOVE USP (0100 1110 0110 drrr)
     if (op & 0xFFF0) == 0x4E60 {
         if !cpu_is_supervisor(cpu) {
-            m68k_trigger_exception(cpu, mmu, 8, cpu.pc);
+            m68k_trigger_exception(cpu, mmu, 8, mmu.inst_pc);
             return 34;
         }
         let areg = (op & 0x07) as! i32;
@@ -924,7 +926,7 @@ fn exec_op4(cpu: M68kCPU&, mmu: M68kMMU&, op: u16) -> i32 {
     // MOVE to SR (0100 0110 11 eee eee)
     if (op & 0xFFC0) == 0x46C0 {
         if !cpu_is_supervisor(cpu) {
-            m68k_trigger_exception(cpu, mmu, 8, cpu.pc);
+            m68k_trigger_exception(cpu, mmu, 8, mmu.inst_pc);
             return 34;
         }
         let val = ea_read(cpu, mmu, mode, reg, 2) as! u16;
@@ -1759,6 +1761,9 @@ fn m68k_group0(cpu: M68kCPU&, mmu: M68kMMU&, d: u32[8], sr: u16) {
 fn m68k_step(cpu: M68kCPU&, mmu: M68kMMU&) -> i32 {
     let d = cpu.d;
     let sr = cpu.sr;
+    // トレースは命令を始める時点の T ビットで決まる。
+    let traced = (sr & SR_T) != 0;
+    cpu.took_exception = false;
     mmu.user_mode = !cpu_is_supervisor(cpu);
     mmu.cpu_access = true;
     var cycles = m68k_step_core(cpu, mmu);
@@ -1769,6 +1774,10 @@ fn m68k_step(cpu: M68kCPU&, mmu: M68kMMU&) -> i32 {
     if mmu.fault != 0 {
         m68k_group0(cpu, mmu, d, sr);
         cycles += 50;
+    } else if traced && !cpu.took_exception && !cpu.halted {
+        // トレース例外 (ベクタ 9)。次の命令のアドレスを積む。命令が別の例外へ入ったときは重ねない。
+        m68k_trigger_exception(cpu, mmu, 9, cpu.pc);
+        cycles += 34;
     }
     mmu.cpu_access = false;
     cycles += mmu.wait40 / 40;

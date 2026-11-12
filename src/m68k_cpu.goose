@@ -10,6 +10,8 @@ struct M68kCPU {
     usp: u32 = 0,           // User Stack Pointer
     ssp: u32 = 0,           // Supervisor Stack Pointer
     halted: bool = false,
+    // この命令の実行中に例外処理へ入った (トレース例外を重ねないための印)
+    took_exception: bool = false,
 }
 
 fn cpu_flag_c(cpu: M68kCPU&) -> bool { (cpu.sr & SR_C) != 0 }
