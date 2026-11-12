@@ -801,450 +801,472 @@ fn mcp_control_call(emu: X68kEmulator&, tool_name: const u8[:], args: const u8[:
     return false;
 }
 
-fn mcp_input_call(emu: X68kEmulator&, tool_name: const u8[:], args: const u8[:], id_buf: const u8[:]) -> bool {
-    if tool_name == "arcl_key" {
-        var key_name: u8[>..] = [];
-        if !extract_json_str(args, "key", key_name) {
-            mcp_write_text(id_buf, "missing required string field 'key'", true);
-            return true;
+fn mcp_tool_key(emu: X68kEmulator&, args: const u8[:], id_buf: const u8[:]) {
+    var key_name: u8[>..] = [];
+    if !extract_json_str(args, "key", key_name) {
+        mcp_write_text(id_buf, "missing required string field 'key'", true);
+        return;
+    }
+    var act_buf: u8[>..] = [];
+    if !extract_json_str(args, "action", act_buf) {
+        mcp_write_text(id_buf, "missing required string field 'action' (press/release/tap)", true);
+        return;
+    }
+    let code = key_code(key_name);
+    if code == KEY_BLOCKED {
+        mcp_write_text(id_buf, "this key is blocked from arcl_key: it triggers a core-internal side effect (F12 opens the built-in menu, ScrollLock toggles MIDI); see x68k_mcp.md 6.1", true);
+        return;
+    }
+    if code < 0 {
+        mcp_write_text(id_buf, "unmapped key name; see x68k_mcp.md for the supported key set", true);
+        return;
+    }
+    if act_buf == "press" {
+        input_key(emu, code, true);
+    } else if act_buf == "release" {
+        input_key(emu, code, false);
+    } else if act_buf == "tap" {
+        let frames = extract_json_int(args, "frames", 1);
+        if frames < 1 || frames > 3600 {
+            mcp_write_text(id_buf, "frames must be between 1 and 3600", true);
+            return;
         }
-        var act_buf: u8[>..] = [];
-        if !extract_json_str(args, "action", act_buf) {
-            mcp_write_text(id_buf, "missing required string field 'action' (press/release/tap)", true);
-            return true;
+        session_key_tap(emu, code, frames);
+        var obj: u8[>..] = [];
+        format(obj, "{\"key\":\"", key_name, "\",\"action\":\"tap\"");
+        append_machine(obj, emu, frames, true, true);
+        obj.append("}");
+        mcp_write_object(id_buf, obj);
+        return;
+    } else {
+        mcp_write_text(id_buf, "action must be press, release, or tap", true);
+        return;
+    }
+    var obj: u8[>..] = [];
+    format(obj, "{\"key\":\"", key_name, "\",\"action\":\"", act_buf, "\"");
+    append_machine(obj, emu, 0, false, true);
+    obj.append("}");
+    mcp_write_object(id_buf, obj);
+}
+
+fn mcp_tool_type(emu: X68kEmulator&, args: const u8[:], id_buf: const u8[:]) {
+    var text: u8[>..] = [];
+    if !extract_json_str(args, "text", text) || text.len > 256 {
+        mcp_write_text(id_buf, "missing required string field 'text'", true);
+        return;
+    }
+    let hold = extract_json_int(args, "frames", 2);
+    if hold < 1 || hold > 3600 {
+        mcp_write_text(id_buf, "frames must be between 1 and 3600", true);
+        return;
+    }
+    for i in text.len {
+        if !type_has_key(text[i]) {
+            let hex = "0123456789abcdef";
+            var shown = text[i];
+            if shown < 0x20 || shown >= 0x7f { shown = '?'; }
+            var msg: u8[>..] = [];
+            msg.append("character '");
+            msg.push(shown);
+            msg.append("' (0x");
+            msg.push(hex[((text[i] >> 4) & 0x0F) as i32]);
+            msg.push(hex[(text[i] & 0x0F) as i32]);
+            format(msg, ") at position ", i, " has no mapped key on this keyboard model");
+            mcp_write_text(id_buf, msg, true);
+            return;
         }
-        let code = key_code(key_name);
-        if code == KEY_BLOCKED {
-            mcp_write_text(id_buf, "this key is blocked from arcl_key: it triggers a core-internal side effect (F12 opens the built-in menu, ScrollLock toggles MIDI); see x68k_mcp.md 6.1", true);
-            return true;
-        }
-        if code < 0 {
-            mcp_write_text(id_buf, "unmapped key name; see x68k_mcp.md for the supported key set", true);
-            return true;
-        }
-        if act_buf == "press" {
-            input_key(emu, code, true);
-        } else if act_buf == "release" {
-            input_key(emu, code, false);
-        } else if act_buf == "tap" {
+    }
+    var frames_used: i32 = 0;
+    for i in text.len {
+        frames_used += session_type_char(emu, text[i], hold);
+    }
+    var obj: u8[>..] = [];
+    format(obj, "{\"chars_typed\":", text.len);
+    append_machine(obj, emu, frames_used, true, true);
+    obj.append("}");
+    mcp_write_object(id_buf, obj);
+}
+
+fn mcp_tool_clear_input(emu: X68kEmulator&, args: const u8[:], id_buf: const u8[:]) {
+    release_held_keys(emu);
+    var obj: u8[>..] = [];
+    obj.append("{\"cleared\":true");
+    append_machine(obj, emu, 0, false, true);
+    obj.append("}");
+    mcp_write_object(id_buf, obj);
+}
+
+fn mcp_tool_input_state(emu: X68kEmulator&, args: const u8[:], id_buf: const u8[:]) {
+    var obj: u8[>..] = [];
+    obj.append("{\"keys\":[");
+    var first = true;
+    append_named_key(emu, obj, "a", first);
+    append_named_key(emu, obj, "b", first);
+    append_named_key(emu, obj, "space", first);
+    append_named_key(emu, obj, "return", first);
+    append_named_key(emu, obj, "enter", first);
+    append_named_key(emu, obj, "shift", first);
+    append_named_key(emu, obj, "lshift", first);
+    append_named_key(emu, obj, "up", first);
+    append_named_key(emu, obj, "down", first);
+    append_named_key(emu, obj, "left", first);
+    append_named_key(emu, obj, "right", first);
+    obj.append("],\"joypad\":[");
+    var jfirst = true;
+    for port in 2 {
+        var joy = emu.mmu.joy1;
+        if port == 1 { joy = emu.mmu.joy2; }
+        if (joy & 0x01) == 0 { if !jfirst { obj.append(","); } obj.append("{\"port\":"); format(obj, port, ",\"button\":\"up\"}"); jfirst = false; }
+        if (joy & 0x02) == 0 { if !jfirst { obj.append(","); } obj.append("{\"port\":"); format(obj, port, ",\"button\":\"down\"}"); jfirst = false; }
+        if (joy & 0x04) == 0 { if !jfirst { obj.append(","); } obj.append("{\"port\":"); format(obj, port, ",\"button\":\"left\"}"); jfirst = false; }
+        if (joy & 0x08) == 0 { if !jfirst { obj.append(","); } obj.append("{\"port\":"); format(obj, port, ",\"button\":\"right\"}"); jfirst = false; }
+        if (joy & 0x20) == 0 { if !jfirst { obj.append(","); } obj.append("{\"port\":"); format(obj, port, ",\"button\":\"a\"}"); jfirst = false; }
+        if (joy & 0x40) == 0 { if !jfirst { obj.append(","); } obj.append("{\"port\":"); format(obj, port, ",\"button\":\"b\"}"); jfirst = false; }
+    }
+    obj.append("],\"mouse\":{\"left\":false,\"right\":false,\"pending_dx\":0,\"pending_dy\":0}");
+    append_machine(obj, emu, 0, false, true);
+    obj.append("}");
+    mcp_write_object(id_buf, obj);
+}
+
+fn mcp_tool_joypad(emu: X68kEmulator&, args: const u8[:], id_buf: const u8[:]) {
+    var btn_buf: u8[>..] = [];
+    if !extract_json_str(args, "button", btn_buf) {
+        mcp_write_text(id_buf, "missing required string field 'button'", true);
+        return;
+    }
+    var act_buf: u8[>..] = [];
+    if !extract_json_str(args, "action", act_buf) {
+        mcp_write_text(id_buf, "missing required string field 'action' (press/release/tap)", true);
+        return;
+    }
+    let port = extract_json_int(args, "port", 0);
+    if port != 0 && port != 1 {
+        mcp_write_text(id_buf, "port must be 0 or 1", true);
+        return;
+    }
+    let mask = joy_mask(btn_buf);
+    if mask == 0 {
+        mcp_write_text(id_buf, "unmapped joypad button name; see x68k_mcp.md for the supported set", true);
+        return;
+    }
+    var frames_used: i32 = 0;
+    if act_buf == "press" || act_buf == "release" || act_buf == "tap" {
+        if act_buf == "tap" {
             let frames = extract_json_int(args, "frames", 1);
             if frames < 1 || frames > 3600 {
                 mcp_write_text(id_buf, "frames must be between 1 and 3600", true);
-                return true;
+                return;
             }
-            session_key_tap(emu, code, frames);
-            var obj: u8[>..] = [];
-            format(obj, "{\"key\":\"", key_name, "\",\"action\":\"tap\"");
-            append_machine(obj, emu, frames, true, true);
-            obj.append("}");
-            mcp_write_object(id_buf, obj);
-            return true;
-        } else {
-            mcp_write_text(id_buf, "action must be press, release, or tap", true);
-            return true;
+            frames_used = frames;
         }
-        var obj: u8[>..] = [];
-        format(obj, "{\"key\":\"", key_name, "\",\"action\":\"", act_buf, "\"");
-        append_machine(obj, emu, 0, false, true);
-        obj.append("}");
-        mcp_write_object(id_buf, obj);
-        return true;
+        let pressed = act_buf == "press" || act_buf == "tap";
+        if act_buf == "tap" {
+            session_joy_tap(emu, port, mask, frames_used);
+        } else { input_joy(emu, port, mask, pressed); }
+    } else {
+        mcp_write_text(id_buf, "action must be press, release, or tap", true);
+        return;
     }
+    var obj: u8[>..] = [];
+    format(obj, "{\"port\":", port, ",\"button\":\"", btn_buf, "\",\"action\":\"", act_buf, "\"");
+    append_machine(obj, emu, frames_used, act_buf == "tap", true);
+    obj.append("}");
+    mcp_write_object(id_buf, obj);
+}
 
-    if tool_name == "arcl_type" {
-        var text: u8[>..] = [];
-        if !extract_json_str(args, "text", text) || text.len > 256 {
-            mcp_write_text(id_buf, "missing required string field 'text'", true);
-            return true;
-        }
-        let hold = extract_json_int(args, "frames", 2);
-        if hold < 1 || hold > 3600 {
-            mcp_write_text(id_buf, "frames must be between 1 and 3600", true);
-            return true;
-        }
-        for i in text.len {
-            if !type_has_key(text[i]) {
-                let hex = "0123456789abcdef";
-                var shown = text[i];
-                if shown < 0x20 || shown >= 0x7f { shown = '?'; }
-                var msg: u8[>..] = [];
-                msg.append("character '");
-                msg.push(shown);
-                msg.append("' (0x");
-                msg.push(hex[((text[i] >> 4) & 0x0F) as i32]);
-                msg.push(hex[(text[i] & 0x0F) as i32]);
-                format(msg, ") at position ", i, " has no mapped key on this keyboard model");
-                mcp_write_text(id_buf, msg, true);
-                return true;
-            }
-        }
-        var frames_used: i32 = 0;
-        for i in text.len {
-            frames_used += session_type_char(emu, text[i], hold);
-        }
-        var obj: u8[>..] = [];
-        format(obj, "{\"chars_typed\":", text.len);
-        append_machine(obj, emu, frames_used, true, true);
-        obj.append("}");
-        mcp_write_object(id_buf, obj);
-        return true;
+fn mcp_tool_command(emu: X68kEmulator&, args: const u8[:], id_buf: const u8[:]) {
+    var command: u8[>..] = [];
+    if !extract_json_str(args, "command", command) || command.len > 180 {
+        mcp_write_text(id_buf, "missing required string field 'command'", true);
+        return;
     }
-
-    if tool_name == "arcl_clear_input" {
-        release_held_keys(emu);
-        var obj: u8[>..] = [];
-        obj.append("{\"cleared\":true");
-        append_machine(obj, emu, 0, false, true);
-        obj.append("}");
-        mcp_write_object(id_buf, obj);
-        return true;
+    for i in command.len {
+        if !type_has_key(command[i]) {
+            mcp_write_text(id_buf, "arcl_type failed while echoing the command", true);
+            return;
+        }
     }
-
-    if tool_name == "arcl_input_state" {
-        var obj: u8[>..] = [];
-        obj.append("{\"keys\":[");
-        var first = true;
-        append_named_key(emu, obj, "a", first);
-        append_named_key(emu, obj, "b", first);
-        append_named_key(emu, obj, "space", first);
-        append_named_key(emu, obj, "return", first);
-        append_named_key(emu, obj, "enter", first);
-        append_named_key(emu, obj, "shift", first);
-        append_named_key(emu, obj, "lshift", first);
-        append_named_key(emu, obj, "up", first);
-        append_named_key(emu, obj, "down", first);
-        append_named_key(emu, obj, "left", first);
-        append_named_key(emu, obj, "right", first);
-        obj.append("],\"joypad\":[");
-        var jfirst = true;
-        for port in 2 {
-            var joy = emu.mmu.joy1;
-            if port == 1 { joy = emu.mmu.joy2; }
-            if (joy & 0x01) == 0 { if !jfirst { obj.append(","); } obj.append("{\"port\":"); format(obj, port, ",\"button\":\"up\"}"); jfirst = false; }
-            if (joy & 0x02) == 0 { if !jfirst { obj.append(","); } obj.append("{\"port\":"); format(obj, port, ",\"button\":\"down\"}"); jfirst = false; }
-            if (joy & 0x04) == 0 { if !jfirst { obj.append(","); } obj.append("{\"port\":"); format(obj, port, ",\"button\":\"left\"}"); jfirst = false; }
-            if (joy & 0x08) == 0 { if !jfirst { obj.append(","); } obj.append("{\"port\":"); format(obj, port, ",\"button\":\"right\"}"); jfirst = false; }
-            if (joy & 0x20) == 0 { if !jfirst { obj.append(","); } obj.append("{\"port\":"); format(obj, port, ",\"button\":\"a\"}"); jfirst = false; }
-            if (joy & 0x40) == 0 { if !jfirst { obj.append(","); } obj.append("{\"port\":"); format(obj, port, ",\"button\":\"b\"}"); jfirst = false; }
-        }
-        obj.append("],\"mouse\":{\"left\":false,\"right\":false,\"pending_dx\":0,\"pending_dy\":0}");
-        append_machine(obj, emu, 0, false, true);
-        obj.append("}");
-        mcp_write_object(id_buf, obj);
-        return true;
+    var frames_used: i32 = 0;
+    let hold: i32 = 2;
+    for i in command.len {
+        frames_used += session_type_char(emu, command[i], hold);
     }
-
-    if tool_name == "arcl_joypad" {
-        var btn_buf: u8[>..] = [];
-        if !extract_json_str(args, "button", btn_buf) {
-            mcp_write_text(id_buf, "missing required string field 'button'", true);
-            return true;
+    var after: u8[>..] = [];
+    command_line(emu, after);
+    var prompt: u8[>..] = [];
+    var echoed = after.len >= command.len;
+    if echoed {
+        for j in command.len {
+            if after[after.len - command.len + j] != command[j] { echoed = false; }
         }
-        var act_buf: u8[>..] = [];
-        if !extract_json_str(args, "action", act_buf) {
-            mcp_write_text(id_buf, "missing required string field 'action' (press/release/tap)", true);
-            return true;
-        }
-        let port = extract_json_int(args, "port", 0);
-        if port != 0 && port != 1 {
-            mcp_write_text(id_buf, "port must be 0 or 1", true);
-            return true;
-        }
-        let mask = joy_mask(btn_buf);
-        if mask == 0 {
-            mcp_write_text(id_buf, "unmapped joypad button name; see x68k_mcp.md for the supported set", true);
-            return true;
-        }
-        var frames_used: i32 = 0;
-        if act_buf == "press" || act_buf == "release" || act_buf == "tap" {
-            if act_buf == "tap" {
-                let frames = extract_json_int(args, "frames", 1);
-                if frames < 1 || frames > 3600 {
-                    mcp_write_text(id_buf, "frames must be between 1 and 3600", true);
-                    return true;
-                }
-                frames_used = frames;
-            }
-            let pressed = act_buf == "press" || act_buf == "tap";
-            if act_buf == "tap" {
-                session_joy_tap(emu, port, mask, frames_used);
-            } else { input_joy(emu, port, mask, pressed); }
-        } else {
-            mcp_write_text(id_buf, "action must be press, release, or tap", true);
-            return true;
-        }
-        var obj: u8[>..] = [];
-        format(obj, "{\"port\":", port, ",\"button\":\"", btn_buf, "\",\"action\":\"", act_buf, "\"");
-        append_machine(obj, emu, frames_used, act_buf == "tap", true);
-        obj.append("}");
-        mcp_write_object(id_buf, obj);
-        return true;
     }
-
-    if tool_name == "arcl_command" {
-        var command: u8[>..] = [];
-        if !extract_json_str(args, "command", command) || command.len > 180 {
-            mcp_write_text(id_buf, "missing required string field 'command'", true);
-            return true;
+    if echoed {
+        for j2 in after.len - command.len {
+            prompt.push(after[j2]);
         }
-        for i in command.len {
-            if !type_has_key(command[i]) {
-                mcp_write_text(id_buf, "arcl_type failed while echoing the command", true);
-                return true;
-            }
-        }
-        var frames_used: i32 = 0;
-        let hold: i32 = 2;
-        for i in command.len {
-            frames_used += session_type_char(emu, command[i], hold);
-        }
-        var after: u8[>..] = [];
-        command_line(emu, after);
-        var prompt: u8[>..] = [];
-        var echoed = after.len >= command.len;
-        if echoed {
-            for j in command.len {
-                if after[after.len - command.len + j] != command[j] { echoed = false; }
-            }
-        }
-        if echoed {
-            for j2 in after.len - command.len {
-                prompt.push(after[j2]);
-            }
-        } else {
-            var before: u8[>..] = [];
-            command_line(emu, before);
-            prompt.append(before);
-        }
-        frames_used += session_type_char(emu, '\n', 2);
-        var matched = false;
-        while frames_used < 6000 {
-            for _ in 30 { session_run_frame(emu); }
-            frames_used += 30;
-            var lineb: u8[>..] = [];
-            command_line(emu, lineb);
-            var pref = true;
-            for p in prompt.len {
-                if p >= lineb.len || lineb[p] != prompt[p] { pref = false; }
-            }
-            if pref && lineb.len <= prompt.len + 1 {
-                matched = true;
-                break;
-            }
-        }
-        if !matched {
-            mcp_write_text(id_buf, "timed out waiting for the prompt to return (6000 frames)", true);
-            return true;
-        }
-        var obj: u8[>..] = [];
-        obj.append("{\"action\":\"command\"");
-        append_machine(obj, emu, frames_used, true, true);
-        obj.append("}");
-        mcp_write_object(id_buf, obj);
-        return true;
+    } else {
+        var before: u8[>..] = [];
+        command_line(emu, before);
+        prompt.append(before);
     }
+    frames_used += session_type_char(emu, '\n', 2);
+    var matched = false;
+    while frames_used < 6000 {
+        for _ in 30 { session_run_frame(emu); }
+        frames_used += 30;
+        var lineb: u8[>..] = [];
+        command_line(emu, lineb);
+        var pref = true;
+        for p in prompt.len {
+            if p >= lineb.len || lineb[p] != prompt[p] { pref = false; }
+        }
+        if pref && lineb.len <= prompt.len + 1 {
+            matched = true;
+            break;
+        }
+    }
+    if !matched {
+        mcp_write_text(id_buf, "timed out waiting for the prompt to return (6000 frames)", true);
+        return;
+    }
+    var obj: u8[>..] = [];
+    obj.append("{\"action\":\"command\"");
+    append_machine(obj, emu, frames_used, true, true);
+    obj.append("}");
+    mcp_write_object(id_buf, obj);
+}
 
-    if tool_name == "arcl_input_macro" {
-        let at = json_key_value(args, 0, "steps");
-        if at < 0 {
-            mcp_write_text(id_buf, "missing required array field 'steps'", true);
-            return true;
+fn mcp_tool_input_macro(emu: X68kEmulator&, args: const u8[:], id_buf: const u8[:]) {
+    let at = json_key_value(args, 0, "steps");
+    if at < 0 {
+        mcp_write_text(id_buf, "missing required array field 'steps'", true);
+        return;
+    }
+    if at >= args.len || args[at] != '[' {
+        mcp_write_text(id_buf, "'steps' must be an array", true);
+        return;
+    }
+    var cursor = at + 1;
+    var completed: i32 = 0;
+    var frames_used: i32 = 0;
+    var err: u8[>..] = [];
+    var results: u8[>..] = [];
+    results.append("{\"results\":[");
+    while cursor < args.len {
+        while cursor < args.len && (args[cursor] == ' ' || args[cursor] == ',' || args[cursor] == '\n' || args[cursor] == '\t' || args[cursor] == '\r') { cursor = cursor + 1; }
+        if cursor >= args.len || args[cursor] == ']' { break; }
+        if args[cursor] != '{' {
+            mcp_write_text(id_buf, "each step must be a JSON object", true);
+            return;
         }
-        if at >= args.len || args[at] != '[' {
-            mcp_write_text(id_buf, "'steps' must be an array", true);
-            return true;
+        if completed >= 16 {
+            mcp_write_text(id_buf, "too many steps; max is 16 per arcl_input_macro call", true);
+            return;
         }
-        var cursor = at + 1;
-        var completed: i32 = 0;
-        var frames_used: i32 = 0;
-        var err: u8[>..] = [];
-        var results: u8[>..] = [];
-        results.append("{\"results\":[");
-        while cursor < args.len {
-            while cursor < args.len && (args[cursor] == ' ' || args[cursor] == ',' || args[cursor] == '\n' || args[cursor] == '\t' || args[cursor] == '\r') { cursor = cursor + 1; }
-            if cursor >= args.len || args[cursor] == ']' { break; }
-            if args[cursor] != '{' {
-                mcp_write_text(id_buf, "each step must be a JSON object", true);
-                return true;
-            }
-            if completed >= 16 {
-                mcp_write_text(id_buf, "too many steps; max is 16 per arcl_input_macro call", true);
-                return true;
-            }
-            var depth = 0;
-            var end = cursor;
-            var in_str = false;
-            while end < args.len {
-                let c = args[end];
-                if in_str {
-                    if c == '\\' && end + 1 < args.len { end = end + 2; continue; }
-                    if c == '"' { in_str = false; }
-                    end += 1;
-                    continue;
-                }
-                if c == '"' { in_str = true; end = end + 1; continue; }
-                if c == '{' { depth = depth + 1; }
-                else if c == '}' {
-                    depth -= 1;
-                    if depth == 0 { end = end + 1; break; }
-                }
+        var depth = 0;
+        var end = cursor;
+        var in_str = false;
+        while end < args.len {
+            let c = args[end];
+            if in_str {
+                if c == '\\' && end + 1 < args.len { end = end + 2; continue; }
+                if c == '"' { in_str = false; }
                 end += 1;
+                continue;
             }
-            var step: u8[>..] = [];
-            var k = cursor;
-            while k < end { step.push(args[k]); k = k + 1; }
-            var op: u8[>..] = [];
-            if !extract_json_str(step, "op", op) {
-                mcp_write_text(id_buf, "each step needs a string 'op' field", true);
-                return true;
+            if c == '"' { in_str = true; end = end + 1; continue; }
+            if c == '{' { depth = depth + 1; }
+            else if c == '}' {
+                depth -= 1;
+                if depth == 0 { end = end + 1; break; }
             }
-            var step_ok = true;
-            if op == "clear_input" {
-                release_held_keys(emu);
-            } else if op == "mouse" {
+            end += 1;
+        }
+        var step: u8[>..] = [];
+        var k = cursor;
+        while k < end { step.push(args[k]); k = k + 1; }
+        var op: u8[>..] = [];
+        if !extract_json_str(step, "op", op) {
+            mcp_write_text(id_buf, "each step needs a string 'op' field", true);
+            return;
+        }
+        var step_ok = true;
+        if op == "clear_input" {
+            release_held_keys(emu);
+        } else if op == "mouse" {
+            step_ok = false;
+            err.append("mouse is not available until SCC");
+        } else if op == "key" {
+            var key_name: u8[>..] = [];
+            var act_buf: u8[>..] = [];
+            if !extract_json_str(step, "key", key_name) {
                 step_ok = false;
-                err.append("mouse is not available until SCC");
-            } else if op == "key" {
-                var key_name: u8[>..] = [];
-                var act_buf: u8[>..] = [];
-                if !extract_json_str(step, "key", key_name) {
+                err.append("missing required string field 'key'");
+            } else if !extract_json_str(step, "action", act_buf) {
+                step_ok = false;
+                err.append("missing required string field 'action' (press/release/tap)");
+            } else {
+                let code = key_code(key_name);
+                if code < 0 {
                     step_ok = false;
-                    err.append("missing required string field 'key'");
-                } else if !extract_json_str(step, "action", act_buf) {
-                    step_ok = false;
-                    err.append("missing required string field 'action' (press/release/tap)");
-                } else {
-                    let code = key_code(key_name);
-                    if code < 0 {
+                    err.append("unmapped key name; see x68k_mcp.md for the supported key set");
+                } else if act_buf == "press" {
+                    input_key(emu, code, true);
+                } else if act_buf == "release" {
+                    input_key(emu, code, false);
+                } else if act_buf == "tap" {
+                    let frames = extract_json_int(step, "frames", 1);
+                    if frames < 1 || frames > 3600 || frames_used + frames > 10000 {
                         step_ok = false;
-                        err.append("unmapped key name; see x68k_mcp.md for the supported key set");
-                    } else if act_buf == "press" {
-                        input_key(emu, code, true);
-                    } else if act_buf == "release" {
-                        input_key(emu, code, false);
-                    } else if act_buf == "tap" {
+                        err.append("frames must be between 1 and 3600");
+                    } else {
+                        session_key_tap(emu, code, frames);
+                        frames_used += frames;
+                    }
+                } else {
+                    step_ok = false;
+                    err.append("action must be press, release, or tap");
+                }
+            }
+        } else if op == "type" {
+            var text: u8[>..] = [];
+            if !extract_json_str(step, "text", text) || text.len > 256 {
+                step_ok = false;
+                err.append("missing required string field 'text'");
+            } else {
+                let hold = extract_json_int(step, "frames", 2);
+                if hold < 1 || hold > 3600 {
+                    step_ok = false;
+                    err.append("frames must be between 1 and 3600");
+                } else {
+                    for i in text.len {
+                        if !type_has_key(text[i]) {
+                            step_ok = false;
+                            err.append("arcl_type failed while echoing the command");
+                        }
+                    }
+                    if step_ok {
+                        for i in text.len {
+                            frames_used += session_type_char(emu, text[i], hold);
+                        }
+                    }
+                }
+            }
+        } else if op == "joypad" {
+            var btn: u8[>..] = [];
+            var act_buf: u8[>..] = [];
+            if !extract_json_str(step, "button", btn) || !extract_json_str(step, "action", act_buf) {
+                step_ok = false;
+                err.append("missing required string field 'button'");
+            } else {
+                let mask = joy_mask(btn);
+                let port = extract_json_int(step, "port", 0);
+                if mask == 0 || (port != 0 && port != 1) {
+                    step_ok = false;
+                    err.append("unmapped joypad button name; see x68k_mcp.md for the supported set");
+                } else if act_buf == "press" || act_buf == "release" || act_buf == "tap" {
+                    let pressed = act_buf == "press" || act_buf == "tap";
+                    input_joy(emu, port, mask, pressed);
+                    if act_buf == "tap" {
                         let frames = extract_json_int(step, "frames", 1);
                         if frames < 1 || frames > 3600 || frames_used + frames > 10000 {
                             step_ok = false;
                             err.append("frames must be between 1 and 3600");
                         } else {
-                            session_key_tap(emu, code, frames);
+                            session_joy_tap(emu, port, mask, frames);
                             frames_used += frames;
                         }
-                    } else {
-                        step_ok = false;
-                        err.append("action must be press, release, or tap");
                     }
-                }
-            } else if op == "type" {
-                var text: u8[>..] = [];
-                if !extract_json_str(step, "text", text) || text.len > 256 {
-                    step_ok = false;
-                    err.append("missing required string field 'text'");
                 } else {
-                    let hold = extract_json_int(step, "frames", 2);
-                    if hold < 1 || hold > 3600 {
-                        step_ok = false;
-                        err.append("frames must be between 1 and 3600");
-                    } else {
-                        for i in text.len {
-                            if !type_has_key(text[i]) {
-                                step_ok = false;
-                                err.append("arcl_type failed while echoing the command");
-                            }
-                        }
-                        if step_ok {
-                            for i in text.len {
-                                frames_used += session_type_char(emu, text[i], hold);
-                            }
-                        }
-                    }
+                    step_ok = false;
+                    err.append("action must be press, release, or tap");
                 }
-            } else if op == "joypad" {
-                var btn: u8[>..] = [];
-                var act_buf: u8[>..] = [];
-                if !extract_json_str(step, "button", btn) || !extract_json_str(step, "action", act_buf) {
-                    step_ok = false;
-                    err.append("missing required string field 'button'");
-                } else {
-                    let mask = joy_mask(btn);
-                    let port = extract_json_int(step, "port", 0);
-                    if mask == 0 || (port != 0 && port != 1) {
-                        step_ok = false;
-                        err.append("unmapped joypad button name; see x68k_mcp.md for the supported set");
-                    } else if act_buf == "press" || act_buf == "release" || act_buf == "tap" {
-                        let pressed = act_buf == "press" || act_buf == "tap";
-                        input_joy(emu, port, mask, pressed);
-                        if act_buf == "tap" {
-                            let frames = extract_json_int(step, "frames", 1);
-                            if frames < 1 || frames > 3600 || frames_used + frames > 10000 {
-                                step_ok = false;
-                                err.append("frames must be between 1 and 3600");
-                            } else {
-                                session_joy_tap(emu, port, mask, frames);
-                                frames_used += frames;
-                            }
-                        }
-                    } else {
-                        step_ok = false;
-                        err.append("action must be press, release, or tap");
-                    }
-                }
-            } else if op == "screenshot" {
-                if c_frame_ready() == 0 {
-                    step_ok = false;
-                    err.append("no frame available yet; call arcl_run first");
-                } else if json_key_value(step, 0, "inline") >= 0 {
-                    step_ok = false;
-                    err.append("inline PNG is not available in this build");
-                } else if extract_json_int(step, "scale", 1) != 1 || extract_json_int(step, "grid", 0) != 0 {
-                    step_ok = false;
-                    err.append("scaled or cropped PNG output is not available in this build");
-                } else {
-                    var path_buf: u8[>..] = [];
-                    if !extract_json_str(step, "path", path_buf) { path_buf.append("x68k_screenshot.bmp"); }
-                    var path_null: u8[>..] = [];
-                    path_null.append(path_buf);
-                    path_null.push(0);
-                    if c_save_fb_bmp(path_null[0], path_null.len as i32) == 0 {
-                        step_ok = false;
-                        err.append("failed to write screenshot");
-                    }
-                }
-            } else if op == "run" {
-                let frames = extract_json_int(step, "frames", 1);
-                if frames < 1 || frames > 10000 {
-                    step_ok = false;
-                    err.append("frames must be between 1 and 10000");
-                } else if frames_used + frames > 10000 {
-                    step_ok = false;
-                    err.append("macro would exceed the 10000 total-frame budget");
-                } else {
-                    for _ in frames { session_run_frame(emu); }
-                    frames_used += frames;
-                }
-            } else {
-                step_ok = false;
-                err.append("unknown macro step op");
             }
-            if completed != 0 { results.append(","); }
-            let ok_txt = if step_ok { "true" } else { "false" };
-            format(results, "{\"op\":\"", op, "\",\"ok\":", ok_txt, "}");
-            completed += 1;
-            cursor = end;
-            if !step_ok { break; }
+        } else if op == "screenshot" {
+            if c_frame_ready() == 0 {
+                step_ok = false;
+                err.append("no frame available yet; call arcl_run first");
+            } else if json_key_value(step, 0, "inline") >= 0 {
+                step_ok = false;
+                err.append("inline PNG is not available in this build");
+            } else if extract_json_int(step, "scale", 1) != 1 || extract_json_int(step, "grid", 0) != 0 {
+                step_ok = false;
+                err.append("scaled or cropped PNG output is not available in this build");
+            } else {
+                var path_buf: u8[>..] = [];
+                if !extract_json_str(step, "path", path_buf) { path_buf.append("x68k_screenshot.bmp"); }
+                var path_null: u8[>..] = [];
+                path_null.append(path_buf);
+                path_null.push(0);
+                if c_save_fb_bmp(path_null[0], path_null.len as i32) == 0 {
+                    step_ok = false;
+                    err.append("failed to write screenshot");
+                }
+            }
+        } else if op == "run" {
+            let frames = extract_json_int(step, "frames", 1);
+            if frames < 1 || frames > 10000 {
+                step_ok = false;
+                err.append("frames must be between 1 and 10000");
+            } else if frames_used + frames > 10000 {
+                step_ok = false;
+                err.append("macro would exceed the 10000 total-frame budget");
+            } else {
+                for _ in frames { session_run_frame(emu); }
+                frames_used += frames;
+            }
+        } else {
+            step_ok = false;
+            err.append("unknown macro step op");
         }
-        format(results, "],\"steps_completed\":", completed, ",\"steps_ok\":", if err.len == 0 { "true" } else { "false" });
-        append_machine(results, emu, 0, false, true);
-        results.append("}");
-        if err.len != 0 {
-            mcp_write_error_object(id_buf, err, results);
-            return true;
-        }
-        mcp_write_object(id_buf, results);
+        if completed != 0 { results.append(","); }
+        let ok_txt = if step_ok { "true" } else { "false" };
+        format(results, "{\"op\":\"", op, "\",\"ok\":", ok_txt, "}");
+        completed += 1;
+        cursor = end;
+        if !step_ok { break; }
+    }
+    format(results, "],\"steps_completed\":", completed, ",\"steps_ok\":", if err.len == 0 { "true" } else { "false" });
+    append_machine(results, emu, 0, false, true);
+    results.append("}");
+    if err.len != 0 {
+        mcp_write_error_object(id_buf, err, results);
+        return;
+    }
+    mcp_write_object(id_buf, results);
+}
+
+// 入力系のツール (L0 / L1)。1 ツール 1 関数。
+fn mcp_input_call(emu: X68kEmulator&, tool_name: const u8[:], args: const u8[:], id_buf: const u8[:]) -> bool {
+    if tool_name == "arcl_key" {
+        mcp_tool_key(emu, args, id_buf);
         return true;
     }
-
+    if tool_name == "arcl_type" {
+        mcp_tool_type(emu, args, id_buf);
+        return true;
+    }
+    if tool_name == "arcl_clear_input" {
+        mcp_tool_clear_input(emu, args, id_buf);
+        return true;
+    }
+    if tool_name == "arcl_input_state" {
+        mcp_tool_input_state(emu, args, id_buf);
+        return true;
+    }
+    if tool_name == "arcl_joypad" {
+        mcp_tool_joypad(emu, args, id_buf);
+        return true;
+    }
+    if tool_name == "arcl_command" {
+        mcp_tool_command(emu, args, id_buf);
+        return true;
+    }
+    if tool_name == "arcl_input_macro" {
+        mcp_tool_input_macro(emu, args, id_buf);
+        return true;
+    }
     return false;
 }
 

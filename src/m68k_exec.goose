@@ -715,79 +715,88 @@ fn m68k_trigger_exception(cpu: M68kCPU&, mmu: M68kMMU&, vector: i32, return_pc: 
 // -------------------------------------------------------------
 // Op 4: 雑多命令 (LEA, PEA, MOVEM, CLR, NEG, NOT, TST, JMP, JSR, TRAP, LINK, UNLK, EXT, SWAP)
 // -------------------------------------------------------------
-fn exec_op4(cpu: M68kCPU&, mmu: M68kMMU&, op: u16) -> i32 {
+
+// NOP, RESET, STOP, RTS, RTE, RTR, TRAPV, JMP, JSR。戻り値は消費サイクルと、この関数が命令を処理したかどうか。
+fn op4_flow(cpu: M68kCPU&, mmu: M68kMMU&, op: u16) -> i32, bool {
     let mode: i32 = (op >> 3) & 0x07;
     let reg: i32 = op & 0x07;
 
     // NOP (0x4E71)
-    if op == 0x4E71 { return 4; }
+    if op == 0x4E71 { return 4, true; }
     // RESET (0x4E70)。px68k の Reset_CallBack は C68k_Reset_Dummy で、周辺は変えない。
     if op == 0x4E70 {
         if !cpu_is_supervisor(cpu) {
             m68k_trigger_exception(cpu, mmu, 8, mmu.inst_pc);
-            return 34;
+            return 34, true;
         }
-        return 132;
+        return 132, true;
     }
     // STOP #imm (0x4E72)
     if op == 0x4E72 {
         if !cpu_is_supervisor(cpu) {
             m68k_trigger_exception(cpu, mmu, 8, mmu.inst_pc);
-            return 34;
+            return 34, true;
         }
         let imm = fetch16(cpu, mmu);
         cpu_set_sr(cpu, imm);
         cpu.halted = true;
-        return 4;
+        return 4, true;
     }
     // RTS (0x4E75)
-    if op == 0x4E75 { cpu.pc = pop32(cpu, mmu); return 16; }
+    if op == 0x4E75 { cpu.pc = pop32(cpu, mmu); return 16, true; }
     // RTE (0x4E73)
     if op == 0x4E73 {
         if !cpu_is_supervisor(cpu) {
             m68k_trigger_exception(cpu, mmu, 8, mmu.inst_pc);
-            return 34;
+            return 34, true;
         }
         let new_sr = pop16(cpu, mmu);
         let new_pc = pop32(cpu, mmu);
         cpu_set_sr(cpu, new_sr);
         cpu.pc = new_pc;
-        return 20;
+        return 20, true;
     }
     // RTR (0x4E77)
     if op == 0x4E77 {
         let ccr = pop16(cpu, mmu);
         cpu_set_ccr(cpu, ccr as! u8);
         cpu.pc = pop32(cpu, mmu);
-        return 20;
+        return 20, true;
     }
     // TRAPV (0x4E76)。V が立っていれば Vector 7。積む PC は次の命令。
     if op == 0x4E76 {
         if cpu_flag_v(cpu) {
             m68k_trigger_exception(cpu, mmu, 7, cpu.pc);
-            return 34;
+            return 34, true;
         }
-        return 4;
+        return 4, true;
     }
 
     // JMP (0100 1110 11 eee eee)
     if (op & 0xFFC0) == 0x4EC0 {
         cpu.pc = ea_calc_addr(cpu, mmu, mode, reg, 4);
-        return jmp_cycles(mode, reg);
+        return jmp_cycles(mode, reg), true;
     }
     // JSR (0100 1110 10 eee eee)
     if (op & 0xFFC0) == 0x4E80 {
         let target = ea_calc_addr(cpu, mmu, mode, reg, 4);
         push32(cpu, mmu, cpu.pc);
         cpu.pc = target;
-        return 8 + jmp_cycles(mode, reg);
+        return 8 + jmp_cycles(mode, reg), true;
     }
+    return 0, false;
+}
+
+// LEA, SWAP, PEA, LINK, UNLK, MOVE USP, TRAP。戻り値は消費サイクルと、この関数が命令を処理したかどうか。
+fn op4_stack(cpu: M68kCPU&, mmu: M68kMMU&, op: u16) -> i32, bool {
+    let mode: i32 = (op >> 3) & 0x07;
+    let reg: i32 = op & 0x07;
 
     // LEA (0100 rrr1 11 eee eee)
     if (op & 0xF1C0) == 0x41C0 {
         let areg: i32 = (op >> 9) & 0x07;
         cpu.a[areg] = ea_calc_addr(cpu, mmu, mode, reg, 4);
-        return lea_cycles(mode, reg);
+        return lea_cycles(mode, reg), true;
     }
     // SWAP (0100 1000 0100 0rrr: mode == 0)
     if (op & 0xFFF8) == 0x4840 {
@@ -795,14 +804,14 @@ fn exec_op4(cpu: M68kCPU&, mmu: M68kMMU&, op: u16) -> i32 {
         let v = cpu.d[dreg];
         cpu.d[dreg] = (v >> 16) | (v << 16);
         cpu_set_nz(cpu, 4, cpu.d[dreg]);
-        return 4;
+        return 4, true;
     }
 
     // PEA (0100 1000 01 eee eee: mode >= 2)
     if (op & 0xFFC0) == 0x4840 && mode >= 2 {
         let addr = ea_calc_addr(cpu, mmu, mode, reg, 4);
         push32(cpu, mmu, addr);
-        return 8 + lea_cycles(mode, reg);
+        return 8 + lea_cycles(mode, reg), true;
     }
 
     // LINK (0100 1110 0101 0rrr)
@@ -812,7 +821,7 @@ fn exec_op4(cpu: M68kCPU&, mmu: M68kMMU&, op: u16) -> i32 {
         push32(cpu, mmu, cpu.a[areg]);
         cpu.a[areg] = cpu.a[REG_A7];
         cpu.a[REG_A7] = addr_add(cpu.a[REG_A7], disp);
-        return 16;
+        return 16, true;
     }
     // UNLK (0100 1110 0101 1rrr)
     if (op & 0xFFF8) == 0x4E58 {
@@ -820,27 +829,34 @@ fn exec_op4(cpu: M68kCPU&, mmu: M68kMMU&, op: u16) -> i32 {
         cpu.a[REG_A7] = cpu.a[areg];
         let saved = pop32(cpu, mmu);
         if mmu.fault == 0 { cpu.a[areg] = saved; }
-        return 12;
+        return 12, true;
     }
 
     // MOVE USP (0100 1110 0110 drrr)
     if (op & 0xFFF0) == 0x4E60 {
         if !cpu_is_supervisor(cpu) {
             m68k_trigger_exception(cpu, mmu, 8, mmu.inst_pc);
-            return 34;
+            return 34, true;
         }
         let areg: i32 = op & 0x07;
         let to_usp = (op & 0x08) == 0;
         if to_usp { cpu.usp = cpu.a[areg]; } else { cpu.a[areg] = cpu.usp; }
-        return 4;
+        return 4, true;
     }
 
     // TRAP (0100 1110 0100 vvvv)
     if (op & 0xFFF0) == 0x4E40 {
         let trap_num: i32 = op & 0x0F;
         m68k_trigger_exception(cpu, mmu, 32 + trap_num, cpu.pc);
-        return 34;
+        return 34, true;
     }
+    return 0, false;
+}
+
+// MOVEM, EXT。戻り値は消費サイクルと、この関数が命令を処理したかどうか。
+fn op4_movem_ext(cpu: M68kCPU&, mmu: M68kMMU&, op: u16) -> i32, bool {
+    let mode: i32 = (op >> 3) & 0x07;
+    let reg: i32 = op & 0x07;
 
     // MOVEM Regs -> <ea> (0100 1000 1s eee eee)
     if ((op & 0xFB80) == 0x4880) && mode >= 2 {
@@ -883,7 +899,7 @@ fn exec_op4(cpu: M68kCPU&, mmu: M68kMMU&, op: u16) -> i32 {
                     }
                 }
             }
-            return movem_cycles(is_long, nregs, mode, true, reg);
+            return movem_cycles(is_long, nregs, mode, true, reg), true;
         } else {
             // MOVEM <ea> -> Regs (0100 1100 1s eee eee)
             var addr = if mode == 3 { cpu.a[reg] } else { ea_calc_addr(cpu, mmu, mode, reg, if is_long { 4 } else { 2 }) };
@@ -903,7 +919,7 @@ fn exec_op4(cpu: M68kCPU&, mmu: M68kMMU&, op: u16) -> i32 {
             if mode == 3 && mmu.fault == 0 { // (An)+ postincrement
                 cpu.a[reg] = addr;
             }
-            return movem_cycles(is_long, nregs, mode, false, reg);
+            return movem_cycles(is_long, nregs, mode, false, reg), true;
         }
     }
 
@@ -920,31 +936,45 @@ fn exec_op4(cpu: M68kCPU&, mmu: M68kMMU&, op: u16) -> i32 {
             cpu.d[dreg] = (cpu.d[dreg] & 0xFFFF0000) | (val);
             cpu_set_nz(cpu, 2, val);
         }
-        return 4;
+        return 4, true;
     }
+    return 0, false;
+}
+
+// MOVE to SR, MOVE to CCR, MOVE from SR。戻り値は消費サイクルと、この関数が命令を処理したかどうか。
+fn op4_status(cpu: M68kCPU&, mmu: M68kMMU&, op: u16) -> i32, bool {
+    let mode: i32 = (op >> 3) & 0x07;
+    let reg: i32 = op & 0x07;
 
     // MOVE to SR (0100 0110 11 eee eee)
     if (op & 0xFFC0) == 0x46C0 {
         if !cpu_is_supervisor(cpu) {
             m68k_trigger_exception(cpu, mmu, 8, mmu.inst_pc);
-            return 34;
+            return 34, true;
         }
         let val = ea_read(cpu, mmu, mode, reg, 2) as! u16;
         cpu_set_sr(cpu, val);
-        return 12 + ea_bw_extra(mode, reg);
+        return 12 + ea_bw_extra(mode, reg), true;
     }
     // MOVE to CCR (0100 0100 11 eee eee)
     if (op & 0xFFC0) == 0x44C0 {
         let ccr = ea_read(cpu, mmu, mode, reg, 2) as! u16;
         cpu_set_ccr(cpu, ccr as! u8);
-        return 12 + ea_bw_extra(mode, reg);
+        return 12 + ea_bw_extra(mode, reg), true;
     }
     // MOVE from SR (0100 0000 11 eee eee)
     if (op & 0xFFC0) == 0x40C0 {
         ea_write(cpu, mmu, mode, reg, 2, cpu.sr);
-        if mode == 0 { return 6; }
-        return 8 + ea_bw_extra(mode, reg);
+        if mode == 0 { return 6, true; }
+        return 8 + ea_bw_extra(mode, reg), true;
     }
+    return 0, false;
+}
+
+// NEGX, CLR, NEG, NOT, TST, NBCD, CHK, TAS。戻り値は消費サイクルと、この関数が命令を処理したかどうか。
+fn op4_unary(cpu: M68kCPU&, mmu: M68kMMU&, op: u16) -> i32, bool {
+    let mode: i32 = (op >> 3) & 0x07;
+    let reg: i32 = op & 0x07;
 
     // NEGX (0100 0000 ss eee eee: ss <= 2)
     if (op & 0xFF00) == 0x4000 && ((op >> 6) & 3) <= 2 {
@@ -956,7 +986,7 @@ fn exec_op4(cpu: M68kCPU&, mmu: M68kMMU&, op: u16) -> i32 {
         let res = (0) - cur - x_val;
         ea_write_for_rmw(cpu, mmu, mode, reg, size, ea_res.addr, res);
         cpu_flags_subx(cpu, size, cur, 0, res);
-        return clr_cycles(size, mode, reg);
+        return clr_cycles(size, mode, reg), true;
     }
 
     // CLR (0100 0010 ss eee eee: ss <= 2)
@@ -966,7 +996,7 @@ fn exec_op4(cpu: M68kCPU&, mmu: M68kMMU&, op: u16) -> i32 {
         ea_write(cpu, mmu, mode, reg, size, 0);
         cpu.sr |= SR_Z;
         cpu.sr &= ~(SR_N | SR_V | SR_C);
-        return clr_cycles(size, mode, reg);
+        return clr_cycles(size, mode, reg), true;
     }
 
     // NEG (0100 0100 ss eee eee: ss <= 2)
@@ -978,7 +1008,7 @@ fn exec_op4(cpu: M68kCPU&, mmu: M68kMMU&, op: u16) -> i32 {
         let res = (0) - cur;
         ea_write_for_rmw(cpu, mmu, mode, reg, size, ea_res.addr, res);
         cpu_flags_sub(cpu, size, cur, 0, res, true);
-        return clr_cycles(size, mode, reg);
+        return clr_cycles(size, mode, reg), true;
     }
 
     // NOT (0100 0110 ss eee eee: ss <= 2)
@@ -990,7 +1020,7 @@ fn exec_op4(cpu: M68kCPU&, mmu: M68kMMU&, op: u16) -> i32 {
         let res = ~cur;
         ea_write_for_rmw(cpu, mmu, mode, reg, size, ea_res.addr, res);
         cpu_set_nz(cpu, size, res);
-        return clr_cycles(size, mode, reg);
+        return clr_cycles(size, mode, reg), true;
     }
 
     // TST (0100 1010 ss eee eee: ss <= 2)
@@ -999,22 +1029,22 @@ fn exec_op4(cpu: M68kCPU&, mmu: M68kMMU&, op: u16) -> i32 {
         let size: i32 = if sz_code == 0 { 1 } else if sz_code == 1 { 2 } else { 4 };
         let val = ea_read(cpu, mmu, mode, reg, size);
         cpu_set_nz(cpu, size, val);
-        return 4 + ea_extra_cycles(mode, reg, size);
+        return 4 + ea_extra_cycles(mode, reg, size), true;
     }
 
     // NBCD (0100 1000 00 eee eee): 0 - <ea> - X with SBCD's flags.
     if (op & 0xFFC0) == 0x4800 {
-        if !ea_is_alterable(mode, reg) { return raise_illegal(cpu, mmu); }
+        if !ea_is_alterable(mode, reg) { return raise_illegal(cpu, mmu), true; }
         let ea_res = ea_read_for_rmw(cpu, mmu, mode, reg, 1);
         let res = bcd_sub(cpu, 0, ea_res.val);
         ea_write_for_rmw(cpu, mmu, mode, reg, 1, ea_res.addr, res);
-        if mode == 0 { return 6; }
-        return 8 + ea_bw_extra(mode, reg);
+        if mode == 0 { return 6, true; }
+        return 8 + ea_bw_extra(mode, reg), true;
     }
 
     // CHK.W (0100 rrr1 10 eee eee): signed bounds. N/Z from Dn, V/C from bound - Dn (XEiJ).
     if (op & 0xF1C0) == 0x4180 {
-        if !ea_is_data(mode, reg) { return raise_illegal(cpu, mmu); }
+        if !ea_is_data(mode, reg) { return raise_illegal(cpu, mmu), true; }
         let dn: i32 = (op >> 9) & 0x07;
         let x: i32 = ea_read(cpu, mmu, mode, reg, 2) as! i16;
         let y: i32 = cpu.d[dn] as! i16;
@@ -1027,24 +1057,42 @@ fn exec_op4(cpu: M68kCPU&, mmu: M68kMMU&, op: u16) -> i32 {
         cpu.sr = (cpu.sr & 0xFF00) | ccr;
         if y < 0 || x < y {
             m68k_trigger_exception(cpu, mmu, 6, cpu.pc);
-            return 38 + ea_bw_extra(mode, reg);
+            return 38 + ea_bw_extra(mode, reg), true;
         }
-        return 10 + ea_bw_extra(mode, reg);
+        return 10 + ea_bw_extra(mode, reg), true;
     }
 
     // TAS (0100 1010 11 eee eee)。4AFC など無効 EA は Illegal。
     if (op & 0xFFC0) == 0x4AC0 {
-        if !ea_is_alterable(mode, reg) { return raise_illegal(cpu, mmu); }
+        if !ea_is_alterable(mode, reg) { return raise_illegal(cpu, mmu), true; }
         let ea_res = ea_read_for_rmw(cpu, mmu, mode, reg, 1);
         let cur = ea_res.val & 0xFF;
         if (cur & 0x80) != 0 { cpu.sr |= SR_N; } else { cpu.sr &= ~(SR_N as! u16); }
         if cur == 0 { cpu.sr |= SR_Z; } else { cpu.sr &= ~(SR_Z as! u16); }
         cpu.sr &= ~(SR_V | SR_C);
         ea_write_for_rmw(cpu, mmu, mode, reg, 1, ea_res.addr, cur | 0x80);
-        if mode == 0 { return 4; }
-        return 10 + ea_bw_extra(mode, reg);
+        if mode == 0 { return 4, true; }
+        return 10 + ea_bw_extra(mode, reg), true;
     }
+    return 0, false;
+}
 
+fn exec_op4(cpu: M68kCPU&, mmu: M68kMMU&, op: u16) -> i32 {
+    // NOP, RESET, STOP, RTS, RTE, RTR, TRAPV, JMP, JSR
+    let flow_cycles, flow_done = op4_flow(cpu, mmu, op);
+    if flow_done { return flow_cycles; }
+    // LEA, SWAP, PEA, LINK, UNLK, MOVE USP, TRAP
+    let stack_cycles, stack_done = op4_stack(cpu, mmu, op);
+    if stack_done { return stack_cycles; }
+    // MOVEM, EXT
+    let movem_cycles, movem_done = op4_movem_ext(cpu, mmu, op);
+    if movem_done { return movem_cycles; }
+    // MOVE to SR, MOVE to CCR, MOVE from SR
+    let status_cycles, status_done = op4_status(cpu, mmu, op);
+    if status_done { return status_cycles; }
+    // NEGX, CLR, NEG, NOT, TST, NBCD, CHK, TAS
+    let unary_cycles, unary_done = op4_unary(cpu, mmu, op);
+    if unary_done { return unary_cycles; }
     return raise_illegal(cpu, mmu);
 }
 
