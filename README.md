@@ -233,6 +233,15 @@ Gooseがソースと同じフォルダの [src/main.build](src/main.build) を�
 
 **この公開用構成には `test_*.goose`、対応するテスト用 `.build`、`tools/architecture/`、開発用 `ARCHITECTURE_*.md` は含まれていません。** 記載した検証は元の開発ツリーで実施した結果で、このフォルダだけで同じ自動テストを再実行できるという意味ではありません。
 
+BIOSもディスクイメージも使わないコアの単体テストとして [src/test_core.goose](src/test_core.goose) を同梱しています。CPUのフラグ計算と命令実行、例外、キー入力の対応表、FDCのコマンド表、DMACのレジスタ、RTCの暦計算を確認します。
+
+```powershell
+goose build .\src\test_core.goose -o .\test_core.exe
+.\test_core.exe
+```
+
+すべて通ると `129 / 129 checks passed` と表示し、失敗があれば内容を出して終了コード1で終わります。`--debug` を付けてビルドすると、桁あふれと範囲の検査も有効になります。
+
 ## 困ったとき・既知の制限
 
 - BIOSが見つからない場合は、カレントディレクトリと `keropi` の位置、ファイル名・サイズを確認してください。`--system-dir` の絶対パス指定でも切り分けできます。別プロジェクトやexeの隣のROMへ自動でフォールバックしません。

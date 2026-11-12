@@ -234,6 +234,15 @@ In the original development tree, release/debug CPU, device, save, lifecycle-man
 
 **This public-distribution layout does not include `test_*.goose`, the corresponding test `.build` files, `tools/architecture/`, or the development `ARCHITECTURE_*.md` files.** The verification described above was performed in the original development tree; it does not mean the same automated tests can be re-run from this folder alone.
 
+A unit test of the core that needs neither BIOS nor disk images is included as [src/test_core.goose](src/test_core.goose). It checks CPU flag computation and instruction execution, exceptions, the key map used for typing, the FDC command tables, DMAC registers and the RTC calendar arithmetic.
+
+```powershell
+goose build .\src\test_core.goose -o .\test_core.exe
+.\test_core.exe
+```
+
+It prints `129 / 129 checks passed` when everything passes, and reports each failure and exits with status 1 otherwise. Building with `--debug` also enables the overflow and range checks.
+
 ## Troubleshooting and known limitations
 
 - If the BIOS can't be found, check the current directory, the location of `keropi`, and the file names/sizes. Specifying an absolute path with `--system-dir` can also help narrow down the issue. There is no automatic fallback to ROMs from another project or next to the exe.
