@@ -1,9 +1,6 @@
 // Sharp X68000 メモリ管理ユニット (MMU) in Goose
 
-import std;
-import os;
 import .x68k_bridge;
-import .m68k_types;
 import .x68k_mfp;
 import .x68k_fdc;
 import .x68k_dmac;
@@ -14,11 +11,9 @@ import .x68k_rtc;
 
 struct M68kMMU {
     reset_overlay: bool = true,
-    io_palette: u16[256] = [0; 256],
     crtc_regs: u8[64] = [0; 64],
     crtc_mode: u8 = 0,
     crtc_fast_clr: i32 = 0,
-    crtc_rc_flag: u8 = 0,
     mfp: X68kMFP = X68kMFP {},
     fdc: X68kFDC = X68kFDC {},
     dmac: X68kDMAC = X68kDMAC {},
@@ -39,8 +34,6 @@ struct M68kMMU {
     sysport_monitor: u8 = 0,
     sysport_keyctrl: u8 = 0,
     sysport_cputype: u8 = 0xFF, // 68000, 10MHz (px68k sysport.c)
-    fdd_cur_track: i32 = 0,
-    fdd_cur_sec: i32 = 1,
     joy1: u8 = 0xFF,
     joy2: u8 = 0xFF,
     // 68000 group 0 exceptions. Checks apply only while the CPU runs an instruction.
@@ -57,20 +50,32 @@ struct M68kMMU {
     // $EAFF81-$EAFF89: supervisor-only 256 KB blocks from $200000 (index = address >> 18).
     ram_super: u8[48] = [0; 48],
     xb2_area: u8[16] = [0; 16],
-    debug_io: bool = false,
-    debug_pc: u32 = 0,
-    trace_steps: i32 = 0,
+    // Address of the instruction being executed (stacked by group 0 exceptions).
+    inst_pc: u32 = 0,
     // Battery-backed: mmu_init leaves it running across machine resets.
-    rtc: X68kRTC = X68kRTC {}
+    rtc: X68kRTC = X68kRTC {},
+}
+
+// CRTC の 16 bit レジスタ。値は crtc_regs の上位バイト側の添字。
+let CRTC_HSTART = 0x04; // R02 水平表示開始
+let CRTC_HEND = 0x06;   // R03 水平表示終了
+let CRTC_VTOTAL = 0x08; // R04 垂直トータル
+let CRTC_VSTART = 0x0C; // R06 垂直表示開始
+let CRTC_VEND = 0x0E;   // R07 垂直表示終了
+let CRTC_RASTER = 0x12; // R09 ラスタ割り込み位置
+let CRTC_TEXT_X = 0x14; // R10 テキストスクロール X
+let CRTC_TEXT_Y = 0x16; // R11 テキストスクロール Y
+let CRTC_GRP_X = 0x18;  // R12 グラフィックスクロール X (ページ 0)
+let CRTC_GRP_Y = 0x1A;  // R13 グラフィックスクロール Y (ページ 0)
+
+fn crtc_word(mmu: M68kMMU&, hi: i32) -> i32 {
+    return ((mmu.crtc_regs[hi] as i32) << 8) | mmu.crtc_regs[hi + 1];
 }
 
 fn mmu_init(mmu: M68kMMU&) {
     mmu.reset_overlay = true;
     mmu.crtc_mode = 0;
     mmu.crtc_fast_clr = 0;
-    mmu.crtc_rc_flag = 0;
-    mmu.fdd_cur_track = 0;
-    mmu.fdd_cur_sec = 1;
     mmu.joy1 = 0xFF;
     mmu.joy2 = 0xFF;
     mmu.sysport_contrast = 0;
@@ -87,19 +92,9 @@ fn mmu_init(mmu: M68kMMU&) {
     mmu.svs_limit = 0x2000;
     mmu.ram_super = [0; 48];
     mmu.xb2_area = [0; 16];
-    mmu.debug_io = false;
-    mmu.debug_pc = 0;
-    mmu.trace_steps = 0;
+    mmu.inst_pc = 0;
 
-    for i in 256 {
-        mmu.io_palette[i] = 0;
-    }
-    for i in 64 {
-        mmu.crtc_regs[i] = 0;
-    }
-    mmu.mfp = X68kMFP {};
-    mmu.fdc = X68kFDC {};
-    mmu.dmac = X68kDMAC {};
+    mmu.crtc_regs = [0; 64];
     mmu.sasi = X68kSASI {};
     mfp_init(mmu.mfp);
     fdc_init(mmu.fdc);
@@ -149,7 +144,7 @@ fn gvram_and16(mmu: M68kMMU&, off: u32, mask: u16) {
 fn mmu_gvram_fast_clear(mmu: M68kMMU&, reg2b: u8, reg29: u8, scroll_x: u32, scroll_y: u32) {
     let masks: u16[16] = [
         0xFFFF, 0xFFF0, 0xFF0F, 0xFF00, 0xF0FF, 0xF0F0, 0xF00F, 0xF000,
-        0x0FFF, 0x0FF0, 0x0F0F, 0x0F00, 0x00FF, 0x00F0, 0x000F, 0x0000
+        0x0FFF, 0x0FF0, 0x0F0F, 0x0F00, 0x00FF, 0x00F0, 0x000F, 0x0000,
     ];
     let mask = masks[(reg2b & 0x0F) as i64];
     let v: u32 = if (reg29 & 4) != 0 { 512 } else { 256 };
@@ -157,7 +152,7 @@ fn mmu_gvram_fast_clear(mmu: M68kMMU&, reg2b: u8, reg29: u8, scroll_x: u32, scro
     var w0 = h;
     var w1: u32 = 0;
     let sx = scroll_x & 0x1FF;
-    if sx + w0 > (512 as u32) {
+    if sx + w0 > (512) {
         w1 = sx + w0 - 512;
         w0 = 512 - sx;
     }
@@ -169,19 +164,19 @@ fn mmu_gvram_fast_clear(mmu: M68kMMU&, reg2b: u8, reg29: u8, scroll_x: u32, scro
         var p = offset + (sx * 2);
         while x < w0 {
             gvram_and16(mmu, p, mask);
-            p = p + 2;
-            x = x + 1;
+            p += 2;
+            x += 1;
         }
         if w1 > 0 {
             x = 0;
             p = offset;
             while x < w1 {
                 gvram_and16(mmu, p, mask);
-                p = p + 2;
-                x = x + 1;
+                p += 2;
+                x += 1;
             }
         }
-        y = y + 1;
+        y += 1;
     }
 }
 
@@ -248,7 +243,7 @@ fn mmu_gvram_cpu_write(mmu: M68kMMU&, off: i32, val: u8, r20: u8) {
         }
         var i = adr & 0x7FFFF;
         if adr < 0x100000 {
-            i = i ^ 1;
+            i ^= 1;
             gvram_set(mmu, i, (gvram_get(mmu, i) & 0x0F) | ((val << 4) & 0xF0));
             return;
         }
@@ -292,7 +287,7 @@ fn mmu_write_tvram_access(mmu: M68kMMU&, off: i32, val: u8, r2a: u8, r2b: u8, r2
     if off < 0 { return; }
     var adr = (off as u32) & 0x7FFFF;
     if (r2a & 1) != 0 {
-        adr = adr & 0x1FFFF;
+        adr &= 0x1FFFF;
         if (r2a & 2) != 0 {
             if (r2b & 0x10) != 0 { tvram_store_mask(mmu, adr, val, r2e, r2f); }
             if (r2b & 0x20) != 0 { tvram_store_mask(mmu, adr + 0x20000, val, r2e, r2f); }
@@ -345,7 +340,7 @@ fn mmu_write_bgram(mmu: M68kMMU&, off: i32, val: u8) {
 }
 
 fn sasi_note(mmu: M68kMMU&) {
-    if sasi_consume_status_edge(mmu.sasi) != 0 {
+    if sasi_consume_status_edge(mmu.sasi) {
         mmu.ioc_int_stat |= 0x10;
         if (mmu.ioc_int_stat & 8) != 0 {
             mmu.sasi_irq = true;
@@ -454,7 +449,7 @@ fn mmu_read8(mmu: M68kMMU&, addr: u32) -> u8 {
     // Reset overlay for vector table (0x000000 - 0x000007)
     if mmu.reset_overlay && a < 8 {
         // Return initial vector from IPLROM at 0x10000
-        return x68k_ipl_read((0x10000 + (a as i32)) as i32);
+        return x68k_ipl_read((0x10000 + (a as i32)));
     }
 
     // 0x000000 - 0xBFFFFF: Main RAM (upto 12MB)
@@ -646,9 +641,6 @@ fn mmu_write8(mmu: M68kMMU&, addr: u32, val: u8) {
     // 0xE00000 - 0xE7FFFF: TVRAM (512KB)
     if a >= 0xE00000 && a < 0xE80000 {
         let off = (a - 0xE00000) as i32;
-        if mmu.debug_io {
-            write_stderr(str("[TVRAM WRITE: addr=0x", a, " off=0x", off, " val=0x", val as u32, " crtc2A=0x", mmu.crtc_regs[0x2A] as u32, " crtc2B=0x", mmu.crtc_regs[0x2B] as u32, "]\n"));
-        }
         mmu_write_tvram_access(mmu, off, val, mmu.crtc_regs[0x2A], mmu.crtc_regs[0x2B], mmu.crtc_regs[0x2E], mmu.crtc_regs[0x2F]);
         return;
     }
@@ -692,9 +684,6 @@ fn mmu_write8(mmu: M68kMMU&, addr: u32, val: u8) {
 
     // 0x00E80000 - 0x00E804FF: CRTC
     if a >= 0xE80000 && a < 0xE80500 {
-        if mmu.debug_io {
-            write_stderr(str("[CRTC WRITE: addr=0x", a, " val=0x", val as u32, "]\n"));
-        }
         if a == 0xE80481 {
             // CRTC operation port (Raster Copy & Fast Clear)
             mmu.crtc_mode = (val | (mmu.crtc_mode & 0x02));
@@ -703,7 +692,6 @@ fn mmu_write8(mmu: M68kMMU&, addr: u32, val: u8) {
                 let dst_line = mmu.crtc_regs[0x2D] as u32;
                 let mask = mmu.crtc_regs[0x2B];
                 mmu_tvram_raster_copy(mmu, src_line, dst_line, mask);
-                mmu.crtc_rc_flag = 0;
             }
             return;
         }
@@ -715,16 +703,12 @@ fn mmu_write8(mmu: M68kMMU&, addr: u32, val: u8) {
             return;
         }
         mmu.crtc_regs[reg] = val;
-        if reg == 0x2C {
-            mmu.crtc_rc_flag |= 1;
-        } else if reg == 0x2D {
-            mmu.crtc_rc_flag |= 2;
+        if reg == 0x2D {
             if (mmu.crtc_mode & 8) != 0 {
                 let src_line = mmu.crtc_regs[0x2C] as u32;
                 let dst_line = val as u32;
                 let mask = mmu.crtc_regs[0x2B];
                 mmu_tvram_raster_copy(mmu, src_line, dst_line, mask);
-                mmu.crtc_rc_flag = 0;
             }
         }
         return;
@@ -855,11 +839,6 @@ fn mmu_write8(mmu: M68kMMU&, addr: u32, val: u8) {
         mmu_write_bgram(mmu, (a - 0xEB8000) as i32, val);
         return;
     }
-
-    // CRTC / Palette IO fallback
-    if (a & 0xFFFF00) == 0xE82000 {
-        return;
-    }
 }
 
 // Both bytes sit in the RAM window (through 0xBFFFFF). The last byte stays on the byte path.
@@ -957,7 +936,7 @@ fn dmac_pump_sasi(mmu: M68kMMU&) {
     let ocr = mmu.dmac.ch[1].ocr;
     let scr = mmu.dmac.ch[1].scr;
     let kind = ((ocr >> 4) & 3) + ((mmu.dmac.ch[1].dcr >> 1) & 4);
-    while (mmu.dmac.ch[1].csr & 0x08) != 0 && (mmu.dmac.ch[1].csr & 0x80) == 0 && mmu.dmac.ch[1].mtc != 0 && sasi_is_ready(mmu.sasi) != 0 {
+    while (mmu.dmac.ch[1].csr & 0x08) != 0 && (mmu.dmac.ch[1].csr & 0x80) == 0 && mmu.dmac.ch[1].mtc != 0 && sasi_is_ready(mmu.sasi) {
         let dev_to_mem = (ocr & 0x80) != 0;
         var src = if dev_to_mem { mmu.dmac.ch[1].dar } else { mmu.dmac.ch[1].mar };
         var dst = if dev_to_mem { mmu.dmac.ch[1].mar } else { mmu.dmac.ch[1].dar };
@@ -991,12 +970,6 @@ fn dmac_pump_sasi(mmu: M68kMMU&) {
             } else {
                 mmu.dmac.ch[1].mar = src;
                 mmu.dmac.ch[1].dar = dst;
-            }
-            src = mmu.dmac.ch[1].dar;
-            dst = mmu.dmac.ch[1].mar;
-            if !dev_to_mem {
-                src = mmu.dmac.ch[1].mar;
-                dst = mmu.dmac.ch[1].dar;
             }
         }
         if mmu.dmac.ch[1].mtc != 0 {
@@ -1063,8 +1036,7 @@ fn dmac_ch2_unit(mmu: M68kMMU&) -> i32 {
     } else {
         return 0;
     }
-    var i: i32 = 0;
-    while i < n {
+    for i: i32 in n {
         var src = mmu.dmac.ch[2].mar;
         var dst = mmu.dmac.ch[2].dar;
         if dev_to_mem {
@@ -1095,7 +1067,6 @@ fn dmac_ch2_unit(mmu: M68kMMU&) -> i32 {
         }
         dma_bump(mmu.dmac.ch[2].mar, scr, 4, 8, mar_step);
         dma_bump(mmu.dmac.ch[2].dar, scr, 1, 2, dar_step);
-        i = i + 1;
     }
     return 0;
 }
@@ -1112,7 +1083,7 @@ fn dmac_ch2_on_zero(mmu: M68kMMU&) {
                 if mmu.dmac.ch[2].mtc == 0 { dmac_ch2_fail(mmu, 0x0D); }
             }
         } else {
-            mmu.dmac.ch[2].btc = mmu.dmac.ch[2].btc - 1;
+            mmu.dmac.ch[2].btc -= 1;
             if mmu.dmac.ch[2].btc != 0 {
                 let bar = mmu.dmac.ch[2].bar;
                 mmu.dmac.ch[2].mar = mmu_read32(mmu, bar) & 0x00FFFFFF;
@@ -1145,10 +1116,10 @@ fn dmac_exec_ch2(mmu: M68kMMU&) {
     if (mmu.dmac.ch[2].ocr & 3) == 2 { return; }
     var left: i32 = 65536;
     while left > 0 && (mmu.dmac.ch[2].csr & 0x08) != 0 && (mmu.dmac.ch[2].ccr & 0x20) == 0 && (mmu.dmac.ch[2].csr & 0x80) == 0 && mmu.dmac.ch[2].mtc != 0 {
-        left = left - 1;
+        left -= 1;
         if dmac_ch2_unit(mmu) != 0 { return; }
         if mmu.dmac.ch[2].mtc != 0 {
-            mmu.dmac.ch[2].mtc = mmu.dmac.ch[2].mtc - 1;
+            mmu.dmac.ch[2].mtc -= 1;
         }
         if mmu.dmac.ch[2].mtc == 0 {
             dmac_ch2_on_zero(mmu);

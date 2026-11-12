@@ -4,13 +4,7 @@
 *.obj
 *.build
 !main.build
-!test_m68k_core.build
-!test_state.build
-!test_checkpoint.build
-!test_lifecycle.build
-!test_services.build
-!test_sasi.build
-!test_config.build
+!test_core.build
 *.log
 *.pyc
 
@@ -32,3 +26,4 @@ keropi/
 iplrom.dat
 cgrom.dat
 sram.dat
+CODE_REVIEW.md

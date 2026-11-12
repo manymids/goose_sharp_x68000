@@ -1,5 +1,4 @@
 // Launch preferences are host settings, separate from machine checkpoints.
-import std;
 import os;
 import .x68k_bridge;
 let GUI_CLOCK = 0;
@@ -27,7 +26,7 @@ fn gui_mount_saved_media() {
         if key == GUI_HDD { ok = c_hdd_load_file(0, path[0], path.len as i32); }
         else { ok = c_fdd_load_file(key - 1, path[0], path.len as i32); }
         if ok == 0 {
-            write_stderr(str("warning: saved disk could not be loaded: ", path[0..path.len-1], "\n"));
+            write_stderr(str("warning: saved disk could not be loaded: ", path[0..path.len - 1], "\n"));
         }
     }
 }

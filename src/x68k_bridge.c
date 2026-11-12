@@ -17,19 +17,6 @@
 #pragma comment(linker, "/STACK:8388608")
 #endif
 
-// Stdio IO helpers for Goose MCP Server
-int c_io_read_line(void *out_buf, int max_len) {
-    char *buf = (char *)out_buf;
-    if (!fgets(buf, max_len, stdin)) {
-        return -1;
-    }
-    int len = (int)strlen(buf);
-    while (len > 0 && (buf[len - 1] == '\r' || buf[len - 1] == '\n')) {
-        buf[--len] = '\0';
-    }
-    return len;
-}
-
 static char g_io_acc[65536];
 static int g_io_acc_len = 0;
 static int g_io_eof = 0;
@@ -134,8 +121,6 @@ void c_io_write_line(const void *data, int len) {
 
 static int g_last_path_len;
 
-int c_last_path_len(void) { return g_last_path_len; }
-
 int64_t c_host_local_seconds(void) {
     time_t now = time(NULL);
     struct tm local;
@@ -168,17 +153,6 @@ int c_file_read(const uint8_t *path, int path_len, void *out_buf, int max_len) {
     return (int)n;
 }
 
-int c_file_write(const uint8_t *path, int path_len, const void *buf, int len) {
-    char pbuf[MAX_PATH];
-    bind_path(path, path_len, pbuf, MAX_PATH);
-    if (pbuf[0] == 0 || !buf || len <= 0) return 0;
-    FILE *fp = fopen(pbuf, "wb");
-    if (!fp) return 0;
-    size_t n = fwrite(buf, 1, (size_t)len, fp);
-    fclose(fp);
-    return (int)n;
-}
-
 // Memory Buffer management
 #define RAM_MAX    (12 * 1024 * 1024)  // px68k accepts 1..12 MB
 static int32_t g_ram_bytes = 2 * 1024 * 1024;
@@ -189,7 +163,6 @@ static uint64_t g_machine_epoch_next = 0;
 static void state_banks_clear(void);
 static int g_init_fail_after = -1;
 
-void c_mem_test_fail_init(int after) { g_init_fail_after = after; }
 static void *host_calloc(size_t n, size_t size) {
     if (g_init_fail_after == 0) { g_init_fail_after = -1; return NULL; }
     if (g_init_fail_after > 0) g_init_fail_after--;
@@ -316,10 +289,6 @@ void c_fdd_media_tick(int32_t enable) {
     }
 }
 
-int c_fdd_peek_media_irq(void) {
-    return g_fdd_media_pending ? 1 : 0;
-}
-
 void c_fdd_ack_media_irq(void) {
     fdd_media_store(0);
 }
@@ -338,21 +307,6 @@ static int load_rom_file(const char *filename, const char *sys_dir, void *buf, i
     }
 
 
-    return 0;
-}
-
-int c_default_system_dir(char *out, int cap) {
-    DWORD n;
-    if (!out || cap < 1) return 0;
-    out[0] = 0;
-    n = GetFullPathNameA(".\\keropi", cap, out, NULL);
-    if (!n || n >= (DWORD)cap) { out[0] = 0; return 0; }
-    return 1;
-}
-
-int c_default_disk_path(char *out, int cap) {
-    // No game-specific media discovery. An unconfigured drive stays empty.
-    if (out && cap > 0) out[0] = 0;
     return 0;
 }
 
@@ -884,16 +838,6 @@ uint8_t c_mem_read_tvram(int32_t off) {
     return 0;
 }
 
-void c_mem_write_tvram(int32_t off, uint8_t val) {
-    if (g_tvram && off >= 0 && off < TVRAM_SIZE) g_tvram[off] = val;
-}
-
-void c_mem_clear_tvram(void) {
-    if (g_tvram) {
-        memset(g_tvram, 0, TVRAM_SIZE);
-    }
-}
-
 int c_frame_ready(void) {
     return g_frame_ready;
 }
@@ -909,18 +853,6 @@ void c_fb_bind(uint32_t *fb) {
         g_fb_bound = 1;
     }
     g_fb = fb;
-}
-
-void c_mem_reset_display(void) {
-    if (g_tvram) memset(g_tvram, 0, TVRAM_SIZE);
-    if (g_pal) memset(g_pal, 0, PAL_SIZE);
-    if (g_sprite) memset(g_sprite, 0, SPRITE_SIZE);
-    if (g_bgreg) memset(g_bgreg, 0, BGREG_SIZE);
-    if (g_bgram) memset(g_bgram, 0, BGRAM_SIZE);
-    if (g_bg_chr8) memset(g_bg_chr8, 0, 8 * 8 * 256);
-    if (g_bg_chr16) memset(g_bg_chr16, 0, 16 * 16 * 256);
-    c_clear_framebuffer(0xFF000000);
-    g_frame_ready = 0;
 }
 
 void c_gvram_bind(uint8_t *gvram) {
@@ -939,16 +871,6 @@ uint8_t c_mem_read_gvram(int32_t off) {
     return 0;
 }
 
-void c_mem_write_gvram(int32_t off, uint8_t val) {
-    if (!g_gvram) return;
-    int32_t a = off & 0x1FFFFF;
-    if (a < GVRAM_SIZE) g_gvram[a] = val;
-}
-
-void c_mem_clear_gvram(void) {
-    if (g_gvram) memset(g_gvram, 0, GVRAM_SIZE);
-}
-
 /* px68k gvram.c. Pages share the 512KB array. R20 selects the packing. */
 static int gvram_type(uint8_t r20) {
     if (r20 & 8) return 4;
@@ -958,95 +880,6 @@ static int gvram_type(uint8_t r20) {
 
 static uint32_t gvram_addr1024(uint32_t adr) {
     return ((adr & 0xff800u) >> 1) + (adr & 0x3ffu);
-}
-
-uint8_t c_mem_gvram_cpu_read(int32_t off, uint8_t r20) {
-    if (!g_gvram || off < 0) return 0;
-    uint32_t adr = (uint32_t)off & 0x1fffffu;
-    int type = gvram_type(r20);
-    if (type == 0) {
-        uint32_t i;
-        if ((adr & 1) == 0) return 0;
-        i = gvram_addr1024(adr);
-        if ((adr & 0x100000) == 0) i ^= 1;
-        if (i >= GVRAM_SIZE) return 0;
-        if (adr & 0x400) return (uint8_t)(g_gvram[i] >> 4);
-        return (uint8_t)(g_gvram[i] & 0x0f);
-    }
-    if (type == 1) {
-        uint32_t i;
-        if ((adr & 1) == 0) return 0;
-        if (adr < 0x80000) return (uint8_t)(g_gvram[adr ^ 1] & 0x0f);
-        i = adr & 0x7ffff;
-        if (adr < 0x100000) return (uint8_t)(g_gvram[i ^ 1] >> 4);
-        if (adr < 0x180000) return (uint8_t)(g_gvram[i] & 0x0f);
-        return (uint8_t)(g_gvram[i] >> 4);
-    }
-    if (type == 2 || type == 3) {
-        if (adr < 0x80000) {
-            if (adr & 1) return g_gvram[adr ^ 1];
-            return 0;
-        }
-        if (adr < 0x100000) {
-            adr &= 0x7ffff;
-            if (adr & 1) return g_gvram[adr];
-            return 0;
-        }
-        return 0;
-    }
-    if (adr < 0x80000) return g_gvram[adr ^ 1];
-    return 0;
-}
-
-void c_mem_gvram_cpu_write(int32_t off, uint8_t val, uint8_t r20) {
-    uint32_t adr, i;
-    uint8_t cur;
-    int type;
-    if (!g_gvram || off < 0) return;
-    adr = (uint32_t)off & 0x1fffffu;
-    type = gvram_type(r20);
-    if (type == 0) {
-        if ((adr & 1) == 0) return;
-        i = gvram_addr1024(adr);
-        if ((adr & 0x100000) == 0) i ^= 1;
-        if (i >= GVRAM_SIZE) return;
-        cur = g_gvram[i];
-        if (adr & 0x400) g_gvram[i] = (uint8_t)((cur & 0x0f) | ((val & 0x0f) << 4));
-        else g_gvram[i] = (uint8_t)((cur & 0xf0) | (val & 0x0f));
-        return;
-    }
-    if (type == 1) {
-        if ((adr & 1) == 0) return;
-        if (adr < 0x80000) {
-            i = adr ^ 1;
-            g_gvram[i] = (uint8_t)((g_gvram[i] & 0xf0) | (val & 0x0f));
-            return;
-        }
-        i = adr & 0x7ffff;
-        if (adr < 0x100000) {
-            i ^= 1;
-            g_gvram[i] = (uint8_t)((g_gvram[i] & 0x0f) | (val << 4));
-            return;
-        }
-        if (adr < 0x180000) {
-            g_gvram[i] = (uint8_t)((g_gvram[i] & 0xf0) | (val & 0x0f));
-            return;
-        }
-        g_gvram[i] = (uint8_t)((g_gvram[i] & 0x0f) | (val << 4));
-        return;
-    }
-    if (type == 2 || type == 3) {
-        if ((adr & 1) == 0) return;
-        if (adr < 0x80000) {
-            g_gvram[adr ^ 1] = val;
-            return;
-        }
-        if (adr < 0x100000) {
-            g_gvram[adr & 0x7ffff] = val;
-        }
-        return;
-    }
-    if (adr < 0x80000) g_gvram[adr ^ 1] = val;
 }
 
 void c_video_bind(uint8_t *pal, uint8_t *sprite, uint8_t *bgreg, uint8_t *bgram, uint8_t *chr8, uint8_t *chr16) {
@@ -1073,10 +906,6 @@ uint8_t c_mem_read_pal(int32_t off) {
     return 0xFF;
 }
 
-void c_mem_write_pal(int32_t off, uint8_t val) {
-    if (g_pal && off >= 0 && off < PAL_SIZE) g_pal[off] = val;
-}
-
 void c_vcreg_bind(uint8_t *vcreg) {
     if (!vcreg) return;
     if (!g_vcreg_bound) {
@@ -1096,49 +925,9 @@ uint8_t c_mem_read_sprite(int32_t off) {
 void c_set_current_frame(int frame) {
     s_current_frame = frame;
 }
-int c_get_current_frame() {
-    return s_current_frame;
-}
-void c_log_duff(uint32_t a5, uint32_t a6, uint32_t d7, uint32_t ret_pc) {
-}
-void c_log_ram_write(uint32_t addr, uint8_t val, uint32_t pc) {
-    (void)addr;
-    (void)val;
-    (void)pc;
-}
-
-void c_mem_write_sprite(int32_t off, uint8_t val) {
-    if (g_sprite && off >= 0 && off < SPRITE_SIZE) g_sprite[off] = val;
-}
-
 uint8_t c_mem_read_bg_reg(int32_t off) {
     if (g_bgreg && off >= 0 && off < BGREG_SIZE) return g_bgreg[off];
     return 0xFF;
-}
-
-void c_mem_write_bg_reg(int32_t off, uint8_t val) {
-    if (g_bgreg && off >= 0 && off < BGREG_SIZE) g_bgreg[off] = val;
-}
-
-uint8_t c_mem_read_bgram(int32_t off) {
-    if (g_bgram && off >= 0 && off < BGRAM_SIZE) return g_bgram[off];
-    return 0xFF;
-}
-
-void c_mem_write_bgram(int32_t off, uint8_t val) {
-    if (!g_bgram || off < 0 || off >= BGRAM_SIZE) return;
-    g_bgram[off] = val;
-    if (g_bg_chr8 && off < 0x2000) {
-        g_bg_chr8[off * 2]     = val >> 4;
-        g_bg_chr8[off * 2 + 1] = val & 15;
-    }
-    if (g_bg_chr16) {
-        uint32_t bg16chr = ((off & 3) * 2) + ((off & 0x3C) * 4) + ((off & 0x40) >> 3) + ((off & 0x7F80) * 2);
-        if (bg16chr + 1 < (16 * 16 * 256)) {
-            g_bg_chr16[bg16chr]     = val >> 4;
-            g_bg_chr16[bg16chr + 1] = val & 15;
-        }
-    }
 }
 
 void c_line_zero(uint16_t *grp, uint8_t *mix, uint16_t *sp, uint16_t *sp2, uint16_t *bg, uint8_t *tr) {
@@ -1287,47 +1076,6 @@ int c_fdd_current_id(int32_t drive, uint8_t *c, uint8_t *h, uint8_t *r, uint8_t 
     return 0;
 }
 
-int c_fdd_read_sector(int32_t drive, int32_t trk, int32_t sec, uint8_t *dst_1024) {
-    bool loaded = false;
-    uint8_t *img = fdd_image(drive, &loaded);
-    if (!img || !dst_1024 || !loaded) return 0;
-    if (drive >= 0 && drive <= 1 && (g_fdd_kind[drive] == FDD_KIND_D88 || g_fdd_kind[drive] == FDD_KIND_DIM)) {
-        return c_fdd_read_fdc(drive, trk, trk >> 1, trk & 1, sec, 3, dst_1024);
-    }
-    if (trk < 0 || trk >= 154 || sec < 1 || sec > 8) return 0;
-    int offset = (trk * 8 + (sec - 1)) * 1024;
-    if (offset + 1024 > FDD_SIZE) return 0;
-    memcpy(dst_1024, &img[offset], 1024);
-    return 1;
-}
-
-int c_fdd_write_sector(int32_t drive, int32_t trk, int32_t sec, const uint8_t *src_1024) {
-    bool loaded = false;
-    uint8_t *img = fdd_image(drive, &loaded);
-    if (!img || !src_1024 || !loaded) return 0;
-    if (drive >= 0 && drive <= 1 && (g_fdd_kind[drive] == FDD_KIND_D88 || g_fdd_kind[drive] == FDD_KIND_DIM)) {
-        return c_fdd_write_fdc(drive, trk, trk >> 1, trk & 1, sec, 3, src_1024);
-    }
-    if (trk < 0 || trk >= 154 || sec < 1 || sec > 8) return 0;
-    int offset = (trk * 8 + (sec - 1)) * 1024;
-    if (offset + 1024 > FDD_SIZE) return 0;
-    memcpy(&img[offset], src_1024, 1024);
-    return 1;
-}
-
-
-
-int c_fdd_load_to_ram(int32_t disk_offset, int32_t ram_addr, int32_t bytes) {
-    if (!g_fdd0 || !g_ram || !g_fdd0_loaded || bytes <= 0) return 0;
-    if (g_fdd_kind[0] != FDD_KIND_XDF) return 0;
-    if (disk_offset < 0 || disk_offset + bytes > FDD_SIZE) return 0;
-    if (ram_addr < 0 || ram_addr + bytes > g_ram_bytes) return 0;
-    memcpy(&g_ram[ram_addr], &g_fdd0[disk_offset], (size_t)bytes);
-    return 1;
-}
-
-
-
 static HWND g_hwnd = NULL;
 static HDC g_hdc = NULL;
 static int g_scale = 1;
@@ -1433,16 +1181,6 @@ void c_clear_framebuffer(uint32_t argb) {
     }
 }
 
-void c_set_pixel(int32_t x, int32_t y, uint32_t argb) {
-    if (!g_fb || x < 0 || x >= g_src_w || y < 0 || y >= g_src_h) return;
-    g_fb[y * g_src_w + x] = argb;
-}
-
-uint32_t c_fb_at(int32_t x, int32_t y) {
-    if (!g_fb || x < 0 || x >= g_src_w || y < 0 || y >= g_src_h) return 0;
-    return g_fb[y * g_src_w + x];
-}
-
 static void tvram_store(uint32_t adr, uint8_t data) {
     if (adr < TVRAM_SIZE) g_tvram[adr] = data;
 }
@@ -1453,42 +1191,6 @@ static void tvram_store_mask(uint32_t adr, uint8_t data, uint8_t r2e, uint8_t r2
     uint8_t m = (adr & 1) ? r2f : r2e;
     uint8_t cur = g_tvram[adr];
     g_tvram[adr] = (uint8_t)((cur & m) | (data & (uint8_t)~m));
-}
-
-void c_mem_write_tvram_access(int32_t off, uint8_t val, uint8_t r2a, uint8_t r2b, uint8_t r2e, uint8_t r2f) {
-    if (!g_tvram || off < 0) return;
-    uint32_t adr = (uint32_t)off & 0x7FFFF;
-    if (r2a & 1) {
-        adr &= 0x1FFFF;
-        if (r2a & 2) {
-            if (r2b & 0x10) tvram_store_mask(adr, val, r2e, r2f);
-            if (r2b & 0x20) tvram_store_mask(adr + 0x20000, val, r2e, r2f);
-            if (r2b & 0x40) tvram_store_mask(adr + 0x40000, val, r2e, r2f);
-            if (r2b & 0x80) tvram_store_mask(adr + 0x60000, val, r2e, r2f);
-        } else {
-            if (r2b & 0x10) tvram_store(adr, val);
-            if (r2b & 0x20) tvram_store(adr + 0x20000, val);
-            if (r2b & 0x40) tvram_store(adr + 0x40000, val);
-            if (r2b & 0x80) tvram_store(adr + 0x60000, val);
-        }
-    } else if (r2a & 2) {
-        tvram_store_mask(adr, val, r2e, r2f);
-    } else {
-        tvram_store(adr, val);
-    }
-}
-
-// CRTC Raster Copy
-void c_mem_tvram_raster_copy(uint32_t src_line, uint32_t dst_line, uint8_t plane_mask) {
-    if (!g_tvram) return;
-    uint32_t src = (src_line << 9) & 0x1FFFF;
-    uint32_t dst = (dst_line << 9) & 0x1FFFF;
-    static const uint32_t plane_offs[4] = { 0, 0x20000, 0x40000, 0x60000 };
-    for (int bit = 0; bit < 4; bit++) {
-        if (plane_mask & (1 << bit)) {
-            memmove(&g_tvram[dst + plane_offs[bit]], &g_tvram[src + plane_offs[bit]], 512);
-        }
-    }
 }
 
 // Keyboard input FIFO
@@ -1595,10 +1297,6 @@ static uint8_t vk_to_x68k_code(WPARAM vk, LPARAM lp) {
     }
 }
 
-int c_vk_to_x68k(int vk, int extended) {
-    return (int)vk_to_x68k_code((WPARAM)vk, extended ? 0x01000000 : 0);
-}
-
 /* Held host keys that also drive joy1. 超連射68K reads this port for start and shot.
    Bits are active-low and match arcl_joypad: up 0x01, down 0x02, left 0x04, right 0x08,
    A 0x20 (Z / Space / Enter), B 0x40 (X). Opposite directions cancel. */
@@ -1644,13 +1342,6 @@ static void push_char(char ch) {
         g_key_fifo[g_key_head] = ch;
         g_key_head = next;
     }
-}
-
-int win32_ui_get_char(void) {
-    if (g_key_head == g_key_tail) return -1;
-    char ch = g_key_fifo[g_key_tail];
-    g_key_tail = (g_key_tail + 1) % KEY_BUF_SIZE;
-    return (int)(unsigned char)ch;
 }
 
 static void win32_set_scale(int scale) {
@@ -2381,24 +2072,6 @@ int c_save_fb_png(const uint8_t *path_bytes, int path_len) {
     return 1;
 }
 
-void c_print_hex(uint32_t val) {
-    printf("%08X", val);
-    fflush(stdout);
-}
-
-void c_print_hex16(uint16_t val) {
-    printf("%04X", val);
-    fflush(stdout);
-}
-
-void c_eprint_hex(uint32_t val) {
-    fprintf(stderr, "%08X", val);
-}
-
-void c_eprint_hex16(uint16_t val) {
-    fprintf(stderr, "%04X", val);
-}
-
 // -----------------------------------------------------------------------------
 // Full Hardware State Save / Load for ARCL Rollback & State Machine
 // -----------------------------------------------------------------------------
@@ -2453,13 +2126,6 @@ static uint64_t g_state_generation = 0;
 // used only by native regression tests, never exposed as an MCP tool.
 static int g_state_fail_after = -1;
 static int g_state_alloc_count = 0;
-
-void c_mem_test_fail_alloc(int after) {
-    g_state_fail_after = after;
-    g_state_alloc_count = 0;
-}
-
-int c_mem_test_alloc_count(void) { return g_state_alloc_count; }
 
 static void *state_alloc(size_t bytes) {
     g_state_alloc_count++;
@@ -2578,47 +2244,6 @@ static int hw_save_slot(ArclHwSlot *slot) {
     return 1;
 }
 
-int c_mem_save_state(int slot_idx) {
-    if (slot_idx < 0 || slot_idx >= MAX_ARCL_SLOTS) return 0;
-    return hw_save_slot(&g_arcl_slots[slot_idx]);
-}
-
-
-
-int c_mem_test_break_version(int slot_idx) {
-    if (slot_idx < 0 || slot_idx >= MAX_ARCL_SLOTS) return 0;
-    if (!g_arcl_slots[slot_idx].valid) return 0;
-    g_arcl_slots[slot_idx].version = 0;
-    return 1;
-}
-
-int c_mem_test_corrupt_slot(int slot_idx, int kind) {
-    ArclHwSlot *slot;
-    if (slot_idx < 0 || slot_idx >= MAX_ARCL_SLOTS) return 0;
-    slot = &g_arcl_slots[slot_idx];
-    if (!slot->valid) return 0;
-    switch (kind) {
-    case 1: slot->version = 0; break;
-    case 2: slot->ram_bytes++; break;
-    case 3: slot->hdd_len = HDD_SIZE + 1; break;
-    case 4: slot->fdd_cap[0] = FDD_MAX_IMAGE + 1; break;
-    case 5: if (!slot->sound) return 0; slot->sound[0] ^= 1; break;
-    case 6: slot->fdd_kind[0] = 99; break;
-    case 7: slot->io.cpu_mhz = 33; break;
-    case 8: slot->io.opm_addr = 256; break;
-    default: return 0;
-    }
-    return 1;
-}
-
-int c_ppu_get_phase(void) {
-    return g_ppu_phase;
-}
-
-void c_ppu_set_phase(int phase) {
-    g_ppu_phase = phase;
-}
-
 static void slot_commit_fdd(const ArclHwSlot *slot, int drive, uint8_t *prepared) {
     uint8_t **img = (drive == 0) ? &g_fdd0 : &g_fdd1;
     free(*img);
@@ -2711,11 +2336,6 @@ fail:
     return 0;
 }
 
-int c_mem_load_state(int slot_idx) {
-    if (slot_idx < 0 || slot_idx >= MAX_ARCL_SLOTS) return 0;
-    return hw_load_slot(&g_arcl_slots[slot_idx]);
-}
-
 static ArclHwSlot g_snaps[32];
 static ArclHwSlot g_rew[8];
 
@@ -2743,29 +2363,8 @@ static int slot_bytes(const ArclHwSlot *slot) {
     return n;
 }
 
-int c_extra_save(int bank, int idx) {
-    ArclHwSlot *slot = extra_slot(bank, idx);
-    return hw_save_slot(slot);
-}
-
-int c_extra_load(int bank, int idx) {
-    return hw_load_slot(extra_slot(bank, idx));
-}
-
-void c_extra_drop(int bank, int idx) {
-    ArclHwSlot *slot = extra_slot(bank, idx);
-    if (!slot) return;
-    slot_dispose(slot);
-}
-
 int c_extra_bytes(int bank, int idx) {
     return slot_bytes(extra_slot(bank, idx));
-}
-
-int c_extra_total(int bank) {
-    int i, n = 0, lim = bank == 0 ? 32 : 8;
-    for (i = 0; i < lim; i++) n += c_extra_bytes(bank, i);
-    return n;
 }
 
 // One native bank convention shared with x68k_state.goose.
@@ -2879,11 +2478,6 @@ int c_audio_capture_stop(const uint8_t *path_bytes, int path_len, int *frames, i
     if (peak) *peak = pk;
     if (silent) *silent = pk < AUDIO_SILENCE_PEAK;
     return 1;
-}
-
-void c_sound_render(int16_t *buf, int32_t samples) {
-    x68k_sound_render(buf, samples);
-    cap_push(buf, samples);
 }
 
 // Audio / Sound API
@@ -3027,11 +2621,6 @@ uint8_t c_pia_read_c(void) {
     return g_pia_c;
 }
 
-uint8_t c_pia_joy_strobe(int32_t port) {
-    if (port < 0 || port > 1) return 0;
-    return g_joy_strobe[port];
-}
-
 void c_sound_scanline_timer(uint32_t cycles) {
     x68k_sound_scanline_timer(cycles);
 }
@@ -3104,15 +2693,4 @@ int c_host_list_dir(const uint8_t *path_bytes, int path_len, char *out, int cap)
     }
     return 1;
 }
-
-void c_sound_get_stats(uint32_t *opm_w, uint32_t *adpcm_w, int32_t *peak, uint32_t *total_rendered) {
-    if (opm_w) *opm_w = s_opm_w_count;
-    if (adpcm_w) *adpcm_w = s_adpcm_w_count;
-    if (peak) *peak = s_peak_sample;
-    if (total_rendered) *total_rendered = s_total_rendered_samples;
-}
-
-
-
-
 

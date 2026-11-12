@@ -1,33 +1,29 @@
 // Sharp X68000 MC68901 MFP (Multi-Function Peripheral) in Goose
 
-import std;
-import .x68k_bridge;
-import .m68k_types;
-
-const MFP_GPIP  = 0;
-const MFP_AER   = 1;
-const MFP_DDR   = 2;
-const MFP_IERA  = 3;
-const MFP_IERB  = 4;
-const MFP_IPRA  = 5;
-const MFP_IPRB  = 6;
-const MFP_ISRA  = 7;
-const MFP_ISRB  = 8;
-const MFP_IMRA  = 9;
-const MFP_IMRB  = 10;
-const MFP_VR    = 11;
-const MFP_TACR  = 12;
-const MFP_TBCR  = 13;
-const MFP_TCDCR = 14;
-const MFP_TADR  = 15;
-const MFP_TBDR  = 16;
-const MFP_TCDR  = 17;
-const MFP_TDDR  = 18;
-const MFP_SCR   = 19;
-const MFP_UCR   = 20;
-const MFP_RSR   = 21;
-const MFP_TSR   = 22;
-const MFP_UDR   = 23;
+let MFP_GPIP = 0;
+let MFP_AER = 1;
+let MFP_DDR = 2;
+let MFP_IERA = 3;
+let MFP_IERB = 4;
+let MFP_IPRA = 5;
+let MFP_IPRB = 6;
+let MFP_ISRA = 7;
+let MFP_ISRB = 8;
+let MFP_IMRA = 9;
+let MFP_IMRB = 10;
+let MFP_VR = 11;
+let MFP_TACR = 12;
+let MFP_TBCR = 13;
+let MFP_TCDCR = 14;
+let MFP_TADR = 15;
+let MFP_TBDR = 16;
+let MFP_TCDR = 17;
+let MFP_TDDR = 18;
+let MFP_SCR = 19;
+let MFP_UCR = 20;
+let MFP_RSR = 21;
+let MFP_TSR = 22;
+let MFP_UDR = 23;
 
 struct X68kMFP {
     regs: u8[24] = [0; 24],
@@ -45,7 +41,7 @@ struct X68kMFP {
     hsync_clk: i32 = 600,
     hsync_start: i32 = 150,
     hsync_end: i32 = 450,
-    crtc_intline: i32 = 0
+    crtc_intline: i32 = 0,
 }
 
 // プリスケーラ分周テーブル (4MHz MFP クロック / 10MHz CPU 基準: px68k mfp.c 準拠)
@@ -62,46 +58,32 @@ fn mfp_get_prescaler(mode: i32) -> i32 {
 }
 
 fn mfp_init(mfp: X68kMFP&) {
+    mfp = X68kMFP {};
     // X68000 実機デフォルト初期値
-    mfp.regs[0]  = 0x7B; // GPIP
-    mfp.regs[1]  = 0x06; // AER
-    mfp.regs[2]  = 0x00; // DDR
-    mfp.regs[3]  = 0x18; // IERA
-    mfp.regs[4]  = 0x3E; // IERB (px68k mfp.c 準拠)
-    mfp.regs[5]  = 0x00; // IPRA
-    mfp.regs[6]  = 0x00; // IPRB
-    mfp.regs[7]  = 0x00; // ISRA
-    mfp.regs[8]  = 0x00; // ISRB
-    mfp.regs[9]  = 0x18; // IMRA
-    mfp.regs[10] = 0x3E; // IMRB (px68k mfp.c 準拠)
-    mfp.regs[11] = 0x40; // VR (ベクタベース = 0x40 = 64)
-    mfp.regs[12] = 0x08; // TACR
-    mfp.regs[13] = 0x01; // TBCR
-    mfp.regs[14] = 0x77; // TCDCR
-    mfp.regs[15] = 0x01; // TADR
-    mfp.regs[16] = 0x0D; // TBDR
-    mfp.regs[17] = 0xC8; // TCDR
-    mfp.regs[18] = 0x14; // TDDR
-    mfp.regs[19] = 0x00; // SCR
-    mfp.regs[20] = 0x88; // UCR
-    mfp.regs[21] = 0x01; // RSR
-    mfp.regs[22] = 0x81; // TSR
-    mfp.regs[23] = 0x00; // UDR
-
-    for i in 4 {
-        mfp.timer_reload[i] = 0;
-        mfp.timer_tick[i] = 0;
-    }
-    mfp.last_key = 0;
-    mfp.key_wp = 0;
-    mfp.key_rp = 0;
-    mfp.key_int_flag = false;
-    mfp.key_line_div = 0;
-    for i in 128 {
-        mfp.key_buf[i] = 0;
-    }
-    mfp.in_vdisp = true;
-    mfp.cur_vline = 0;
+    mfp.regs[MFP_GPIP] = 0x7B;
+    mfp.regs[MFP_AER] = 0x06;
+    mfp.regs[MFP_DDR] = 0x00;
+    mfp.regs[MFP_IERA] = 0x18;
+    mfp.regs[MFP_IERB] = 0x3E; // (px68k mfp.c 準拠)
+    mfp.regs[MFP_IPRA] = 0x00;
+    mfp.regs[MFP_IPRB] = 0x00;
+    mfp.regs[MFP_ISRA] = 0x00;
+    mfp.regs[MFP_ISRB] = 0x00;
+    mfp.regs[MFP_IMRA] = 0x18;
+    mfp.regs[MFP_IMRB] = 0x3E; // (px68k mfp.c 準拠)
+    mfp.regs[MFP_VR] = 0x40; // (ベクタベース = 0x40 = 64)
+    mfp.regs[MFP_TACR] = 0x08;
+    mfp.regs[MFP_TBCR] = 0x01;
+    mfp.regs[MFP_TCDCR] = 0x77;
+    mfp.regs[MFP_TADR] = 0x01;
+    mfp.regs[MFP_TBDR] = 0x0D;
+    mfp.regs[MFP_TCDR] = 0xC8;
+    mfp.regs[MFP_TDDR] = 0x14;
+    mfp.regs[MFP_SCR] = 0x00;
+    mfp.regs[MFP_UCR] = 0x88;
+    mfp.regs[MFP_RSR] = 0x01;
+    mfp.regs[MFP_TSR] = 0x81;
+    mfp.regs[MFP_UDR] = 0x00;
 }
 
 // MFP レジスタ Read
@@ -209,7 +191,7 @@ fn mfp_ack_interrupt(mfp: X68kMFP&) -> i32 {
             if (mfp.regs[MFP_VR] & 8) != 0 {
                 mfp.regs[MFP_ISRA] |= flag;
             }
-            return ((mfp.regs[MFP_VR] & 0xF0) as i32) | vect;
+            return ((mfp.regs[MFP_VR] & 0xF0)) | vect;
         }
         flag >>= 1;
         vect--;
@@ -223,7 +205,7 @@ fn mfp_ack_interrupt(mfp: X68kMFP&) -> i32 {
             if (mfp.regs[MFP_VR] & 8) != 0 {
                 mfp.regs[MFP_ISRB] |= flag;
             }
-            return ((mfp.regs[MFP_VR] & 0xF0) as i32) | vect;
+            return ((mfp.regs[MFP_VR] & 0xF0)) | vect;
         }
         flag >>= 1;
         vect--;
@@ -280,10 +262,10 @@ fn mfp_step_timers(mfp: X68kMFP&, cycles: i32) {
     // タイマ A, B, C, D
     for chan in 4 {
         var mode: i32 = 0;
-        if chan == 0 { mode = mfp.regs[MFP_TACR] as i32; }
-        else if chan == 1 { mode = mfp.regs[MFP_TBCR] as i32; }
-        else if chan == 2 { mode = (mfp.regs[MFP_TCDCR] >> 4) as i32; }
-        else { mode = (mfp.regs[MFP_TCDCR] & 0x0F) as i32; }
+        if chan == 0 { mode = mfp.regs[MFP_TACR]; }
+        else if chan == 1 { mode = mfp.regs[MFP_TBCR]; }
+        else if chan == 2 { mode = (mfp.regs[MFP_TCDCR] >> 4); }
+        else { mode = (mfp.regs[MFP_TCDCR] & 0x0F); }
 
         if chan == 0 && (mode & 8) != 0 {
             continue; // イベントカウントモードは走査線で実行

@@ -1,13 +1,8 @@
 // Motorola 68000 命令デコード & 実行エンジン in Goose (Approach 1 完全実装)
 
-import std;
-import os;
-import .x68k_bridge;
 import .m68k_types;
 import .m68k_cpu;
 import .m68k_mmu;
-
-var g_ret_trace_count: i32 = 0;
 
 // PC から次の 16bit ワードをフェッチ
 fn fetch16(cpu: M68kCPU&, mmu: M68kMMU&) -> u16 {
@@ -46,6 +41,45 @@ fn pop32(cpu: M68kCPU&, mmu: M68kMMU&) -> u32 {
     return val;
 }
 
+// Dn の下位 size バイトだけを書き換える。
+fn dreg_write(cpu: M68kCPU&, reg: i32, size: i32, val: u32) {
+    let mask = size_mask(size);
+    cpu.d[reg] = (cpu.d[reg] & ~mask) | (val & mask);
+}
+
+// アドレスに符号付きの変位を足す。32 bit で折り返す (符号付き加算だとデバッグビルドで桁あふれ検査に掛かる)。
+fn addr_add(base: u32, disp: i32) -> u32 {
+    return base + (disp as! u32);
+}
+
+// サイズ付きのメモリ読み書き (1 = byte, 2 = word, 4 = long)
+fn mem_read(mmu: M68kMMU&, addr: u32, size: i32) -> u32 {
+    if size == 1 { return mmu_read8(mmu, addr); }
+    if size == 2 { return mmu_read16(mmu, addr); }
+    return mmu_read32(mmu, addr);
+}
+
+fn mem_write(mmu: M68kMMU&, addr: u32, size: i32, val: u32) {
+    if size == 1 { mmu_write8(mmu, addr, val as! u8); }
+    else if size == 2 { mmu_write16(mmu, addr, val as! u16); }
+    else { mmu_write32(mmu, addr, val); }
+}
+
+// -(An)。A7 のバイトはスタックを偶数に保つため 2 減らす。
+fn predec(cpu: M68kCPU&, reg: i32, size: i32) -> u32 {
+    let delta: u32 = if reg == 7 && size == 1 { 2 } else { size as! u32 };
+    cpu.a[reg] -= delta;
+    return cpu.a[reg];
+}
+
+fn flags_addsub(cpu: M68kCPU&, is_add: bool, size: i32, src: u32, dst: u32, res: u32) {
+    if is_add { cpu_flags_add(cpu, size, src, dst, res); } else { cpu_flags_sub(cpu, size, src, dst, res, true); }
+}
+
+fn flags_addsubx(cpu: M68kCPU&, is_add: bool, size: i32, src: u32, dst: u32, res: u32) {
+    if is_add { cpu_flags_addx(cpu, size, src, dst, res); } else { cpu_flags_subx(cpu, size, src, dst, res); }
+}
+
 // EA (Effective Address) アドレス計算 (サイズ: 1=byte, 2=word, 4=long)
 fn ea_calc_addr(cpu: M68kCPU&, mmu: M68kMMU&, mode: i32, reg: i32, size: i32) -> u32 {
     if mode == 2 { // (An)
@@ -64,7 +98,7 @@ fn ea_calc_addr(cpu: M68kCPU&, mmu: M68kMMU&, mode: i32, reg: i32, size: i32) ->
     }
     if mode == 5 { // (d16, An)
         let d16 = fetch16(cpu, mmu) as! i16;
-        return ((cpu.a[reg] as! i32) + (d16 as! i32)) as! u32;
+        return addr_add(cpu.a[reg], d16);
     }
     if mode == 6 { // (d8, An, Xn)
         let ext = fetch16(cpu, mmu);
@@ -74,18 +108,18 @@ fn ea_calc_addr(cpu: M68kCPU&, mmu: M68kMMU&, mode: i32, reg: i32, size: i32) ->
         let is_long = (ext & 0x0800) != 0;
         var xval: i32 = 0;
         if is_a {
-            xval = if is_long { cpu.a[xreg] as! i32 } else { (cpu.a[xreg] as! i16) as! i32 };
+            xval = if is_long { cpu.a[xreg] as! i32 } else { (cpu.a[xreg] as! i16) };
         } else {
-            xval = if is_long { cpu.d[xreg] as! i32 } else { (cpu.d[xreg] as! i16) as! i32 };
+            xval = if is_long { cpu.d[xreg] as! i32 } else { (cpu.d[xreg] as! i16) };
         }
-        return ((cpu.a[reg] as! i32) + (d8 as! i32) + xval) as! u32;
+        return addr_add(addr_add(cpu.a[reg], d8), xval);
     }
     if mode == 7 {
         if reg == 0 { // (xxx).W
             // 符号拡張した 32bit を返す。バスは mmu 側で 24bit に切る。
             // ここで切ると PEA/LEA が 0xFFFFFFFF ではなく 0x00FFFFFF になる。
             let w = fetch16(cpu, mmu) as! i16;
-            return (w as! i32) as! u32;
+            return (w) as! u32;
         }
         if reg == 1 { // (xxx).L
             return fetch32(cpu, mmu);
@@ -93,7 +127,7 @@ fn ea_calc_addr(cpu: M68kCPU&, mmu: M68kMMU&, mode: i32, reg: i32, size: i32) ->
         if reg == 2 { // (d16, PC)
             let pc_base = cpu.pc;
             let d16 = fetch16(cpu, mmu) as! i16;
-            return ((pc_base as! i32) + (d16 as! i32)) as! u32;
+            return addr_add(pc_base, d16);
         }
         if reg == 3 { // (d8, PC, Xn)
             let pc_base = cpu.pc;
@@ -104,11 +138,11 @@ fn ea_calc_addr(cpu: M68kCPU&, mmu: M68kMMU&, mode: i32, reg: i32, size: i32) ->
             let is_long = (ext & 0x0800) != 0;
             var xval: i32 = 0;
             if is_a {
-                xval = if is_long { cpu.a[xreg] as! i32 } else { (cpu.a[xreg] as! i16) as! i32 };
+                xval = if is_long { cpu.a[xreg] as! i32 } else { (cpu.a[xreg] as! i16) };
             } else {
-                xval = if is_long { cpu.d[xreg] as! i32 } else { (cpu.d[xreg] as! i16) as! i32 };
+                xval = if is_long { cpu.d[xreg] as! i32 } else { (cpu.d[xreg] as! i16) };
             }
-            return ((pc_base as! i32) + (d8 as! i32) + xval) as! u32;
+            return addr_add(addr_add(pc_base, d8), xval);
         }
     }
     return 0;
@@ -128,41 +162,31 @@ fn ea_read_for_rmw(cpu: M68kCPU&, mmu: M68kMMU&, mode: i32, reg: i32, size: i32)
         return EAResult { addr: 0, val: v };
     }
     if mode == 1 { // An
-        let v = if size == 2 { ((cpu.a[reg] as! i16) as! i32) as! u32 }
+        let v = if size == 2 { ((cpu.a[reg] as! i16)) as! u32 }
                 else { cpu.a[reg] };
         return EAResult { addr: 0, val: v };
     }
     let addr = ea_calc_addr(cpu, mmu, mode, reg, size);
-    let v = if size == 1 { mmu_read8(mmu, addr) as! u32 }
-            else if size == 2 { mmu_read16(mmu, addr) as! u32 }
-            else { mmu_read32(mmu, addr) };
+    let v = mem_read(mmu, addr, size);
     return EAResult { addr: addr, val: v };
 }
 
 // Read-Modify-Write (RMW) 用の EA 書き込み (保持したアドレスに直接書き戻す)
 fn ea_write_for_rmw(cpu: M68kCPU&, mmu: M68kMMU&, mode: i32, reg: i32, size: i32, addr: u32, val: u32) {
     if mode == 0 { // Dn
-        if size == 1 {
-            cpu.d[reg] = (cpu.d[reg] & 0xFFFFFF00) | (val & 0xFF);
-        } else if size == 2 {
-            cpu.d[reg] = (cpu.d[reg] & 0xFFFF0000) | (val & 0xFFFF);
-        } else {
-            cpu.d[reg] = val;
-        }
+        dreg_write(cpu, reg, size, val);
         return;
     }
     if mode == 1 { // An
         if mmu.fault != 0 { return; }
         if size == 2 {
-            cpu.a[reg] = ((val as! i16) as! i32) as! u32;
+            cpu.a[reg] = ((val as! i16)) as! u32;
         } else {
             cpu.a[reg] = val;
         }
         return;
     }
-    if size == 1 { mmu_write8(mmu, addr, (val & 0xFF) as! u8); }
-    else if size == 2 { mmu_write16(mmu, addr, (val & 0xFFFF) as! u16); }
-    else { mmu_write32(mmu, addr, val); }
+    mem_write(mmu, addr, size, val);
 }
 
 // EA 読み出し
@@ -173,45 +197,37 @@ fn ea_read(cpu: M68kCPU&, mmu: M68kMMU&, mode: i32, reg: i32, size: i32) -> u32 
         return cpu.d[reg];
     }
     if mode == 1 { // An
-        if size == 2 { return ((cpu.a[reg] as! i16) as! i32) as! u32; }
+        if size == 2 { return ((cpu.a[reg] as! i16)) as! u32; }
         return cpu.a[reg];
     }
     if mode == 7 && reg == 4 { // Immediate #<data>
-        if size == 1 { return (fetch16(cpu, mmu) & 0xFF) as! u32; }
-        if size == 2 { return fetch16(cpu, mmu) as! u32; }
+        if size == 1 { return (fetch16(cpu, mmu) & 0xFF); }
+        if size == 2 { return fetch16(cpu, mmu); }
         return fetch32(cpu, mmu);
     }
     let addr = ea_calc_addr(cpu, mmu, mode, reg, size);
-    if size == 1 { return mmu_read8(mmu, addr) as! u32; }
-    if size == 2 { return mmu_read16(mmu, addr) as! u32; }
+    if size == 1 { return mmu_read8(mmu, addr); }
+    if size == 2 { return mmu_read16(mmu, addr); }
     return mmu_read32(mmu, addr);
 }
 
 // EA 書き込み
 fn ea_write(cpu: M68kCPU&, mmu: M68kMMU&, mode: i32, reg: i32, size: i32, val: u32) {
     if mode == 0 { // Dn
-        if size == 1 {
-            cpu.d[reg] = (cpu.d[reg] & 0xFFFFFF00) | (val & 0xFF);
-        } else if size == 2 {
-            cpu.d[reg] = (cpu.d[reg] & 0xFFFF0000) | (val & 0xFFFF);
-        } else {
-            cpu.d[reg] = val;
-        }
+        dreg_write(cpu, reg, size, val);
         return;
     }
     if mode == 1 { // An
         if mmu.fault != 0 { return; }
         if size == 2 {
-            cpu.a[reg] = ((val as! i16) as! i32) as! u32;
+            cpu.a[reg] = ((val as! i16)) as! u32;
         } else {
             cpu.a[reg] = val;
         }
         return;
     }
     let addr = ea_calc_addr(cpu, mmu, mode, reg, size);
-    if size == 1 { mmu_write8(mmu, addr, (val & 0xFF) as! u8); }
-    else if size == 2 { mmu_write16(mmu, addr, (val & 0xFFFF) as! u16); }
-    else { mmu_write32(mmu, addr, val); }
+    mem_write(mmu, addr, size, val);
 }
 
 // バイト/ワードの EA 加算。Dn/An は 0。ロングのメモリは +6（C68K の ADD 表）。
@@ -389,8 +405,8 @@ fn divu_cycles(mode: i32, reg: i32, x: u32, y: u32) -> i32 {
 fn divs_cycles(mode: i32, reg: i32, x: i32, y: i32) -> i32 {
     let extra = ea_extra_cycles(mode, reg, 2);
     if y == 0 { return 38 + extra; }
-    let ax = if x < 0 { (0 as! u32) - (x as! u32) } else { x as! u32 };
-    let ay = if y < 0 { (0 as! u32) - (y as! u32) } else { y as! u32 };
+    let ax = if x < 0 { (0) - (x as! u32) } else { x as! u32 };
+    let ay = if y < 0 { (0) - (y as! u32) } else { y as! u32 };
     let q = ax / ay;
     if (q & 0xFFFF0000) != 0 {
         let ovf: i32 = if x < 0 { 18 } else { 16 };
@@ -455,11 +471,11 @@ fn raise_illegal(cpu: M68kCPU&, mmu: M68kMMU&) -> i32 {
 // 68000 BCD flags as XEiJ computes them: X/C carry, Z cleared on a non-zero result,
 // N the result's top bit, V overflow from adding the decimal correction.
 fn bcd_flags(cpu: M68kCPU&, t: i32, z: i32, carry: bool) {
-    if carry { cpu.sr |= ((SR_C | SR_X) as! u16); } else { cpu.sr &= ~((SR_C | SR_X) as! u16); }
+    if carry { cpu.sr |= SR_C | SR_X; } else { cpu.sr &= ~(SR_C | SR_X); }
     if z != 0 { cpu.sr &= ~(SR_Z as! u16); }
-    if (z & 0x80) != 0 { cpu.sr |= (SR_N as! u16); } else { cpu.sr &= ~(SR_N as! u16); }
+    if (z & 0x80) != 0 { cpu.sr |= SR_N; } else { cpu.sr &= ~(SR_N as! u16); }
     let a = z - t;
-    if (((t ^ z) & (a ^ z)) & 0x80) != 0 { cpu.sr |= (SR_V as! u16); } else { cpu.sr &= ~(SR_V as! u16); }
+    if (((t ^ z) & (a ^ z)) & 0x80) != 0 { cpu.sr |= SR_V; } else { cpu.sr &= ~(SR_V as! u16); }
 }
 
 fn bcd_add(cpu: M68kCPU&, dst: u32, src: u32) -> u32 {
@@ -490,18 +506,12 @@ fn bcd_sub(cpu: M68kCPU&, dst: u32, src: u32) -> u32 {
     return z as! u32;
 }
 
-fn predec_byte(cpu: M68kCPU&, reg: i32) -> u32 {
-    let delta: u32 = if reg == 7 { 2 } else { 1 };
-    cpu.a[reg] -= delta;
-    return cpu.a[reg];
-}
-
 // MOVEP。mm: 0=W メモリ→Dn, 1=L メモリ→Dn, 2=W Dn→メモリ, 3=L Dn→メモリ
 fn exec_movep(cpu: M68kCPU&, mmu: M68kMMU&, op: u16) -> i32 {
     let dreg = ((op >> 9) & 0x07) as! i32;
     let areg = (op & 0x07) as! i32;
     let disp = (fetch16(cpu, mmu) as! i16) as! i32;
-    let adr = ((cpu.a[areg] as! i32) + disp) as! u32;
+    let adr = addr_add(cpu.a[areg], disp);
     let kind = ((op >> 6) & 0x03) as! i32;
     if kind == 0 {
         let hi = mmu_read8(mmu, adr) as! u32;
@@ -543,7 +553,7 @@ fn exec_op0(cpu: M68kCPU&, mmu: M68kMMU&, op: u16) -> i32 {
             let b = bit_num & 31;
             let mask = (1 as! u32) << b;
             let z = (cpu.d[reg] & mask) == 0;
-            if z { cpu.sr |= (SR_Z as! u16); } else { cpu.sr &= ~(SR_Z as! u16); }
+            if z { cpu.sr |= SR_Z; } else { cpu.sr &= ~(SR_Z as! u16); }
 
             if op_type == 1 { cpu.d[reg] ^= mask; }
             else if op_type == 2 { cpu.d[reg] &= ~mask; }
@@ -555,13 +565,13 @@ fn exec_op0(cpu: M68kCPU&, mmu: M68kMMU&, op: u16) -> i32 {
             if op_type == 0 {
                 let cur = ea_read(cpu, mmu, mode, reg, 1) as! u8;
                 let z = (cur & mask) == 0;
-                if z { cpu.sr |= (SR_Z as! u16); } else { cpu.sr &= ~(SR_Z as! u16); }
+                if z { cpu.sr |= SR_Z; } else { cpu.sr &= ~(SR_Z as! u16); }
                 return bit_cycles(op_type, true, mode, reg, 0);
             }
             let addr = ea_calc_addr(cpu, mmu, mode, reg, 1);
             let cur = mmu_read8(mmu, addr);
             let z = (cur & mask) == 0;
-            if z { cpu.sr |= (SR_Z as! u16); } else { cpu.sr &= ~(SR_Z as! u16); }
+            if z { cpu.sr |= SR_Z; } else { cpu.sr &= ~(SR_Z as! u16); }
 
             if op_type == 1 { mmu_write8(mmu, addr, cur ^ mask); }
             else if op_type == 2 { mmu_write8(mmu, addr, cur & ~mask); }
@@ -579,25 +589,25 @@ fn exec_op0(cpu: M68kCPU&, mmu: M68kMMU&, op: u16) -> i32 {
             let b = cpu.d[dreg] & 31;
             let mask = (1 as! u32) << b;
             let z = (cpu.d[reg] & mask) == 0;
-            if z { cpu.sr |= (SR_Z as! u16); } else { cpu.sr &= ~(SR_Z as! u16); }
+            if z { cpu.sr |= SR_Z; } else { cpu.sr &= ~(SR_Z as! u16); }
 
             if op_type == 1 { cpu.d[reg] ^= mask; }
             else if op_type == 2 { cpu.d[reg] &= ~mask; }
             else if op_type == 3 { cpu.d[reg] |= mask; }
             return bit_cycles(op_type, false, mode, reg, b);
         } else { // Memory (8-bit)
-            let b = (cpu.d[dreg] & 7) as! u32;
+            let b = (cpu.d[dreg] & 7);
             let mask = ((1 as! u32) << b) as! u8;
             if op_type == 0 {
                 let cur = ea_read(cpu, mmu, mode, reg, 1) as! u8;
                 let z = (cur & mask) == 0;
-                if z { cpu.sr |= (SR_Z as! u16); } else { cpu.sr &= ~(SR_Z as! u16); }
+                if z { cpu.sr |= SR_Z; } else { cpu.sr &= ~(SR_Z as! u16); }
                 return bit_cycles(op_type, false, mode, reg, 0);
             }
             let addr = ea_calc_addr(cpu, mmu, mode, reg, 1);
             let cur = mmu_read8(mmu, addr);
             let z = (cur & mask) == 0;
-            if z { cpu.sr |= (SR_Z as! u16); } else { cpu.sr &= ~(SR_Z as! u16); }
+            if z { cpu.sr |= SR_Z; } else { cpu.sr &= ~(SR_Z as! u16); }
 
             if op_type == 1 { mmu_write8(mmu, addr, cur ^ mask); }
             else if op_type == 2 { mmu_write8(mmu, addr, cur & ~mask); }
@@ -649,48 +659,36 @@ fn exec_op0(cpu: M68kCPU&, mmu: M68kMMU&, op: u16) -> i32 {
         if imm_op == 0 { // ORI
             let res = dst | imm_val;
             ea_write_for_rmw(cpu, mmu, mode, reg, size, ea_res.addr, res);
-            if size == 1 { cpu_set_nz8(cpu, res as! u8); }
-            else if size == 2 { cpu_set_nz16(cpu, res as! u16); }
-            else { cpu_set_nz32(cpu, res); }
+            cpu_set_nz(cpu, size, res);
             return imm_alu_cycles(size, mode, reg);
         }
         if imm_op == 1 { // ANDI
             let res = dst & imm_val;
             ea_write_for_rmw(cpu, mmu, mode, reg, size, ea_res.addr, res);
-            if size == 1 { cpu_set_nz8(cpu, res as! u8); }
-            else if size == 2 { cpu_set_nz16(cpu, res as! u16); }
-            else { cpu_set_nz32(cpu, res); }
+            cpu_set_nz(cpu, size, res);
             return imm_alu_cycles(size, mode, reg);
         }
         if imm_op == 2 { // SUBI
             let res = dst - imm_val;
             ea_write_for_rmw(cpu, mmu, mode, reg, size, ea_res.addr, res);
-            if size == 1 { cpu_flags_sub8(cpu, imm_val as! u8, dst as! u8, res as! u8, true); }
-            else if size == 2 { cpu_flags_sub16(cpu, imm_val as! u16, dst as! u16, res as! u16, true); }
-            else { cpu_flags_sub32(cpu, imm_val, dst, res, true); }
+            cpu_flags_sub(cpu, size, imm_val, dst, res, true);
             return imm_alu_cycles(size, mode, reg);
         }
         if imm_op == 3 { // ADDI
             let res = dst + imm_val;
             ea_write_for_rmw(cpu, mmu, mode, reg, size, ea_res.addr, res);
-            if size == 1 { cpu_flags_add8(cpu, imm_val as! u8, dst as! u8, res as! u8); }
-            else if size == 2 { cpu_flags_add16(cpu, imm_val as! u16, dst as! u16, res as! u16); }
-            else { cpu_flags_add32(cpu, imm_val, dst, res); }
+            cpu_flags_add(cpu, size, imm_val, dst, res);
             return imm_alu_cycles(size, mode, reg);
         }
         if imm_op == 5 { // EORI
             let res = dst ^ imm_val;
             ea_write_for_rmw(cpu, mmu, mode, reg, size, ea_res.addr, res);
-            if size == 1 { cpu_set_nz8(cpu, res as! u8); }
-            else if size == 2 { cpu_set_nz16(cpu, res as! u16); }
-            else { cpu_set_nz32(cpu, res); }
+            cpu_set_nz(cpu, size, res);
             return imm_alu_cycles(size, mode, reg);
         }
         if imm_op == 6 { // CMPI
             let res = dst - imm_val;
-            if size == 1 { cpu_flags_sub8(cpu, imm_val as! u8, dst as! u8, res as! u8, false); }
-            else if size == 2 { cpu_flags_sub16(cpu, imm_val as! u16, dst as! u16, res as! u16, false); }
-            else { cpu_flags_sub32(cpu, imm_val, dst, res, false); }
+            cpu_flags_sub(cpu, size, imm_val, dst, res, false);
             return cmpi_cycles(size, mode, reg);
         }
     }
@@ -706,7 +704,7 @@ fn m68k_trigger_exception(cpu: M68kCPU&, mmu: M68kMMU&, vector: i32, return_pc: 
     }
     push32(cpu, mmu, return_pc);
     push16(cpu, mmu, cpu.sr);
-    cpu.sr |= (SR_S as! u16);
+    cpu.sr |= SR_S;
     cpu.sr &= ~(SR_T as! u16);
     let vec_addr = ((vector & 0xFF) * 4) as! u32;
     cpu.pc = mmu_read32(mmu, vec_addr);
@@ -794,7 +792,7 @@ fn exec_op4(cpu: M68kCPU&, mmu: M68kMMU&, op: u16) -> i32 {
         let dreg = (op & 0x07) as! i32;
         let v = cpu.d[dreg];
         cpu.d[dreg] = (v >> 16) | (v << 16);
-        cpu_set_nz32(cpu, cpu.d[dreg]);
+        cpu_set_nz(cpu, 4, cpu.d[dreg]);
         return 4;
     }
 
@@ -811,7 +809,7 @@ fn exec_op4(cpu: M68kCPU&, mmu: M68kMMU&, op: u16) -> i32 {
         let disp = (fetch16(cpu, mmu) as! i16) as! i32;
         push32(cpu, mmu, cpu.a[areg]);
         cpu.a[areg] = cpu.a[REG_A7];
-        cpu.a[REG_A7] = ((cpu.a[REG_A7] as! i32) + disp) as! u32;
+        cpu.a[REG_A7] = addr_add(cpu.a[REG_A7], disp);
         return 16;
     }
     // UNLK (0100 1110 0101 1rrr)
@@ -894,7 +892,7 @@ fn exec_op4(cpu: M68kCPU&, mmu: M68kMMU&, op: u16) -> i32 {
                         addr += 4;
                         if i < 8 { cpu.d[i] = val; } else if mmu.fault == 0 { cpu.a[i - 8] = val; }
                     } else {
-                        let val = (mmu_read16(mmu, addr) as! i16) as! i32 as! u32;
+                        let val = (mmu_read16(mmu, addr) as! i16) as! u32;
                         addr += 2;
                         if i < 8 { cpu.d[i] = val; } else if mmu.fault == 0 { cpu.a[i - 8] = val; }
                     }
@@ -912,13 +910,13 @@ fn exec_op4(cpu: M68kCPU&, mmu: M68kMMU&, op: u16) -> i32 {
         let is_long = (op & 0x0040) != 0;
         let dreg = (op & 0x07) as! i32;
         if is_long {
-            let val = (cpu.d[dreg] as! i16) as! i32 as! u32;
+            let val = (cpu.d[dreg] as! i16) as! u32;
             cpu.d[dreg] = val;
-            cpu_set_nz32(cpu, val);
+            cpu_set_nz(cpu, 4, val);
         } else {
-            let val = (cpu.d[dreg] as! i8) as! i16 as! u16;
-            cpu.d[dreg] = (cpu.d[dreg] & 0xFFFF0000) | (val as! u32);
-            cpu_set_nz16(cpu, val);
+            let val = (cpu.d[dreg] as! i8) as! u16;
+            cpu.d[dreg] = (cpu.d[dreg] & 0xFFFF0000) | (val);
+            cpu_set_nz(cpu, 2, val);
         }
         return 4;
     }
@@ -941,7 +939,7 @@ fn exec_op4(cpu: M68kCPU&, mmu: M68kMMU&, op: u16) -> i32 {
     }
     // MOVE from SR (0100 0000 11 eee eee)
     if (op & 0xFFC0) == 0x40C0 {
-        ea_write(cpu, mmu, mode, reg, 2, cpu.sr as! u32);
+        ea_write(cpu, mmu, mode, reg, 2, cpu.sr);
         if mode == 0 { return 6; }
         return 8 + ea_bw_extra(mode, reg);
     }
@@ -953,11 +951,9 @@ fn exec_op4(cpu: M68kCPU&, mmu: M68kMMU&, op: u16) -> i32 {
         let ea_res = ea_read_for_rmw(cpu, mmu, mode, reg, size);
         let cur = ea_res.val;
         let x_val = if cpu_flag_x(cpu) { 1 as! u32 } else { 0 as! u32 };
-        let res = (0 as! u32) - cur - x_val;
+        let res = (0) - cur - x_val;
         ea_write_for_rmw(cpu, mmu, mode, reg, size, ea_res.addr, res);
-        if size == 1 { cpu_flags_subx8(cpu, cur as! u8, 0, res as! u8); }
-        else if size == 2 { cpu_flags_subx16(cpu, cur as! u16, 0, res as! u16); }
-        else { cpu_flags_subx32(cpu, cur, 0, res); }
+        cpu_flags_subx(cpu, size, cur, 0, res);
         return clr_cycles(size, mode, reg);
     }
 
@@ -966,8 +962,8 @@ fn exec_op4(cpu: M68kCPU&, mmu: M68kMMU&, op: u16) -> i32 {
         let sz_code = ((op >> 6) & 0x03) as! i32;
         let size: i32 = if sz_code == 0 { 1 } else if sz_code == 1 { 2 } else { 4 };
         ea_write(cpu, mmu, mode, reg, size, 0);
-        cpu.sr |= (SR_Z as! u16);
-        cpu.sr &= ~((SR_N | SR_V | SR_C) as! u16);
+        cpu.sr |= SR_Z;
+        cpu.sr &= ~(SR_N | SR_V | SR_C);
         return clr_cycles(size, mode, reg);
     }
 
@@ -977,11 +973,9 @@ fn exec_op4(cpu: M68kCPU&, mmu: M68kMMU&, op: u16) -> i32 {
         let size: i32 = if sz_code == 0 { 1 } else if sz_code == 1 { 2 } else { 4 };
         let ea_res = ea_read_for_rmw(cpu, mmu, mode, reg, size);
         let cur = ea_res.val;
-        let res = (0 as! u32) - cur;
+        let res = (0) - cur;
         ea_write_for_rmw(cpu, mmu, mode, reg, size, ea_res.addr, res);
-        if size == 1 { cpu_flags_sub8(cpu, cur as! u8, 0, res as! u8, true); }
-        else if size == 2 { cpu_flags_sub16(cpu, cur as! u16, 0, res as! u16, true); }
-        else { cpu_flags_sub32(cpu, cur, 0, res, true); }
+        cpu_flags_sub(cpu, size, cur, 0, res, true);
         return clr_cycles(size, mode, reg);
     }
 
@@ -993,9 +987,7 @@ fn exec_op4(cpu: M68kCPU&, mmu: M68kMMU&, op: u16) -> i32 {
         let cur = ea_res.val;
         let res = ~cur;
         ea_write_for_rmw(cpu, mmu, mode, reg, size, ea_res.addr, res);
-        if size == 1 { cpu_set_nz8(cpu, res as! u8); }
-        else if size == 2 { cpu_set_nz16(cpu, res as! u16); }
-        else { cpu_set_nz32(cpu, res); }
+        cpu_set_nz(cpu, size, res);
         return clr_cycles(size, mode, reg);
     }
 
@@ -1004,9 +996,7 @@ fn exec_op4(cpu: M68kCPU&, mmu: M68kMMU&, op: u16) -> i32 {
         let sz_code = ((op >> 6) & 0x03) as! i32;
         let size: i32 = if sz_code == 0 { 1 } else if sz_code == 1 { 2 } else { 4 };
         let val = ea_read(cpu, mmu, mode, reg, size);
-        if size == 1 { cpu_set_nz8(cpu, val as! u8); }
-        else if size == 2 { cpu_set_nz16(cpu, val as! u16); }
-        else { cpu_set_nz32(cpu, val); }
+        cpu_set_nz(cpu, size, val);
         return 4 + ea_extra_cycles(mode, reg, size);
     }
 
@@ -1027,11 +1017,11 @@ fn exec_op4(cpu: M68kCPU&, mmu: M68kMMU&, op: u16) -> i32 {
         let x = (ea_read(cpu, mmu, mode, reg, 2) as! i16) as! i32;
         let y = (cpu.d[dn] as! i16) as! i32;
         let z = ((x - y) as! i16) as! i32;
-        var ccr = cpu.sr & (SR_X as! u16);
-        if y < 0 { ccr |= (SR_N as! u16); }
-        if y == 0 { ccr |= (SR_Z as! u16); }
-        if ((x ^ y) & (x ^ z)) < 0 { ccr |= (SR_V as! u16); }
-        if ((x & (y ^ z)) ^ (y | z)) < 0 { ccr |= (SR_C as! u16); }
+        var ccr = cpu.sr & SR_X;
+        if y < 0 { ccr |= SR_N; }
+        if y == 0 { ccr |= SR_Z; }
+        if ((x ^ y) & (x ^ z)) < 0 { ccr |= SR_V; }
+        if ((x & (y ^ z)) ^ (y | z)) < 0 { ccr |= SR_C; }
         cpu.sr = (cpu.sr & 0xFF00) | ccr;
         if y < 0 || x < y {
             m68k_trigger_exception(cpu, mmu, 6, cpu.pc);
@@ -1045,9 +1035,9 @@ fn exec_op4(cpu: M68kCPU&, mmu: M68kMMU&, op: u16) -> i32 {
         if !ea_is_alterable(mode, reg) { return raise_illegal(cpu, mmu); }
         let ea_res = ea_read_for_rmw(cpu, mmu, mode, reg, 1);
         let cur = ea_res.val & 0xFF;
-        if (cur & 0x80) != 0 { cpu.sr |= (SR_N as! u16); } else { cpu.sr &= ~(SR_N as! u16); }
-        if cur == 0 { cpu.sr |= (SR_Z as! u16); } else { cpu.sr &= ~(SR_Z as! u16); }
-        cpu.sr &= ~((SR_V | SR_C) as! u16);
+        if (cur & 0x80) != 0 { cpu.sr |= SR_N; } else { cpu.sr &= ~(SR_N as! u16); }
+        if cur == 0 { cpu.sr |= SR_Z; } else { cpu.sr &= ~(SR_Z as! u16); }
+        cpu.sr &= ~(SR_V | SR_C);
         ea_write_for_rmw(cpu, mmu, mode, reg, 1, ea_res.addr, cur | 0x80);
         if mode == 0 { return 4; }
         return 10 + ea_bw_extra(mode, reg);
@@ -1069,8 +1059,8 @@ fn exec_op8_or_div(cpu: M68kCPU&, mmu: M68kMMU&, op: u16) -> i32 {
     if (op & 0x01F0) == 0x0100 {
         let mem = (op & 0x0008) != 0;
         if mem {
-            let src_addr = predec_byte(cpu, reg);
-            let dst_addr = predec_byte(cpu, dreg);
+            let src_addr = predec(cpu, reg, 1);
+            let dst_addr = predec(cpu, dreg, 1);
             let src = mmu_read8(mmu, src_addr) as! u32;
             let dst = mmu_read8(mmu, dst_addr) as! u32;
             let res = bcd_sub(cpu, dst, src);
@@ -1088,9 +1078,9 @@ fn exec_op8_or_div(cpu: M68kCPU&, mmu: M68kMMU&, op: u16) -> i32 {
         let cycles = divu_cycles(mode, reg, x, src);
         // Zero divide and overflow leave Dq; N/Z/V as the 68000 sets them (XEiJ).
         if src == 0 {
-            var ccr = (cpu.sr & (SR_X as! u16)) | (SR_V as! u16);
-            if (x & 0x80000000) != 0 { ccr |= (SR_N as! u16); }
-            if (x >> 16) == 0 { ccr |= (SR_Z as! u16); }
+            var ccr = (cpu.sr & SR_X) | SR_V;
+            if (x & 0x80000000) != 0 { ccr |= SR_N; }
+            if (x >> 16) == 0 { ccr |= SR_Z; }
             cpu.sr = (cpu.sr & 0xFF00) | ccr;
             m68k_trigger_exception(cpu, mmu, 5, cpu.pc);
             return cycles;
@@ -1098,12 +1088,12 @@ fn exec_op8_or_div(cpu: M68kCPU&, mmu: M68kMMU&, op: u16) -> i32 {
         let q = x / src;
         let r = x % src;
         if q > 0xFFFF {
-            var ccr = (cpu.sr & (SR_X as! u16)) | (SR_V as! u16);
-            if (x & 0x80000000) != 0 { ccr |= (SR_N as! u16); }
+            var ccr = (cpu.sr & SR_X) | SR_V;
+            if (x & 0x80000000) != 0 { ccr |= SR_N; }
             cpu.sr = (cpu.sr & 0xFF00) | ccr;
         } else {
             cpu.d[dreg] = (r << 16) | (q & 0xFFFF);
-            cpu_set_nz16(cpu, q as! u16);
+            cpu_set_nz(cpu, 2, q as! u16);
         }
         return cycles;
     }
@@ -1114,32 +1104,32 @@ fn exec_op8_or_div(cpu: M68kCPU&, mmu: M68kMMU&, op: u16) -> i32 {
         // Zero divide and overflow leave Dq; N/Z/V as the 68000 sets them (XEiJ).
         if src == 0 {
             let x = cpu.d[dreg];
-            var v = (cpu.sr & (SR_V as! u16)) != 0;
+            var v = (cpu.sr & SR_V) != 0;
             if x == 0x00008000 { v = !v; }
             else if (dst >= 0 && x != 0x7FFFFFFF) || x == 0x80000000 { v = true; }
-            var ccr = (cpu.sr & (SR_X as! u16)) | (SR_Z as! u16);
-            if v { ccr |= (SR_V as! u16); }
+            var ccr = (cpu.sr & SR_X) | SR_Z;
+            if v { ccr |= SR_V; }
             cpu.sr = (cpu.sr & 0xFF00) | ccr;
             m68k_trigger_exception(cpu, mmu, 5, cpu.pc);
             return cycles;
         }
         // 64-bit so that $80000000 / -1 is an overflow, not a trap.
-        let q64 = (dst as! i64) / (src as! i64);
+        let q64 = (dst as! i64) / (src);
         if q64 > 32767 || q64 < -32768 {
             let z = (q64 as! i32) as! u32;
-            var ccr = (cpu.sr & (SR_X as! u16)) | (SR_V as! u16);
+            var ccr = (cpu.sr & SR_X) | SR_V;
             if cpu.d[dreg] == 0x80000000 || (z & 0xFFFF0080) == 0x00000080 || (z & 0xFFFF0080) == 0xFFFF0080 {
-                ccr |= (SR_N as! u16);
+                ccr |= SR_N;
             }
             if z == 0x00008000 || (((z & 0xFFFF00FF) == 0 || (z & 0xFFFF00FF) == 0xFFFF0000) && (z & 0xFF00) != 0) {
-                ccr |= (SR_Z as! u16);
+                ccr |= SR_Z;
             }
             cpu.sr = (cpu.sr & 0xFF00) | ccr;
         } else {
             let q = q64 as! i32;
             let r = dst - q * src;
             cpu.d[dreg] = (((r as! u32) & 0xFFFF) << 16) | ((q as! u32) & 0xFFFF);
-            cpu_set_nz16(cpu, (q as! i16) as! u16);
+            cpu_set_nz(cpu, 2, (q as! i16) as! u16);
         }
         return cycles;
     }
@@ -1153,16 +1143,14 @@ fn exec_op8_or_div(cpu: M68kCPU&, mmu: M68kMMU&, op: u16) -> i32 {
         let dst = ea_res.val;
         let res = dst | src;
         ea_write_for_rmw(cpu, mmu, mode, reg, size, ea_res.addr, res);
-        if size == 1 { cpu_set_nz8(cpu, res as! u8); }
-        else if size == 2 { cpu_set_nz16(cpu, res as! u16); }
-        else { cpu_set_nz32(cpu, res); }
+        cpu_set_nz(cpu, size, res);
     } else {
         let src = ea_read(cpu, mmu, mode, reg, size);
         let dst = cpu.d[dreg];
         let res = dst | src;
-        if size == 1 { cpu.d[dreg] = (cpu.d[dreg] & 0xFFFFFF00) | (res & 0xFF); cpu_set_nz8(cpu, res as! u8); }
-        else if size == 2 { cpu.d[dreg] = (cpu.d[dreg] & 0xFFFF0000) | (res & 0xFFFF); cpu_set_nz16(cpu, res as! u16); }
-        else { cpu.d[dreg] = res; cpu_set_nz32(cpu, res); }
+        if size == 1 { cpu.d[dreg] = (cpu.d[dreg] & 0xFFFFFF00) | (res & 0xFF); cpu_set_nz(cpu, 1, res as! u8); }
+        else if size == 2 { cpu.d[dreg] = (cpu.d[dreg] & 0xFFFF0000) | (res & 0xFFFF); cpu_set_nz(cpu, 2, res as! u16); }
+        else { cpu.d[dreg] = res; cpu_set_nz(cpu, 4, res); }
     }
     return alu_bin_cycles(size, mode, reg, is_ea_dst);
 }
@@ -1177,8 +1165,8 @@ fn exec_opC_and_mul_exg(cpu: M68kCPU&, mmu: M68kMMU&, op: u16) -> i32 {
     if (op & 0x01F0) == 0x0100 {
         let mem = (op & 0x0008) != 0;
         if mem {
-            let src_addr = predec_byte(cpu, reg);
-            let dst_addr = predec_byte(cpu, dreg);
+            let src_addr = predec(cpu, reg, 1);
+            let dst_addr = predec(cpu, dreg, 1);
             let src = mmu_read8(mmu, src_addr) as! u32;
             let dst = mmu_read8(mmu, dst_addr) as! u32;
             let res = bcd_add(cpu, dst, src);
@@ -1210,7 +1198,7 @@ fn exec_opC_and_mul_exg(cpu: M68kCPU&, mmu: M68kMMU&, op: u16) -> i32 {
         let src = ea_read(cpu, mmu, mode, reg, 2);
         let res = (cpu.d[dreg] & 0xFFFF) * (src & 0xFFFF);
         cpu.d[dreg] = res;
-        cpu_set_nz32(cpu, res);
+        cpu_set_nz(cpu, 4, res);
         return mul_cycles(mode, reg, src, false);
     }
     if opmode == 7 { // MULS.W
@@ -1218,7 +1206,7 @@ fn exec_opC_and_mul_exg(cpu: M68kCPU&, mmu: M68kMMU&, op: u16) -> i32 {
         let dst = (cpu.d[dreg] as! i16) as! i32;
         let res = (dst * src) as! u32;
         cpu.d[dreg] = res;
-        cpu_set_nz32(cpu, res);
+        cpu_set_nz(cpu, 4, res);
         return mul_cycles(mode, reg, src as! u32, true);
     }
 
@@ -1231,16 +1219,14 @@ fn exec_opC_and_mul_exg(cpu: M68kCPU&, mmu: M68kMMU&, op: u16) -> i32 {
         let dst = ea_res.val;
         let res = dst & src;
         ea_write_for_rmw(cpu, mmu, mode, reg, size, ea_res.addr, res);
-        if size == 1 { cpu_set_nz8(cpu, res as! u8); }
-        else if size == 2 { cpu_set_nz16(cpu, res as! u16); }
-        else { cpu_set_nz32(cpu, res); }
+        cpu_set_nz(cpu, size, res);
     } else {
         let src = ea_read(cpu, mmu, mode, reg, size);
         let dst = cpu.d[dreg];
         let res = dst & src;
-        if size == 1 { cpu.d[dreg] = (cpu.d[dreg] & 0xFFFFFF00) | (res & 0xFF); cpu_set_nz8(cpu, res as! u8); }
-        else if size == 2 { cpu.d[dreg] = (cpu.d[dreg] & 0xFFFF0000) | (res & 0xFFFF); cpu_set_nz16(cpu, res as! u16); }
-        else { cpu.d[dreg] = res; cpu_set_nz32(cpu, res); }
+        if size == 1 { cpu.d[dreg] = (cpu.d[dreg] & 0xFFFFFF00) | (res & 0xFF); cpu_set_nz(cpu, 1, res as! u8); }
+        else if size == 2 { cpu.d[dreg] = (cpu.d[dreg] & 0xFFFF0000) | (res & 0xFFFF); cpu_set_nz(cpu, 2, res as! u16); }
+        else { cpu.d[dreg] = res; cpu_set_nz(cpu, 4, res); }
     }
     return alu_bin_cycles(size, mode, reg, is_ea_dst);
 }
@@ -1248,192 +1234,66 @@ fn exec_opC_and_mul_exg(cpu: M68kCPU&, mmu: M68kMMU&, op: u16) -> i32 {
 // -------------------------------------------------------------
 // Op 9 & Op D: SUB, SUBA, SUBX, ADD, ADDA, ADDX
 // -------------------------------------------------------------
-fn exec_op9_sub(cpu: M68kCPU&, mmu: M68kMMU&, op: u16) -> i32 {
+fn exec_add_sub(cpu: M68kCPU&, mmu: M68kMMU&, op: u16, is_add: bool) -> i32 {
     let reg_field = ((op >> 9) & 0x07) as! i32;
     let opmode = ((op >> 6) & 0x07) as! i32;
     let mode = ((op >> 3) & 0x07) as! i32;
     let reg = (op & 0x07) as! i32;
 
-    // SUBA
+    // ADDA / SUBA: ワードのソースは符号拡張し、An 全体に作用する。フラグは変えない。
     if opmode == 3 || opmode == 7 {
         let is_long = (opmode == 7);
         let src = ea_read(cpu, mmu, mode, reg, if is_long { 4 } else { 2 });
-        let ext_src = if is_long { src } else { ((src as! i16) as! i32) as! u32 };
-        if mmu.fault == 0 { cpu.a[reg_field] -= ext_src; }
+        let ext_src = if is_long { src } else { (src as! i16) as! u32 };
+        if mmu.fault == 0 {
+            cpu.a[reg_field] = if is_add { cpu.a[reg_field] + ext_src } else { cpu.a[reg_field] - ext_src };
+        }
         return adda_cycles(is_long, mode, reg);
     }
 
-    // SUBX (1001 Rx 1 ss 00 R/M Ry)
+    // ADDX / SUBX (1x01 Rx 1 ss 00 R/M Ry)
     if (op & 0x0130) == 0x0100 && ((op >> 6) & 3) <= 2 {
         let size_code = ((op >> 6) & 3) as! i32;
         let size: i32 = if size_code == 0 { 1 } else if size_code == 1 { 2 } else { 4 };
         let is_mem = (op & 0x0008) != 0;
         let rx = reg_field;
         let ry = reg;
-        let x_val = if cpu_flag_x(cpu) { 1 as! u32 } else { 0 as! u32 };
+        let x_val: u32 = if cpu_flag_x(cpu) { 1 } else { 0 };
 
-        if is_mem {
-            let delta = if rx == 7 && size == 1 { 2 } else { size };
-            let s_delta = if ry == 7 && size == 1 { 2 } else { size };
-            cpu.a[ry] -= s_delta as! u32;
-            cpu.a[rx] -= delta as! u32;
-            let src = if size == 1 { mmu_read8(mmu, cpu.a[ry]) as! u32 }
-                      else if size == 2 { mmu_read16(mmu, cpu.a[ry]) as! u32 }
-                      else { mmu_read32(mmu, cpu.a[ry]) };
-            let dst = if size == 1 { mmu_read8(mmu, cpu.a[rx]) as! u32 }
-                      else if size == 2 { mmu_read16(mmu, cpu.a[rx]) as! u32 }
-                      else { mmu_read32(mmu, cpu.a[rx]) };
-            let res = dst - src - x_val;
-            if size == 1 {
-                mmu_write8(mmu, cpu.a[rx], res as! u8);
-                cpu_flags_subx8(cpu, src as! u8, dst as! u8, res as! u8);
-            } else if size == 2 {
-                mmu_write16(mmu, cpu.a[rx], res as! u16);
-                cpu_flags_subx16(cpu, src as! u16, dst as! u16, res as! u16);
-            } else {
-                mmu_write32(mmu, cpu.a[rx], res);
-                cpu_flags_subx32(cpu, src, dst, res);
-            }
+        if is_mem { // -(Ay),-(Ax)
+            let src_addr = predec(cpu, ry, size);
+            let dst_addr = predec(cpu, rx, size);
+            let src = mem_read(mmu, src_addr, size);
+            let dst = mem_read(mmu, dst_addr, size);
+            let res = if is_add { dst + src + x_val } else { dst - src - x_val };
+            mem_write(mmu, dst_addr, size, res);
+            flags_addsubx(cpu, is_add, size, src, dst, res);
             return if size == 4 { 30 } else { 18 };
-        } else {
-            let src = cpu.d[ry];
-            let dst = cpu.d[rx];
-            let res = dst - src - x_val;
-            if size == 1 {
-                cpu.d[rx] = (cpu.d[rx] & 0xFFFFFF00) | (res & 0xFF);
-                cpu_flags_subx8(cpu, src as! u8, dst as! u8, res as! u8);
-            } else if size == 2 {
-                cpu.d[rx] = (cpu.d[rx] & 0xFFFF0000) | (res & 0xFFFF);
-                cpu_flags_subx16(cpu, src as! u16, dst as! u16, res as! u16);
-            } else {
-                cpu.d[rx] = res;
-                cpu_flags_subx32(cpu, src, dst, res);
-            }
-            return if size == 4 { 8 } else { 4 };
         }
+        let src = cpu.d[ry];
+        let dst = cpu.d[rx];
+        let res = if is_add { dst + src + x_val } else { dst - src - x_val };
+        dreg_write(cpu, rx, size, res);
+        flags_addsubx(cpu, is_add, size, src, dst, res);
+        return if size == 4 { 8 } else { 4 };
     }
 
     let size: i32 = if (opmode & 3) == 0 { 1 } else if (opmode & 3) == 1 { 2 } else { 4 };
     let is_ea_dst = (opmode & 4) != 0;
 
-    if is_ea_dst {
+    if is_ea_dst { // Dn,<ea>
         let src = cpu.d[reg_field];
         let ea_res = ea_read_for_rmw(cpu, mmu, mode, reg, size);
         let dst = ea_res.val;
-        let res = dst - src;
+        let res = if is_add { dst + src } else { dst - src };
         ea_write_for_rmw(cpu, mmu, mode, reg, size, ea_res.addr, res);
-        if size == 1 { cpu_flags_sub8(cpu, src as! u8, dst as! u8, res as! u8, true); }
-        else if size == 2 { cpu_flags_sub16(cpu, src as! u16, dst as! u16, res as! u16, true); }
-        else { cpu_flags_sub32(cpu, src, dst, res, true); }
-    } else {
+        flags_addsub(cpu, is_add, size, src, dst, res);
+    } else { // <ea>,Dn
         let src = ea_read(cpu, mmu, mode, reg, size);
         let dst = cpu.d[reg_field];
-        let res = dst - src;
-        if size == 1 {
-            cpu.d[reg_field] = (cpu.d[reg_field] & 0xFFFFFF00) | (res & 0xFF);
-            cpu_flags_sub8(cpu, src as! u8, dst as! u8, res as! u8, true);
-        } else if size == 2 {
-            cpu.d[reg_field] = (cpu.d[reg_field] & 0xFFFF0000) | (res & 0xFFFF);
-            cpu_flags_sub16(cpu, src as! u16, dst as! u16, res as! u16, true);
-        } else {
-            cpu.d[reg_field] = res;
-            cpu_flags_sub32(cpu, src, dst, res, true);
-        }
-    }
-    return alu_bin_cycles(size, mode, reg, is_ea_dst);
-}
-
-fn exec_opD_add(cpu: M68kCPU&, mmu: M68kMMU&, op: u16) -> i32 {
-    let reg_field = ((op >> 9) & 0x07) as! i32;
-    let opmode = ((op >> 6) & 0x07) as! i32;
-    let mode = ((op >> 3) & 0x07) as! i32;
-    let reg = (op & 0x07) as! i32;
-
-    // ADDA
-    if opmode == 3 || opmode == 7 {
-        let is_long = (opmode == 7);
-        let src = ea_read(cpu, mmu, mode, reg, if is_long { 4 } else { 2 });
-        let ext_src = if is_long { src } else { ((src as! i16) as! i32) as! u32 };
-        if mmu.fault == 0 { cpu.a[reg_field] += ext_src; }
-        return adda_cycles(is_long, mode, reg);
-    }
-
-    // ADDX (1101 Rx 1 ss 00 R/M Ry)
-    if (op & 0x0130) == 0x0100 && ((op >> 6) & 3) <= 2 {
-        let size_code = ((op >> 6) & 3) as! i32;
-        let size: i32 = if size_code == 0 { 1 } else if size_code == 1 { 2 } else { 4 };
-        let is_mem = (op & 0x0008) != 0;
-        let rx = reg_field;
-        let ry = reg;
-        let x_val = if cpu_flag_x(cpu) { 1 as! u32 } else { 0 as! u32 };
-
-        if is_mem {
-            let delta = if rx == 7 && size == 1 { 2 } else { size };
-            let s_delta = if ry == 7 && size == 1 { 2 } else { size };
-            cpu.a[ry] -= s_delta as! u32;
-            cpu.a[rx] -= delta as! u32;
-            let src = if size == 1 { mmu_read8(mmu, cpu.a[ry]) as! u32 }
-                      else if size == 2 { mmu_read16(mmu, cpu.a[ry]) as! u32 }
-                      else { mmu_read32(mmu, cpu.a[ry]) };
-            let dst = if size == 1 { mmu_read8(mmu, cpu.a[rx]) as! u32 }
-                      else if size == 2 { mmu_read16(mmu, cpu.a[rx]) as! u32 }
-                      else { mmu_read32(mmu, cpu.a[rx]) };
-            let res = dst + src + x_val;
-            if size == 1 {
-                mmu_write8(mmu, cpu.a[rx], res as! u8);
-                cpu_flags_addx8(cpu, src as! u8, dst as! u8, res as! u8);
-            } else if size == 2 {
-                mmu_write16(mmu, cpu.a[rx], res as! u16);
-                cpu_flags_addx16(cpu, src as! u16, dst as! u16, res as! u16);
-            } else {
-                mmu_write32(mmu, cpu.a[rx], res);
-                cpu_flags_addx32(cpu, src, dst, res);
-            }
-            return if size == 4 { 30 } else { 18 };
-        } else {
-            let src = cpu.d[ry];
-            let dst = cpu.d[rx];
-            let res = dst + src + x_val;
-            if size == 1 {
-                cpu.d[rx] = (cpu.d[rx] & 0xFFFFFF00) | (res & 0xFF);
-                cpu_flags_addx8(cpu, src as! u8, dst as! u8, res as! u8);
-            } else if size == 2 {
-                cpu.d[rx] = (cpu.d[rx] & 0xFFFF0000) | (res & 0xFFFF);
-                cpu_flags_addx16(cpu, src as! u16, dst as! u16, res as! u16);
-            } else {
-                cpu.d[rx] = res;
-                cpu_flags_addx32(cpu, src, dst, res);
-            }
-            return if size == 4 { 8 } else { 4 };
-        }
-    }
-
-    let size: i32 = if (opmode & 3) == 0 { 1 } else if (opmode & 3) == 1 { 2 } else { 4 };
-    let is_ea_dst = (opmode & 4) != 0;
-
-    if is_ea_dst {
-        let src = cpu.d[reg_field];
-        let ea_res = ea_read_for_rmw(cpu, mmu, mode, reg, size);
-        let dst = ea_res.val;
-        let res = dst + src;
-        ea_write_for_rmw(cpu, mmu, mode, reg, size, ea_res.addr, res);
-        if size == 1 { cpu_flags_add8(cpu, src as! u8, dst as! u8, res as! u8); }
-        else if size == 2 { cpu_flags_add16(cpu, src as! u16, dst as! u16, res as! u16); }
-        else { cpu_flags_add32(cpu, src, dst, res); }
-    } else {
-        let src = ea_read(cpu, mmu, mode, reg, size);
-        let dst = cpu.d[reg_field];
-        let res = dst + src;
-        if size == 1 {
-            cpu.d[reg_field] = (cpu.d[reg_field] & 0xFFFFFF00) | (res & 0xFF);
-            cpu_flags_add8(cpu, src as! u8, dst as! u8, res as! u8);
-        } else if size == 2 {
-            cpu.d[reg_field] = (cpu.d[reg_field] & 0xFFFF0000) | (res & 0xFFFF);
-            cpu_flags_add16(cpu, src as! u16, dst as! u16, res as! u16);
-        } else {
-            cpu.d[reg_field] = res;
-            cpu_flags_add32(cpu, src, dst, res);
-        }
+        let res = if is_add { dst + src } else { dst - src };
+        dreg_write(cpu, reg_field, size, res);
+        flags_addsub(cpu, is_add, size, src, dst, res);
     }
     return alu_bin_cycles(size, mode, reg, is_ea_dst);
 }
@@ -1451,10 +1311,10 @@ fn exec_opB_cmp_eor(cpu: M68kCPU&, mmu: M68kMMU&, op: u16) -> i32 {
     if opmode == 3 || opmode == 7 {
         let is_long = (opmode == 7);
         let src = ea_read(cpu, mmu, mode, reg, if is_long { 4 } else { 2 });
-        let ext_src = if is_long { src } else { ((src as! i16) as! i32) as! u32 };
+        let ext_src = if is_long { src } else { ((src as! i16)) as! u32 };
         let dst = cpu.a[reg_field];
         let res = dst - ext_src;
-        cpu_flags_sub32(cpu, ext_src, dst, res, false);
+        cpu_flags_sub(cpu, 4, ext_src, dst, res, false);
         return 6 + ea_extra_cycles(mode, reg, if is_long { 4 } else { 2 });
     }
 
@@ -1466,23 +1326,17 @@ fn exec_opB_cmp_eor(cpu: M68kCPU&, mmu: M68kMMU&, op: u16) -> i32 {
         let ax = ((op >> 9) & 0x07) as! i32;
 
         let src_addr = cpu.a[ay];
-        let src = if size == 1 { mmu_read8(mmu, src_addr) as! u32 }
-                  else if size == 2 { mmu_read16(mmu, src_addr) as! u32 }
-                  else { mmu_read32(mmu, src_addr) };
+        let src = mem_read(mmu, src_addr, size);
         if size == 1 && ay == 7 { cpu.a[ay] += 2; }
         else { cpu.a[ay] += size as! u32; }
 
         let dst_addr = cpu.a[ax];
-        let dst = if size == 1 { mmu_read8(mmu, dst_addr) as! u32 }
-                  else if size == 2 { mmu_read16(mmu, dst_addr) as! u32 }
-                  else { mmu_read32(mmu, dst_addr) };
+        let dst = mem_read(mmu, dst_addr, size);
         if size == 1 && ax == 7 { cpu.a[ax] += 2; }
         else { cpu.a[ax] += size as! u32; }
 
         let res = dst - src;
-        if size == 1 { cpu_flags_sub8(cpu, src as! u8, dst as! u8, res as! u8, false); }
-        else if size == 2 { cpu_flags_sub16(cpu, src as! u16, dst as! u16, res as! u16, false); }
-        else { cpu_flags_sub32(cpu, src, dst, res, false); }
+        cpu_flags_sub(cpu, size, src, dst, res, false);
         return if size == 4 { 20 } else { 12 };
     }
 
@@ -1496,18 +1350,14 @@ fn exec_opB_cmp_eor(cpu: M68kCPU&, mmu: M68kMMU&, op: u16) -> i32 {
         let dst = ea_res.val;
         let res = dst ^ src;
         ea_write_for_rmw(cpu, mmu, mode, reg, size, ea_res.addr, res);
-        if size == 1 { cpu_set_nz8(cpu, res as! u8); }
-        else if size == 2 { cpu_set_nz16(cpu, res as! u16); }
-        else { cpu_set_nz32(cpu, res); }
+        cpu_set_nz(cpu, size, res);
         return eor_cycles(size, mode, reg);
     } else {
         // CMP <ea>, Dn
         let src = ea_read(cpu, mmu, mode, reg, size);
         let dst = cpu.d[reg_field];
         let res = dst - src;
-        if size == 1 { cpu_flags_sub8(cpu, src as! u8, dst as! u8, res as! u8, false); }
-        else if size == 2 { cpu_flags_sub16(cpu, src as! u16, dst as! u16, res as! u16, false); }
-        else { cpu_flags_sub32(cpu, src, dst, res, false); }
+        cpu_flags_sub(cpu, size, src, dst, res, false);
         return cmp_cycles(size, mode, reg);
     }
 }
@@ -1547,7 +1397,7 @@ fn exec_opE_shift_rotate(cpu: M68kCPU&, mmu: M68kMMU&, op: u16) -> i32 {
         } else {
             carry = (val & 0x0001) != 0;
             if shift_type == 0 { // ASR
-                val = ((val as! i16) >> 1) as! u16 as! u32;
+                val = ((val as! i16) >> 1) as! u16;
             } else {
                 let msb: u32 = if shift_type == 2 {
                     if old_x { 0x8000 } else { 0 }
@@ -1562,14 +1412,14 @@ fn exec_opE_shift_rotate(cpu: M68kCPU&, mmu: M68kMMU&, op: u16) -> i32 {
 
         mmu_write16(mmu, addr, val as! u16);
         if carry {
-            cpu.sr |= (SR_C as! u16);
-            if shift_type != 3 { cpu.sr |= (SR_X as! u16); }
+            cpu.sr |= SR_C;
+            if shift_type != 3 { cpu.sr |= SR_X; }
         } else {
             cpu.sr &= ~(SR_C as! u16);
             if shift_type != 3 { cpu.sr &= ~(SR_X as! u16); }
         }
-        cpu_set_nz16_only(cpu, val as! u16);
-        if asl_v { cpu.sr |= (SR_V as! u16); } else { cpu.sr &= ~(SR_V as! u16); }
+        cpu_set_nz_only(cpu, 2, val as! u16);
+        if asl_v { cpu.sr |= SR_V; } else { cpu.sr &= ~(SR_V as! u16); }
         return shift_mem_cycles(mode, reg);
     }
 
@@ -1587,15 +1437,13 @@ fn exec_opE_shift_rotate(cpu: M68kCPU&, mmu: M68kMMU&, op: u16) -> i32 {
 
     if count == 0 {
         if shift_type == 2 { // ROXL / ROXR: C takes X
-            if cpu_flag_x(cpu) { cpu.sr |= (SR_C as! u16); }
+            if cpu_flag_x(cpu) { cpu.sr |= SR_C; }
             else { cpu.sr &= ~(SR_C as! u16); }
         } else {
             cpu.sr &= ~(SR_C as! u16);
         }
         cpu.sr &= ~(SR_V as! u16);
-        if size == 1 { cpu_set_nz8_only(cpu, cpu.d[dreg] as! u8); }
-        else if size == 2 { cpu_set_nz16_only(cpu, cpu.d[dreg] as! u16); }
-        else { cpu_set_nz32_only(cpu, cpu.d[dreg]); }
+        cpu_set_nz_only(cpu, size, cpu.d[dreg]);
         return shift_reg_cycles(size, 0);
     }
 
@@ -1687,16 +1535,14 @@ fn exec_opE_shift_rotate(cpu: M68kCPU&, mmu: M68kMMU&, op: u16) -> i32 {
 
     cpu.d[dreg] = v;
     if last_c {
-        cpu.sr |= (SR_C as! u16);
-        if shift_type != 3 { cpu.sr |= (SR_X as! u16); }
+        cpu.sr |= SR_C;
+        if shift_type != 3 { cpu.sr |= SR_X; }
     } else {
         cpu.sr &= ~(SR_C as! u16);
         if shift_type != 3 { cpu.sr &= ~(SR_X as! u16); }
     }
-    if size == 1 { cpu_set_nz8_only(cpu, v as! u8); }
-    else if size == 2 { cpu_set_nz16_only(cpu, v as! u16); }
-    else { cpu_set_nz32_only(cpu, v); }
-    if asl_v { cpu.sr |= (SR_V as! u16); } else { cpu.sr &= ~(SR_V as! u16); }
+    cpu_set_nz_only(cpu, size, v);
+    if asl_v { cpu.sr |= SR_V; } else { cpu.sr &= ~(SR_V as! u16); }
     return shift_reg_cycles(size, count);
 }
 
@@ -1712,29 +1558,10 @@ fn m68k_step_core(cpu: M68kCPU&, mmu: M68kMMU&) -> i32 {
     }
 
     let inst_pc = cpu.pc;
-    mmu.debug_pc = inst_pc;
+    mmu.inst_pc = inst_pc;
     let op = fetch16(cpu, mmu);
     mmu.cur_ir = op;
     let hi4 = (op >> 12) & 0x0F;
-
-    if mmu.trace_steps > 0 {
-        mmu.trace_steps--;
-        write_stderr("[TRACE PC=0x");
-        c_eprint_hex(inst_pc);
-        write_stderr(" OP=0x");
-        c_eprint_hex16(op);
-        write_stderr(" D0=0x");
-        c_eprint_hex(cpu.d[0]);
-        write_stderr(" D1=0x");
-        c_eprint_hex(cpu.d[1]);
-        write_stderr(" A0=0x");
-        c_eprint_hex(cpu.a[0]);
-        write_stderr(" A1=0x");
-        c_eprint_hex(cpu.a[1]);
-        write_stderr(" SP=0x");
-        c_eprint_hex(cpu.a[REG_A7]);
-        write_stderr("]\n");
-    }
 
     // Op 0: ビット操作 & 即値演算
     if hi4 == 0 {
@@ -1753,9 +1580,7 @@ fn m68k_step_core(cpu: M68kCPU&, mmu: M68kMMU&) -> i32 {
         ea_write(cpu, mmu, dst_mode, dst_reg, size, val);
 
         if dst_mode != 1 { // MOVEA does not affect flags
-            if size == 1 { cpu_set_nz8(cpu, val as! u8); }
-            else if size == 2 { cpu_set_nz16(cpu, val as! u16); }
-            else { cpu_set_nz32(cpu, val); }
+            cpu_set_nz(cpu, size, val);
         }
         return move_cycles(size, src_mode, src_reg, dst_mode, dst_reg);
     }
@@ -1776,7 +1601,7 @@ fn m68k_step_core(cpu: M68kCPU&, mmu: M68kMMU&) -> i32 {
                 let count = (cpu.d[dreg] & 0xFFFF) as! i32 - 1;
                 cpu.d[dreg] = (cpu.d[dreg] & 0xFFFF0000) | ((count & 0xFFFF) as! u32);
                 if count != -1 {
-                    cpu.pc = ((cpu.pc as! i32) + disp - 2) as! u32;
+                    cpu.pc = addr_add(cpu.pc, disp - 2);
                     return 10;
                 }
                 return 14;
@@ -1815,13 +1640,9 @@ fn m68k_step_core(cpu: M68kCPU&, mmu: M68kMMU&) -> i32 {
         let res = if is_sub { cur - q } else { cur + q };
         ea_write_for_rmw(cpu, mmu, mode, reg, size, ea_res.addr, res);
         if is_sub {
-            if size == 1 { cpu_flags_sub8(cpu, q as! u8, cur as! u8, res as! u8, true); }
-            else if size == 2 { cpu_flags_sub16(cpu, q as! u16, cur as! u16, res as! u16, true); }
-            else { cpu_flags_sub32(cpu, q, cur, res, true); }
+            cpu_flags_sub(cpu, size, q, cur, res, true);
         } else {
-            if size == 1 { cpu_flags_add8(cpu, q as! u8, cur as! u8, res as! u8); }
-            else if size == 2 { cpu_flags_add16(cpu, q as! u16, cur as! u16, res as! u16); }
-            else { cpu_flags_add32(cpu, q, cur, res); }
+            cpu_flags_add(cpu, size, q, cur, res);
         }
         return addq_cycles(size, mode, reg);
     }
@@ -1832,10 +1653,10 @@ fn m68k_step_core(cpu: M68kCPU&, mmu: M68kMMU&) -> i32 {
         let base_pc = cpu.pc;
         var disp = (op & 0xFF) as! i8 as! i32;
         if disp == 0 {
-            disp = (fetch16(cpu, mmu) as! i16) as! i32;
+            disp = (fetch16(cpu, mmu) as! i16);
         }
 
-        let target = ((base_pc as! i32) + disp) as! u32;
+        let target = addr_add(base_pc, disp);
 
         let word_disp = (op & 0xFF) == 0;
         if cond == 0 { // BRA
@@ -1859,8 +1680,8 @@ fn m68k_step_core(cpu: M68kCPU&, mmu: M68kMMU&) -> i32 {
     if hi4 == 7 {
         let dreg = ((op >> 9) & 0x07) as! i32;
         let data8 = (op & 0xFF) as! i8;
-        cpu.d[dreg] = (data8 as! i32) as! u32;
-        cpu_set_nz32(cpu, cpu.d[dreg]);
+        cpu.d[dreg] = (data8) as! u32;
+        cpu_set_nz(cpu, 4, cpu.d[dreg]);
         return 4;
     }
 
@@ -1871,7 +1692,7 @@ fn m68k_step_core(cpu: M68kCPU&, mmu: M68kMMU&) -> i32 {
 
     // Op 9: SUB, SUBA, SUBX
     if hi4 == 9 {
-        return exec_op9_sub(cpu, mmu, op);
+        return exec_add_sub(cpu, mmu, op, false);
     }
 
     // Op B: CMP, CMPA, EOR, CMPM
@@ -1886,7 +1707,7 @@ fn m68k_step_core(cpu: M68kCPU&, mmu: M68kMMU&) -> i32 {
 
     // Op D: ADD, ADDA, ADDX
     if hi4 == 0x0D {
-        return exec_opD_add(cpu, mmu, op);
+        return exec_add_sub(cpu, mmu, op, true);
     }
 
     // Op E: シフト & ローテート
@@ -1901,15 +1722,8 @@ fn m68k_step_core(cpu: M68kCPU&, mmu: M68kMMU&) -> i32 {
     }
 
     // Op F: Line 1111 Emulator Exception (Vector 11, Human68k DOS call)
-    if hi4 == 0x0F {
-        m68k_trigger_exception(cpu, mmu, 11, inst_pc);
-        return 34;
-    }
-
-    // 未知・未実装オプコード: Illegal Instruction Exception (Vector 4)
-    write_stderr(str("!!! UNIMPLEMENTED OPCODE: 0x", op as! u32, " at PC=0x", inst_pc, " !!!\n"));
-    m68k_trigger_exception(cpu, mmu, 4, inst_pc);
-    return 8;
+    m68k_trigger_exception(cpu, mmu, 11, inst_pc);
+    return 34;
 }
 
 // Group 0 exception (2 = bus error, 3 = address error) after a faulted instruction.
@@ -1927,7 +1741,7 @@ fn m68k_group0(cpu: M68kCPU&, mmu: M68kMMU&, d: u32[8], sr: u16) {
         cpu.usp = cpu.a[REG_A7];
         cpu.a[REG_A7] = cpu.ssp;
     }
-    push32(cpu, mmu, mmu.debug_pc);
+    push32(cpu, mmu, mmu.inst_pc);
     push16(cpu, mmu, sr);
     push16(cpu, mmu, mmu.cur_ir);
     push32(cpu, mmu, addr);
@@ -1937,7 +1751,7 @@ fn m68k_group0(cpu: M68kCPU&, mmu: M68kMMU&, d: u32[8], sr: u16) {
         cpu.halted = true;
         return;
     }
-    cpu.sr |= (SR_S as! u16);
+    cpu.sr |= SR_S;
     cpu.sr &= ~(SR_T as! u16);
     cpu.pc = mmu_read32(mmu, ((vector * 4) as! u32));
 }
@@ -1975,7 +1789,7 @@ fn m68k_interrupt(cpu: M68kCPU&, mmu: M68kMMU&, level: i32, vector: i32) {
     push16(cpu, mmu, cpu.sr);
 
     // スーパーバイザフラグをセット、トレースをオフ
-    cpu.sr |= (SR_S as! u16);
+    cpu.sr |= SR_S;
     cpu.sr &= ~(SR_T as! u16);
 
     // 割込マスクを更新 (レベルを設定)

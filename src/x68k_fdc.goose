@@ -1,57 +1,49 @@
 // Sharp X68000 フロッピーディスクコントローラ (uPD72065 / FDC) in Goose
 // ※実機 ROM / ディスクコード自走用
 
-import std;
 import .x68k_bridge;
-import .m68k_types;
 
-// コマンド毎のパラメータ長 (CMD_TABLE[32])
+// uPD72065 のコマンド番号 (コマンドバイトの下位 5 bit)
+let FDC_READ_DIAGNOSTIC = 2;
+let FDC_SPECIFY = 3;
+let FDC_SENSE_DEVICE = 4;
+let FDC_WRITE_DATA = 5;
+let FDC_READ_DATA = 6;
+let FDC_RECALIBRATE = 7;
+let FDC_SENSE_INT = 8;
+let FDC_WRITE_DELETED = 9;
+let FDC_READ_ID = 10;
+let FDC_READ_DELETED = 12;
+let FDC_WRITE_ID = 13;
+let FDC_SEEK = 15;
+let FDC_SCAN_EQUAL = 17;
+let FDC_SCAN_LOW_OR_EQUAL = 25;
+let FDC_SCAN_HIGH_OR_EQUAL = 29;
+
+// コマンドバイトに続くパラメータのバイト数 (px68k CMD_TABLE)。添字はコマンド番号。
 fn fdc_cmd_prm_len(cmd: i32) -> i32 {
-    if cmd == 2 { return 8; }  // ReadDiagnostic
-    if cmd == 3 { return 2; }  // Specify
-    if cmd == 4 { return 1; }  // SenseDeviceStatus
-    if cmd == 5 { return 8; }  // WriteData
-    if cmd == 6 { return 8; }  // ReadData
-    if cmd == 7 { return 1; }  // Recalibrate
-    if cmd == 8 { return 0; }  // SenseIntStatus
-    if cmd == 9 { return 8; }  // WriteDeletedData
-    if cmd == 10 { return 1; } // ReadID
-    if cmd == 12 { return 8; } // ReadDeletedData
-    if cmd == 13 { return 5; } // WriteID
-    if cmd == 15 { return 2; } // Seek
-    if cmd == 17 { return 8; } // ScanEqual
-    if cmd == 25 { return 8; } // ScanLowOrEqual
-    if cmd == 29 { return 8; } // ScanHighOrEqual
-    return 0;
+    let table: u8[32] = [
+        0, 0, 8, 2, 1, 8, 8, 1, 0, 8, 1, 0, 8, 5, 0, 2,
+        0, 8, 0, 0, 0, 0, 0, 0, 0, 8, 0, 0, 0, 8, 0, 0,
+    ];
+    return table[cmd & 31];
 }
 
-// コマンド毎のレスポンス長 (DAT_TABLE[32])
+// 結果相のバイト数 (px68k DAT_TABLE)。添字はコマンド番号。
 fn fdc_cmd_rsp_len(cmd: i32) -> i32 {
-    if cmd == 2 { return 7; }  // ReadDiagnostic
-    if cmd == 3 { return 0; }  // Specify
-    if cmd == 4 { return 1; }  // SenseDeviceStatus
-    if cmd == 5 { return 7; }  // WriteData
-    if cmd == 6 { return 7; }  // ReadData
-    if cmd == 7 { return 0; }  // Recalibrate
-    if cmd == 8 { return 2; }  // SenseIntStatus
-    if cmd == 9 { return 7; }  // WriteDeletedData
-    if cmd == 10 { return 7; } // ReadID
-    if cmd == 12 { return 7; } // ReadDeletedData
-    if cmd == 13 { return 7; } // WriteID
-    if cmd == 15 { return 0; } // Seek
-    if cmd == 17 { return 7; } // ScanEqual
-    if cmd == 25 { return 7; } // ScanLowOrEqual
-    if cmd == 29 { return 7; } // ScanHighOrEqual
-    return 0;
+    let table: u8[32] = [
+        0, 0, 7, 0, 1, 7, 7, 0, 2, 7, 7, 0, 7, 7, 0, 0,
+        0, 7, 0, 0, 0, 0, 0, 0, 0, 7, 0, 0, 0, 7, 0, 0,
+    ];
+    return table[cmd & 31];
 }
 
 struct X68kFDC {
     cmd: i32 = 0,
     cyl: i32 = 0,
     drv: i32 = 0,
-    ready: i32 = 0,
     ctrl: u8 = 0,
-    wexec: i32 = 0,
+    wexec: bool = false,
     rdptr: i32 = 0,
     wrptr: i32 = 0,
     rdnum: i32 = 0,
@@ -63,33 +55,11 @@ struct X68kFDC {
     rsp_buf: u8[16] = [0; 16],
     prm_buf: u8[16] = [0; 16],
     data_buf: u8[8192] = [0; 8192],
-    int_pending: bool = false
+    int_pending: bool = false,
 }
 
 fn fdc_init(fdc: X68kFDC&) {
-    fdc.cmd = 0;
-    fdc.cyl = 0;
-    fdc.drv = 0;
-    fdc.ready = 0;
-    fdc.ctrl = 0;
-    fdc.wexec = 0;
-    fdc.rdptr = 0;
-    fdc.wrptr = 0;
-    fdc.rdnum = 0;
-    fdc.wrnum = 0;
-    fdc.bufnum = 0;
-    fdc.st0 = 0;
-    fdc.st1 = 0;
-    fdc.st2 = 0;
-    fdc.int_pending = false;
-
-    for i in 16 {
-        fdc.rsp_buf[i] = 0;
-        fdc.prm_buf[i] = 0;
-    }
-    for i in 8192 {
-        fdc.data_buf[i] = 0;
-    }
+    fdc = X68kFDC {};
 }
 
 fn fdc_ephase_end(fdc: X68kFDC&) {
@@ -105,7 +75,7 @@ fn fdc_ephase_end(fdc: X68kFDC&) {
 
     fdc.bufnum = 0;
     fdc.rdptr = 0;
-    fdc.wexec = 0;
+    fdc.wexec = false;
     fdc.int_pending = true;
 
     var idc: u8 = 0;
@@ -123,17 +93,17 @@ fn fdc_ephase_end(fdc: X68kFDC&) {
 fn fdc_exec_cmd(fdc: X68kFDC&) {
     let cmd = fdc.cmd;
 
-    if cmd == 3 { // Specify
+    if cmd == FDC_SPECIFY {
         // 何もしない
-    } else if cmd == 4 { // SenseDeviceStatus
-        let us = (fdc.prm_buf[1] & 7) as u8;
+    } else if cmd == FDC_SENSE_DEVICE {
+        let us = (fdc.prm_buf[1] & 7);
         fdc.st0 = us;
         var st3: u8 = us;
         if fdc.cyl == 0 { st3 |= 0x10; } // Track 0
         if c_fdd_is_loaded(fdc.drv) { st3 |= 0x20; } // Ready
         fdc.rsp_buf[0] = st3;
-    } else if cmd == 7 { // Recalibrate
-        fdc.st0 = (fdc.prm_buf[1] & 7) as u8;
+    } else if cmd == FDC_RECALIBRATE {
+        fdc.st0 = (fdc.prm_buf[1] & 7);
         fdc.cyl = 0;
         if !c_fdd_is_loaded(fdc.drv) {
             fdc.st0 |= 0x48; // no FD
@@ -143,20 +113,20 @@ fn fdc_exec_cmd(fdc: X68kFDC&) {
             fdc.st0 |= 0x50; // no drive
         }
         fdc.int_pending = true;
-    } else if cmd == 8 { // SenseIntStatus
+    } else if cmd == FDC_SENSE_INT {
         fdc.rsp_buf[0] = fdc.st0;
         fdc.rsp_buf[1] = fdc.cyl as u8;
         fdc.st0 = 0x80;
-    } else if cmd == 15 { // Seek
-        fdc.st0 = (fdc.prm_buf[1] & 7) as u8;
+    } else if cmd == FDC_SEEK {
+        fdc.st0 = (fdc.prm_buf[1] & 7);
         if c_fdd_is_loaded(fdc.drv) {
-            fdc.cyl = fdc.prm_buf[2] as i32;
+            fdc.cyl = fdc.prm_buf[2];
             fdc.st0 |= 0x20;
         } else {
             fdc.st0 |= 0x48;
         }
         fdc.int_pending = true;
-    } else if cmd == 10 { // ReadID
+    } else if cmd == FDC_READ_ID {
         fdc.st0 = fdc.prm_buf[1] & 7;
         let hd = (fdc.prm_buf[1] >> 2) & 1;
         if c_fdd_is_loaded(fdc.drv) {
@@ -178,9 +148,9 @@ fn fdc_exec_cmd(fdc: X68kFDC&) {
             fdc.rsp_buf[6] = 0;
         }
         fdc.int_pending = true;
-    } else if cmd == 5 || cmd == 9 { // WriteData / WriteDeletedData
-        fdc.st0 = (fdc.prm_buf[1] & 7) as u8;
-        fdc.wexec = 0;
+    } else if cmd == FDC_WRITE_DATA || cmd == FDC_WRITE_DELETED {
+        fdc.st0 = (fdc.prm_buf[1] & 7);
+        fdc.wexec = false;
         if c_fdd_is_loaded(fdc.drv) {
             let hd = (fdc.prm_buf[1] >> 2) & 1;
             let trk = fdc.cyl * 2 + hd;
@@ -193,15 +163,15 @@ fn fdc_exec_cmd(fdc: X68kFDC&) {
                 let sec_size = if n > 0 { (128 << n) as i32 } else { 1024 };
                 fdc.bufnum = sec_size;
                 fdc.wrptr = 0;
-                fdc.wexec = 1;
+                fdc.wexec = true;
             }
         } else {
             fdc.st0 |= 0x48;
             fdc_ephase_end(fdc);
         }
-    } else if cmd == 6 || cmd == 12 { // ReadData / ReadDeletedData
-        fdc.st0 = (fdc.prm_buf[1] & 7) as u8;
-        fdc.wexec = 0;
+    } else if cmd == FDC_READ_DATA || cmd == FDC_READ_DELETED {
+        fdc.st0 = (fdc.prm_buf[1] & 7);
+        fdc.wexec = false;
         if c_fdd_is_loaded(fdc.drv) {
             let hd = (fdc.prm_buf[1] >> 2) & 1;
             let trk = fdc.cyl * 2 + hd;
@@ -213,11 +183,9 @@ fn fdc_exec_cmd(fdc: X68kFDC&) {
             let sec_size = if n > 0 { (128 << n) as i32 } else { 1024 };
 
             let ok = c_fdd_read_fdc(fdc.drv, trk, c, h, r, n, fdc.data_buf[0]);
-            // print("[FDC ReadData trk=", trk, " sec=", r, " ok=", ok, " buf[0]=", fdc.data_buf[0] as u32, "]");
             if ok != 0 {
                 fdc.bufnum = sec_size;
                 fdc.rdptr = 0;
-                fdc.st0 |= 0x00; // Success
             } else {
                 fdc.st0 |= 0x40; // Abnormal termination
                 fdc.st1 |= 0x04; // No data
@@ -243,7 +211,7 @@ fn fdc_next_track(fdc: X68kFDC&) {
         let hd = (us & 0x04) != 0;
         let h = fdc.prm_buf[3];
         if mt && !hd && h == 0 {
-            fdc.prm_buf[1] = (us | 4) as u8;
+            fdc.prm_buf[1] = (us | 4);
             fdc.prm_buf[3] = 1;
             fdc.prm_buf[4] = 1;
         } else {
@@ -251,7 +219,7 @@ fn fdc_next_track(fdc: X68kFDC&) {
             return;
         }
     } else {
-        fdc.prm_buf[4] = (r + 1) as u8;
+        fdc.prm_buf[4] = (r + 1);
     }
     fdc_exec_cmd(fdc);
 }
@@ -260,13 +228,13 @@ fn fdc_next_track(fdc: X68kFDC&) {
 fn fdc_read(fdc: X68kFDC&, reg: i32) -> u8 {
     if reg == 1 { // 0x00E94001: Main Status Register (MSR)
         var msr: u8 = 0x80; // RQM: Always Request for Master (Ready)
-        if fdc.rdnum > 0 && fdc.wexec == 0 {
+        if fdc.rdnum > 0 && !fdc.wexec {
             msr |= 0x40; // DIO: 1 = FDC -> CPU (Data from FDC)
         }
         if fdc.wrnum > 0 || fdc.rdnum > 0 {
             msr |= 0x10; // CB: FDC Busy
         }
-        if fdc.rdnum == 1 && fdc.cmd == 8 {
+        if fdc.rdnum == 1 && fdc.cmd == FDC_SENSE_INT {
             msr &= 0xAF;
         }
         return msr;
@@ -302,7 +270,7 @@ fn fdc_read(fdc: X68kFDC&, reg: i32) -> u8 {
 // data_buf に 1 セクタ分そろったら書き込む。last は DMAC の転送カウンタが尽きたとき (TC)。
 // TC なら EOT を待たずに結果相へ進む。CPU が 1 バイトずつ書く経路は last = false。
 fn fdc_write_buffer(fdc: X68kFDC&, last: bool) {
-    if fdc.cmd == 5 || fdc.cmd == 9 {
+    if fdc.cmd == FDC_WRITE_DATA || fdc.cmd == FDC_WRITE_DELETED {
         let hd = (fdc.prm_buf[1] >> 2) & 1;
         let trk = fdc.cyl * 2 + hd;
         let c = fdc.prm_buf[2] as i32;
@@ -326,9 +294,6 @@ fn fdc_write_buffer(fdc: X68kFDC&, last: bool) {
 
 // FDC レジスタ書き込み (0x00E94001 .. 0x00E94007)
 fn fdc_write(fdc: X68kFDC&, reg: i32, val: u8) {
-    if reg == 3 || reg == 5 || reg == 7 {
-        // print("[FDC WRITE reg ", reg, " val 0x", val as u32, "]");
-    }
     if reg == 3 { // 0x00E94003: Data Register (FIFO)
         if fdc.bufnum > 0 {
             fdc.data_buf[fdc.wrptr] = val;
@@ -345,7 +310,7 @@ fn fdc_write(fdc: X68kFDC&, reg: i32, val: u8) {
                 fdc.wrnum--;
             } else {
                 // Command byte
-                fdc.cmd = (val & 0x1F) as i32;
+                fdc.cmd = (val & 0x1F);
                 fdc.rdptr = 0;
                 fdc.wrptr = 0;
                 fdc.rdnum = 0;
@@ -365,14 +330,9 @@ fn fdc_write(fdc: X68kFDC&, reg: i32, val: u8) {
         fdc.ctrl = val;
     } else if reg == 7 { // 0x00E94007: Drive Select
         if (val & 0x80) != 0 {
-            fdc.drv = (val & 3) as i32;
+            fdc.drv = (val & 3);
         } else {
             fdc.drv = -1;
         }
     }
-}
-
-// DMAC 連動用データ準備フラグ
-fn fdc_is_data_ready(fdc: X68kFDC&) -> bool {
-    return fdc.bufnum > 0;
 }

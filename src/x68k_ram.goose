@@ -1,16 +1,9 @@
 // 12 MB main RAM. One array for the process. Callers index it; they do not
 // take the array by value (that would copy it).
 
-import .x68k_bridge;
-
 var g_x68k_ram: u8[12582912] = [0; 12582912];
 // C starts at 2 MB. c_mem_set_ram_mb writes this through the bound pointer.
 var g_ram_limit: i32 = 2097152;
-
-fn x68k_ram_bind() {
-    c_ram_bind(g_x68k_ram[0]);
-    c_ram_limit_bind(g_ram_limit);
-}
 
 fn x68k_ram_limit() -> i32 {
     return g_ram_limit;

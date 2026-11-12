@@ -249,10 +249,6 @@ void c_dmac_pull_ch3(uint8_t *csr, uint8_t *cer, uint8_t *ccr, uint16_t *mtc,
     if (bar) *bar = d->BAR;
 }
 
-int c_dmac_peek_irq(void) {
-    return g_dma_vec;
-}
-
 void c_dmac_ack_irq(void) {
     dma_vec_store(-1);
 }

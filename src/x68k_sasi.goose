@@ -1,7 +1,6 @@
 // SASI (0xE96000). Phase and command bytes live here.
 // Sector bytes stay in c_hdd_read_sector / c_hdd_write_sector.
 
-import std;
 import .x68k_bridge;
 
 // Tags are internal; their order is not the hardware bus status encoding.
@@ -23,7 +22,7 @@ struct X68kSASI {
     error: u8 = 0,
     sense: u8[4] = [0; 4],
     sense_ptr: i32 = 0,
-    status_edge: i32 = 0
+    status_edge: bool = false,
 }
 
 fn sasi_reset(sasi: X68kSASI&) {
@@ -38,7 +37,7 @@ fn sasi_reset(sasi: X68kSASI&) {
     sasi.stat = 0;
     sasi.error = 0;
     sasi.sense_ptr = 0;
-    sasi.status_edge = 0;
+    sasi.status_edge = false;
 }
 
 fn sasi_clear_buf(sasi: X68kSASI&) {
@@ -100,7 +99,7 @@ fn sasi_after_block(sasi: X68kSASI&) {
 }
 
 fn sasi_check_cmd(sasi: X68kSASI&) {
-    sasi.unit = ((sasi.cmd[1] >> 5) & 1) as! u8;
+    sasi.unit = ((sasi.cmd[1] >> 5) & 1);
     let op = sasi.cmd[0];
     if op == 0x00 || op == 0x0b {
         if sasi_unit_present(sasi) {
@@ -122,7 +121,7 @@ fn sasi_check_cmd(sasi: X68kSASI&) {
     } else if op == 0x03 {
         sasi.sense[0] = sasi.error;
         let hi = ((sasi.sector >> 16) & 0x1f) as! u8;
-        sasi.sense[1] = ((sasi.unit << 5) | hi) as! u8;
+        sasi.sense[1] = ((sasi.unit << 5) | hi);
         sasi.sense[2] = (sasi.sector >> 8) as! u8;
         sasi.sense[3] = sasi.sector as! u8;
         sasi.error = 0;
@@ -137,7 +136,7 @@ fn sasi_check_cmd(sasi: X68kSASI&) {
         let b2 = sasi.cmd[2] as u32;
         let b3 = sasi.cmd[3] as u32;
         sasi.sector = ((b1 & 0x1f) << 16) | (b2 << 8) | b3;
-        sasi.blocks = sasi.cmd[4] as u32;
+        sasi.blocks = sasi.cmd[4];
         sasi.phase = SasiPhase.Data;
         sasi.direction = SasiDirection.DiskToHost;
         sasi.buf_ptr = 0;
@@ -151,7 +150,7 @@ fn sasi_check_cmd(sasi: X68kSASI&) {
         let b2 = sasi.cmd[2] as u32;
         let b3 = sasi.cmd[3] as u32;
         sasi.sector = ((b1 & 0x1f) << 16) | (b2 << 8) | b3;
-        sasi.blocks = sasi.cmd[4] as u32;
+        sasi.blocks = sasi.cmd[4];
         sasi.phase = SasiPhase.Data;
         sasi.direction = SasiDirection.HostToDisk;
         sasi.buf_ptr = 0;
@@ -175,14 +174,6 @@ fn sasi_check_cmd(sasi: X68kSASI&) {
     }
 }
 
-// Legacy phase numbers are for diagnostics/tests only. Never cast enum tags.
-fn sasi_phase_code(phase: SasiPhase) -> u8 {
-    match phase {
-        BusFree => 0, Selected => 1, Command => 2, Data => 3,
-        Status => 4, Message => 5, Sense => 9, Specify => 10,
-    }
-}
-
 fn sasi_bus_status(sasi: X68kSASI&) -> u8 {
     match sasi.phase {
         BusFree => 0,
@@ -196,22 +187,22 @@ fn sasi_bus_status(sasi: X68kSASI&) -> u8 {
     }
 }
 
-fn sasi_is_ready(sasi: X68kSASI&) -> i32 {
+fn sasi_is_ready(sasi: X68kSASI&) -> bool {
     sasi_pull_host_reset(sasi);
     match sasi.phase {
-        Data, Sense => 1,
-        BusFree, Selected, Command, Status, Message, Specify => 0,
+        Data, Sense => true,
+        BusFree, Selected, Command, Status, Message, Specify => false,
     }
 }
 
-fn sasi_consume_status_edge(sasi: X68kSASI&) -> i32 {
+fn sasi_consume_status_edge(sasi: X68kSASI&) -> bool {
     let e = sasi.status_edge;
-    sasi.status_edge = 0;
+    sasi.status_edge = false;
     return e;
 }
 
 fn sasi_note_status(sasi: X68kSASI&) {
-    if sasi.phase == SasiPhase.Status { sasi.status_edge = 1; }
+    if sasi.phase == SasiPhase.Status { sasi.status_edge = true; }
 }
 
 fn sasi_read(sasi: X68kSASI&, adr: u32) -> u8 {
@@ -255,7 +246,7 @@ fn sasi_write(sasi: X68kSASI&, adr: u32, data: u8) {
             while bit != 0 {
                 if (data & bit) != 0 { sasi.device = i as! u16; break; }
                 i += 1;
-                bit = (bit << 1) as! u8;
+                bit = (bit << 1);
             }
         }
         if sasi.device == 0 && sasi_image_present() {

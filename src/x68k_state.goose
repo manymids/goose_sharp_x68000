@@ -1,6 +1,5 @@
 // Machine checkpoints. No JSON, frontend names, host handles or borrowed
 // references are stored here. Native banks own sound/media/RAM snapshots.
-import std;
 import .x68k_bridge;
 import .x68k_emu;
 import .m68k_cpu;
@@ -24,7 +23,7 @@ struct X68kCheckpoint {
     total_cycles: i64 = 0,
     clk_used: i32 = 0,
     sram_we: i32 = 0,
-    clock_mhz: i32 = 10
+    clock_mhz: i32 = 10,
 }
 
 var g_checkpoints: X68kCheckpoint[50] = [X68kCheckpoint {}; 50];
@@ -95,7 +94,6 @@ fn state_restore(emu: X68kEmulator&, bank: i32, idx: i32) -> bool {
     emu.session.speed_live = false;
     emu.session.speed_have = false;
     // The framebuffer is derived, not saved. Do not publish stale pixels.
-    emu.ppu.frame_ready = false;
     c_set_frame_ready(0);
     return true;
 }
@@ -117,7 +115,7 @@ fn state_frame(bank: i32, idx: i32) -> i64 {
 // Empty records are preallocated globals and are excluded from this metric.
 fn state_bytes(bank: i32, idx: i32) -> i64 {
     if !state_saved(bank, idx) { return 0; }
-    return (c_state_bytes(bank, idx) as i64)
+    return (c_state_bytes(bank, idx))
         + bytes_of(g_checkpoints).len / g_checkpoints.len;
 }
 

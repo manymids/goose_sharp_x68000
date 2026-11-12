@@ -12,7 +12,7 @@ fn session_run_frame(emu: X68kEmulator&) {
     x68k_emu_run_frame(emu);
     let s .= emu.session;
     if !s.rewind_on || s.rewind_interval < 1 || emu.total_frames <= 0 { return; }
-    if (emu.total_frames % (s.rewind_interval as i64)) != 0 { return; }
+    if (emu.total_frames % (s.rewind_interval)) != 0 { return; }
     if !state_capture(emu, STATE_REWIND, s.rewind_next) { return; }
     s.rewind_next = (s.rewind_next + 1) % 8;
     if s.rewind_count < 8 { s.rewind_count += 1; }
@@ -31,14 +31,22 @@ fn session_run(emu: X68kEmulator&, frames: i32) -> i32 {
     return used;
 }
 
+// 再開してからの実測 fps と、画面モードの公称値 (31 kHz: 55 Hz, 15 kHz: 61 Hz) に対する百分率。
+fn session_measure(emu: X68kEmulator&, now: u64) -> i32, i32 {
+    let s .= emu.session;
+    let elapsed = (now - s.speed_start_ms) as i64;
+    let frames = emu.total_frames - s.speed_start_frame;
+    let fps = if elapsed > 50 { ((frames * 1000) / elapsed) as i32 } else { 0 };
+    let nominal: i32 = if (emu.mmu.crtc_regs[0x29] & 0x10) != 0 { 55 } else { 61 };
+    return fps, (fps * 100) / nominal;
+}
+
 fn session_pause(emu: X68kEmulator&, now: u64) {
     let s .= emu.session;
     if !emu.is_paused && s.speed_live {
-        let elapsed = (now - s.speed_start_ms) as i64;
-        let frames = emu.total_frames - s.speed_start_frame;
-        s.speed_fps = if elapsed > 50 { ((frames * 1000) / elapsed) as i32 } else { 0 };
-        let nom = if (emu.mmu.crtc_regs[0x29] & 0x10) != 0 { 55 } else { 61 };
-        s.speed_pct = ((s.speed_fps * 100) / nom) as i32;
+        let fps, pct = session_measure(emu, now);
+        s.speed_fps = fps;
+        s.speed_pct = pct;
         s.speed_have = true;
         s.speed_live = false;
     }
@@ -54,17 +62,15 @@ fn session_resume(emu: X68kEmulator&, now: u64) {
     emu.is_paused = false;
 }
 
-fn session_speed(emu: X68kEmulator&, now: u64, fps: i32&, pct: i32&, running: bool&) {
-    fps = 0; pct = 0; running = false;
+// fps、公称比の百分率、実行中かどうか。停止中は最後に測った値を返す。
+fn session_speed(emu: X68kEmulator&, now: u64) -> i32, i32, bool {
     let s .= emu.session;
     if s.speed_live && !emu.is_paused {
-        let elapsed = (now - s.speed_start_ms) as i64;
-        let frames = emu.total_frames - s.speed_start_frame;
-        if elapsed > 50 { fps = ((frames * 1000) / elapsed) as i32; }
-        let nom = if (emu.mmu.crtc_regs[0x29] & 0x10) != 0 { 55 } else { 61 };
-        pct = ((fps * 100) / nom) as i32;
-        running = true;
-    } else if s.speed_have { fps = s.speed_fps; pct = s.speed_pct; }
+        let fps, pct = session_measure(emu, now);
+        return fps, pct, true;
+    }
+    if s.speed_have { return s.speed_fps, s.speed_pct, false; }
+    return 0, 0, false;
 }
 
 fn session_reset(emu: X68kEmulator&) { x68k_emu_reset(emu); }
@@ -82,37 +88,31 @@ fn session_load(emu: X68kEmulator&, slot: i32) -> bool {
 fn snapshot_find(emu: X68kEmulator&, name: const u8[:]) -> i32 {
     if name.len == 0 || name.len > 63 { return -1; }
     for idx: i32 in 32 {
-        if !state_saved(STATE_SNAPSHOT, idx) { continue; }
-        var equal = true;
-        for i in name.len {
-            let ch = emu.session.snapshot_names[idx * 64 + i];
-            if ch == 0 || ch != name[i] { equal = false; break; }
-        }
-        if equal && emu.session.snapshot_names[idx * 64 + name.len] == 0 { return idx; }
+        if state_saved(STATE_SNAPSHOT, idx) && emu.session.snapshot_names[idx] == name { return idx; }
     }
     return -1;
 }
 
 fn snapshot_name(emu: X68kEmulator&, idx: i32, out: u8[>..]&) {
     if !state_saved(STATE_SNAPSHOT, idx) { return; }
-    for i: i32 in 63 {
-        let ch = emu.session.snapshot_names[idx * 64 + i];
-        if ch == 0 { break; }
-        out.push(ch);
-    }
+    out.append(emu.session.snapshot_names[idx]);
 }
 
 fn snapshot_create(emu: X68kEmulator&, name: const u8[:]) -> i32 {
     if name.len == 0 || name.len > 63 { return SNAPSHOT_INVALID; }
     var idx = snapshot_find(emu, name);
     if idx < 0 {
-        for i: i32 in 32 { if !state_saved(STATE_SNAPSHOT, i) { idx = i; break; } }
+        for i: i32 in 32 {
+            if !state_saved(STATE_SNAPSHOT, i) {
+                idx = i;
+                break;
+            }
+        }
     }
     if idx < 0 { return SNAPSHOT_FULL; }
     if !state_capture(emu, STATE_SNAPSHOT, idx) { return SNAPSHOT_CAPTURE_FAILED; }
     // Commit metadata only after capture succeeds, including failed overwrites.
-    for i: i32 in 64 { emu.session.snapshot_names[idx * 64 + i] = 0; }
-    for i in name.len { emu.session.snapshot_names[idx * 64 + i] = name[i]; }
+    emu.session.snapshot_names[idx] = name;
     emu.is_paused = true;
     return idx;
 }
@@ -125,7 +125,7 @@ fn snapshot_delete(emu: X68kEmulator&, name: const u8[:]) -> bool {
     let idx = snapshot_find(emu, name);
     if idx < 0 { return false; }
     state_drop(STATE_SNAPSHOT, idx);
-    for i: i32 in 64 { emu.session.snapshot_names[idx * 64 + i] = 0; }
+    emu.session.snapshot_names[idx] = "";
     return true;
 }
 
@@ -158,16 +158,15 @@ fn rewind_restore(emu: X68kEmulator&, steps: i32) -> bool {
 
 // Character scheduling is shared by type/exec/macro adapters.
 fn session_type_char(emu: X68kEmulator&, ch: u8, hold: i32) -> i32 {
-    var code: i32 = 0;
-    var shift: i32 = 0;
-    if hold < 1 || hold > 3600 || !type_scancode(ch, code, shift) { return 0; }
+    let code, shift, ok = type_scancode(ch);
+    if hold < 1 || hold > 3600 || !ok { return 0; }
     var frames: i32 = 0;
-    if shift != 0 { type_set_key(emu, 0x70, true); session_run_frame(emu); frames += 1; }
+    if shift { type_set_key(emu, 0x70, true); session_run_frame(emu); frames += 1; }
     type_set_key(emu, code, true);
     for _ in hold { session_run_frame(emu); }
     frames += hold;
     type_set_key(emu, code, false);
-    if shift != 0 { type_set_key(emu, 0x70, false); }
+    if shift { type_set_key(emu, 0x70, false); }
     session_run_frame(emu);
     return frames + 1;
 }

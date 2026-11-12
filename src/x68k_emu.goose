@@ -1,6 +1,5 @@
 // Sharp X68000 エミュレータ本体モジュール in Goose
 
-import std;
 import .x68k_bridge;
 import .m68k_types;
 import .m68k_cpu;
@@ -19,11 +18,6 @@ import .x68k_session_types;
 var g_host_dma_vec: i32 = -1;
 var g_fdd_media_irq: i32 = 0;
 
-fn x68k_host_irq_bind() {
-    c_dma_vec_bind(g_host_dma_vec);
-    c_fdd_media_bind(g_fdd_media_irq);
-}
-
 struct X68kEmulator {
     session: X68kSession = X68kSession {},
     binding_epoch: u64 = 0,
@@ -37,7 +31,7 @@ struct X68kEmulator {
     clk_used: i32 = 0,
     break_armed: bool = false,
     break_pc: u32 = 0,
-    hit_break: bool = false
+    hit_break: bool = false,
 }
 
 fn x68k_emu_bind(emu: X68kEmulator&) -> bool {
@@ -74,7 +68,6 @@ fn x68k_emu_reset(emu: X68kEmulator&) {
     emu.cpu = M68kCPU {};
     mmu_init(emu.mmu);
     mmu_clear_video(emu.mmu);
-    ppu_init(emu.ppu);
     x68k_sram_set_write_enable(0);
     c_machine_reset_devices();
     c_set_screen_mode(768, 512);
@@ -98,7 +91,7 @@ fn x68k_emu_reset(emu: X68kEmulator&) {
     emu.clock_mhz = c_get_cpu_mhz();
     emu.hit_break = false;
     emu.is_paused = true;
-    emu.session.keys = [0; 128];
+    emu.session.keys = [false; 128];
     emu.session.speed_live = false;
     emu.session.speed_have = false;
 }
@@ -114,7 +107,7 @@ fn x68k_emu_step_core(emu: X68kEmulator&) -> i32 {
     dmac_pump_sasi(emu.mmu);
     dmac_exec_ch2(emu.mmu);
     let cycles = m68k_step(emu.cpu, emu.mmu);
-    emu.total_cycles += cycles as i64;
+    emu.total_cycles += cycles;
     emu.mmu.mfp.line_cycles += cycles;
 
     // MFP タイマ進行 (CPUクロックに関わらず実時間4MHz基準で進める: px68k WinX68k_Exec 準拠)
@@ -124,13 +117,12 @@ fn x68k_emu_step_core(emu: X68kEmulator&) -> i32 {
     emu.clk_used -= usedclk * mhz;
     if usedclk > 0 {
         mfp_step_timers(emu.mmu.mfp, usedclk);
-        emu.mmu.rtc.now += usedclk as i64; // 0.1 us
+        emu.mmu.rtc.now += usedclk; // 0.1 us
     }
 
     // MFP 割り込みチェック (Level 6)
     if mfp_has_pending_int(emu.mmu.mfp) {
-        let cpu_mask = ((emu.cpu.sr >> 8) & 0x07) as i32;
-        if cpu_mask < 6 {
+        if cpu_int_mask(emu.cpu) < 6 {
             let vect = mfp_ack_interrupt(emu.mmu.mfp);
             if vect >= 0 {
                 m68k_interrupt(emu.cpu, emu.mmu, 6, vect);
@@ -145,8 +137,7 @@ fn x68k_emu_step_core(emu: X68kEmulator&) -> i32 {
         dma_vec = g_host_dma_vec;
     }
     if dma_vec >= 0 {
-        let cpu_mask = ((emu.cpu.sr >> 8) & 0x07) as i32;
-        if cpu_mask < 3 {
+        if cpu_int_mask(emu.cpu) < 3 {
             if goose_dma { dmac_ack_irq(emu.mmu.dmac); } else { c_dmac_ack_irq(); }
             m68k_interrupt(emu.cpu, emu.mmu, 3, dma_vec);
         }
@@ -155,8 +146,7 @@ fn x68k_emu_step_core(emu: X68kEmulator&) -> i32 {
     // IOC 割り込みチェック (Level 1)。FDC は bit7 かつ bit2、ベクタはそのまま。
     var took_level1 = false;
     if (emu.mmu.ioc_int_stat & 0x80) != 0 && (emu.mmu.ioc_int_stat & 0x04) != 0 {
-        let cpu_mask = ((emu.cpu.sr >> 8) & 0x07) as i32;
-        if cpu_mask < 1 {
+        if cpu_int_mask(emu.cpu) < 1 {
             let vect = emu.mmu.ioc_int_vect as i32;
             emu.mmu.ioc_int_stat &= 0x7F;
             if vect > 0 {
@@ -167,8 +157,7 @@ fn x68k_emu_step_core(emu: X68kEmulator&) -> i32 {
     }
     // SASI。px68k はステータス相に入ったアクセスで bit4 を立て、許可 bit3 のときベクタは +2。
     if !took_level1 && emu.mmu.sasi_irq && (emu.mmu.ioc_int_stat & 8) != 0 {
-        let cpu_mask = ((emu.cpu.sr >> 8) & 0x07) as i32;
-        if cpu_mask < 1 {
+        if cpu_int_mask(emu.cpu) < 1 {
             emu.mmu.sasi_irq = false;
             let vect = (emu.mmu.ioc_int_vect as i32) + 2;
             m68k_interrupt(emu.cpu, emu.mmu, 1, vect);
@@ -177,8 +166,7 @@ fn x68k_emu_step_core(emu: X68kEmulator&) -> i32 {
     }
     // FDD 挿抜。px68k は bit1 が立っているときだけ要求し、ベクタは +1。
     if !took_level1 && g_fdd_media_irq != 0 {
-        let cpu_mask = ((emu.cpu.sr >> 8) & 0x07) as i32;
-        if cpu_mask < 1 {
+        if cpu_int_mask(emu.cpu) < 1 {
             c_fdd_ack_media_irq();
             let vect = (emu.mmu.ioc_int_vect as i32) + 1;
             m68k_interrupt(emu.cpu, emu.mmu, 1, vect);
@@ -190,7 +178,7 @@ fn x68k_emu_step_core(emu: X68kEmulator&) -> i32 {
 
 // Lines per frame: R04 + 1.
 fn x68k_frame_lines(mmu: M68kMMU&) -> i32 {
-    let v = ((((mmu.crtc_regs[8] as i32) << 8) | (mmu.crtc_regs[9] as i32)) & 1023) + 1;
+    let v = (crtc_word(mmu, CRTC_VTOTAL) & 1023) + 1;
     return if v > 1 { v } else { 568 };
 }
 
@@ -222,22 +210,15 @@ fn x68k_emu_run_frame(emu: X68kEmulator&) {
 
     let vline_total = x68k_frame_lines(emu.mmu);
 
-    // ゲームはフレーム途中でラスタ割り込みラインを書き換える。px68k は毎ライン
-    // CRTC_IntLine / VSTART / VEND を読む。先頭で固定すると下側のスプライト更新が走らない。
-    var crtc_vstart = ((((emu.mmu.crtc_regs[0x0C] as i32) << 8) | (emu.mmu.crtc_regs[0x0D] as i32)) & 1023);
-    var crtc_vend   = ((((emu.mmu.crtc_regs[0x0E] as i32) << 8) | (emu.mmu.crtc_regs[0x0F] as i32)) & 1023);
-    var crtc_intline = ((((emu.mmu.crtc_regs[0x12] as i32) << 8) | (emu.mmu.crtc_regs[0x13] as i32)) & 1023);
-
     let hsync_clk = clk_total / vline_total;
     let htotal = if emu.mmu.crtc_regs[0x01] > 0 { emu.mmu.crtc_regs[0x01] as i32 } else { 137 };
     // GPIP7 is high during the horizontal sync pulse only (XEiJ): R01 + 1 of R00 + 1 columns.
     let hstart = (((emu.mmu.crtc_regs[0x03] as i32) + 1) * hsync_clk) / (htotal + 1);
-    let hend   = hsync_clk;
+    let hend = hsync_clk;
 
     emu.mmu.mfp.hsync_clk = hsync_clk;
     emu.mmu.mfp.hsync_start = hstart;
     emu.mmu.mfp.hsync_end = hend;
-    emu.mmu.mfp.crtc_intline = crtc_intline;
 
     ppu_begin_frame(emu.ppu, emu.mmu);
 
@@ -245,10 +226,11 @@ fn x68k_emu_run_frame(emu: X68kEmulator&) {
     var clk_count: i32 = 0;
 
     while vline < vline_total {
-        // 走査線開始時 (hsync = 1)。比較ラインは今の CRTC レジスタ。
-        crtc_vstart = ((((emu.mmu.crtc_regs[0x0C] as i32) << 8) | (emu.mmu.crtc_regs[0x0D] as i32)) & 1023);
-        crtc_vend = ((((emu.mmu.crtc_regs[0x0E] as i32) << 8) | (emu.mmu.crtc_regs[0x0F] as i32)) & 1023);
-        crtc_intline = ((((emu.mmu.crtc_regs[0x12] as i32) << 8) | (emu.mmu.crtc_regs[0x13] as i32)) & 1023);
+        // 走査線開始時 (hsync = 1)。ゲームはフレーム途中でラスタ割り込みラインを書き換えるので、
+        // px68k と同じく毎ライン CRTC_IntLine / VSTART / VEND を読む。
+        var crtc_vstart = crtc_word(emu.mmu, CRTC_VSTART) & 1023;
+        var crtc_vend = crtc_word(emu.mmu, CRTC_VEND) & 1023;
+        var crtc_intline = crtc_word(emu.mmu, CRTC_RASTER) & 1023;
         emu.mmu.mfp.crtc_intline = crtc_intline;
         emu.mmu.mfp.cur_vline = vline;
         emu.mmu.mfp.line_cycles = 0;
@@ -281,7 +263,7 @@ fn x68k_emu_run_frame(emu: X68kEmulator&) {
         }
 
         // 走査線内のサイクル実行
-        let clk_next = ((clk_total as i64) * ((vline + 1) as i64) / (vline_total as i64)) as i32;
+        let clk_next = ((clk_total as i64) * ((vline + 1)) / (vline_total)) as i32;
         while clk_count < clk_next {
             if emu.break_armed && (emu.cpu.pc & 0x00FFFFFF) == (emu.break_pc & 0x00FFFFFF) {
                 emu.hit_break = true;
@@ -292,9 +274,9 @@ fn x68k_emu_run_frame(emu: X68kEmulator&) {
         }
 
         // 走査線終了時。CPU がこのラインで書いた比較ラインを使う。
-        crtc_vstart = ((((emu.mmu.crtc_regs[0x0C] as i32) << 8) | (emu.mmu.crtc_regs[0x0D] as i32)) & 1023);
-        crtc_vend = ((((emu.mmu.crtc_regs[0x0E] as i32) << 8) | (emu.mmu.crtc_regs[0x0F] as i32)) & 1023);
-        crtc_intline = ((((emu.mmu.crtc_regs[0x12] as i32) << 8) | (emu.mmu.crtc_regs[0x13] as i32)) & 1023);
+        crtc_vstart = crtc_word(emu.mmu, CRTC_VSTART) & 1023;
+        crtc_vend = crtc_word(emu.mmu, CRTC_VEND) & 1023;
+        crtc_intline = crtc_word(emu.mmu, CRTC_RASTER) & 1023;
         emu.mmu.mfp.crtc_intline = crtc_intline;
         mfp_timer_a(emu.mmu.mfp, vline, crtc_vstart, crtc_vend, vline_total);
         if (emu.mmu.mfp.regs[MFP_AER] & 0x40) != 0 && vline == crtc_intline {
@@ -343,14 +325,14 @@ fn x68k_emu_run_frame(emu: X68kEmulator&) {
         } else {
             // 確認メモ: ビットが立っているとき 1、落ちているとき 2。入れ替えない。
             emu.mmu.crtc_fast_clr = if is_31k { 1 } else { 2 };
-            let sx = (((emu.mmu.crtc_regs[0x18] as u32) << 8) | (emu.mmu.crtc_regs[0x19] as u32)) & 511;
-            let sy = (((emu.mmu.crtc_regs[0x1A] as u32) << 8) | (emu.mmu.crtc_regs[0x1B] as u32)) & 511;
+            let sx = (crtc_word(emu.mmu, CRTC_GRP_X) & 511) as u32;
+            let sy = (crtc_word(emu.mmu, CRTC_GRP_Y) & 511) as u32;
             mmu_gvram_fast_clear(emu.mmu, emu.mmu.crtc_regs[0x2B], emu.mmu.crtc_regs[0x29], sx, sy);
         }
     }
 
-    // 画面描画
-    ppu_render_frame(emu.ppu, emu.mmu);
+    // フレーム末の CRTC 設定を画面サイズへ反映
+    ppu_apply_screen(emu.mmu);
 
     // 44.1kHz。31kHz 画面は 55.46Hz（5546）、15kHz 画面は 61.46Hz（6146）。
     let samples: i32 = if is_31k {
