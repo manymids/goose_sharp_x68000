@@ -281,11 +281,10 @@ fn extract_json_int(line: const u8[:], key: const u8[:], default_val: i32) -> i3
 }
 
 // Number or address argument, read as XEiJ does: a JSON number, or a string that is hex
-// with 0x/$ prefix, h suffix or any a-f digit, and decimal otherwise. 0 = absent,
-// 1 = read into out, -1 = present but not a 32-bit value.
-fn json_addr_parse(line: const u8[:], key: const u8[:], out: u32&) -> i32 {
+// Results: the value, whether the key is present, and whether it is a valid 32-bit value.
+fn json_addr_parse(line: const u8[:], key: const u8[:]) -> u32, bool, bool {
     let at = json_key_value(line, 0, key);
-    if at < 0 || at >= line.len { return 0; }
+    if at < 0 || at >= line.len { return 0, false, true; }
     var text: u8[>..] = [];
     if json_read_long_ok(line, at) {
         var p = at;
@@ -294,7 +293,7 @@ fn json_addr_parse(line: const u8[:], key: const u8[:], out: u32&) -> i32 {
             p += 1;
         }
     } else if !json_read_string(line, at, text) {
-        return -1;
+        return 0, true, false;
     }
     var lo: i32 = 0;
     var hi: i32 = text.len as i32;
@@ -323,7 +322,7 @@ fn json_addr_parse(line: const u8[:], key: const u8[:], out: u32&) -> i32 {
         neg = true;
         lo += 1;
     }
-    if lo >= hi { return -1; }
+    if lo >= hi { return 0, true, false; }
     let base: u64 = if hex { 16 } else { 10 };
     var n: u64 = 0;
     while lo < hi {
@@ -332,24 +331,23 @@ fn json_addr_parse(line: const u8[:], key: const u8[:], out: u32&) -> i32 {
         if c >= '0' && c <= '9' { digit = (c - '0'); }
         else if hex && c >= 'a' && c <= 'f' { digit = (c - 'a' + 10); }
         else if hex && c >= 'A' && c <= 'F' { digit = (c - 'A' + 10); }
-        if digit < 0 { return -1; }
+        if digit < 0 { return 0, true, false; }
         n = n * base + (digit as u64);
-        if n > 0xFFFFFFFF { return -1; }
+        if n > 0xFFFFFFFF { return 0, true, false; }
         lo += 1;
     }
-    out = if neg { (0x100000000 - n) as! u32 } else { n as u32 };
-    return 1;
+    let value: u32 = if neg { (0x100000000 - n) as! u32 } else { n as u32 };
+    return value, true, true;
 }
 
 fn extract_json_addr(line: const u8[:], key: const u8[:], default_val: u32) -> u32 {
-    var v: u32 = 0;
-    if json_addr_parse(line, key, v) != 1 { return default_val; }
-    return v;
+    let v, present, valid = json_addr_parse(line, key);
+    return if present && valid { v } else { default_val };
 }
 
 fn mcp_bad_key(args: const u8[:], key: const u8[:], bad: u8[>..]&) -> bool {
-    var v: u32 = 0;
-    if json_addr_parse(args, key, v) >= 0 { return false; }
+    let v, present, valid = json_addr_parse(args, key);
+    if valid { return false; }
     bad.append(str("invalid numeric or hex value for '", key, "'"));
     return true;
 }
@@ -420,8 +418,8 @@ fn append_palette(out: u8[>..]&, base: i32) {
     for i in 256 {
         if i != 0 { out.append(","); }
         let off: i32 = base + (i as i32) * 2;
-        let hi = c_mem_read_pal(off) as i32;
-        let lo = c_mem_read_pal(off + 1) as i32;
+        let hi: i32 = c_mem_read_pal(off);
+        let lo: i32 = c_mem_read_pal(off + 1);
         let v = (hi << 8) | lo;
         let r5 = (v >> 6) & 31;
         let g5 = (v >> 11) & 31;
@@ -816,7 +814,7 @@ fn mcp_input_call(emu: X68kEmulator&, tool_name: const u8[:], args: const u8[:],
             return true;
         }
         let code = key_code(key_name);
-        if code == -2 {
+        if code == KEY_BLOCKED {
             mcp_write_text(id_buf, "this key is blocked from arcl_key: it triggers a core-internal side effect (F12 opens the built-in menu, ScrollLock toggles MIDI); see x68k_mcp.md 6.1", true);
             return true;
         }
@@ -2162,9 +2160,9 @@ fn mcp_inspect_call(emu: X68kEmulator&, tool_name: const u8[:], args: const u8[:
     if tool_name == "arcl_sprites" {
         let hstart = crtc_word(emu.mmu, CRTC_HSTART);
         let vstart = crtc_word(emu.mmu, CRTC_VSTART);
-        let b0d = c_mem_read_bg_reg(0x0D) as i32;
-        let b0f = c_mem_read_bg_reg(0x0F) as i32;
-        let b11 = c_mem_read_bg_reg(0x11) as i32;
+        let b0d: i32 = c_mem_read_bg_reg(0x0D);
+        let b0f: i32 = c_mem_read_bg_reg(0x0F);
+        let b11: i32 = c_mem_read_bg_reg(0x11);
         let hadjust = (b0d - (hstart + 4)) * 8;
         let vdiv = if (b11 & 4) != 0 { 1 } else { 2 };
         let vline = (b0f - vstart) / vdiv;
@@ -2176,7 +2174,7 @@ fn mcp_inspect_call(emu: X68kEmulator&, tool_name: const u8[:], args: const u8[:
             let posx = (c_mem_read_sprite(base)) | ((c_mem_read_sprite(base + 1) as i32) << 8);
             let posy = (c_mem_read_sprite(base + 2)) | ((c_mem_read_sprite(base + 3) as i32) << 8);
             let ctrl = (c_mem_read_sprite(base + 4)) | ((c_mem_read_sprite(base + 5) as i32) << 8);
-            let ply = c_mem_read_sprite(base + 6) as i32;
+            let ply: i32 = c_mem_read_sprite(base + 6);
             var ctrl_hex: u8[>..] = [];
             hex_u16(ctrl as u16, ctrl_hex);
             format(obj, "{\"index\":", i, ",\"x\":", posx, ",\"y\":", posy, ",\"priority\":", ply & 3, ",\"palette\":", (ctrl >> 4) & 15, ",\"ctrl_raw\":\"", ctrl_hex, "\"}");

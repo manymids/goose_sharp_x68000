@@ -134,8 +134,8 @@ fn gvram_set(mmu: M68kMMU&, i: u32, val: u8) {
 
 fn gvram_and16(mmu: M68kMMU&, off: u32, mask: u16) {
     if off + 1 >= 524288 { return; }
-    let lo = mmu.gvram[off as i64] as u16;
-    let hi = mmu.gvram[(off + 1) as i64] as u16;
+    let lo: u16 = mmu.gvram[off as i64];
+    let hi: u16 = mmu.gvram[(off + 1) as i64];
     let next = (lo | (hi << 8)) & mask;
     mmu.gvram[off as i64] = next as! u8;
     mmu.gvram[(off + 1) as i64] = (next >> 8) as! u8;
@@ -310,15 +310,15 @@ fn mmu_tvram_raster_copy(mmu: M68kMMU&, src_line: u32, dst_line: u32, plane_mask
     let src = (src_line << 9) & 0x1FFFF;
     let dst = (dst_line << 9) & 0x1FFFF;
     for bit in 4 {
-        let flag = (1 << bit) as u8;
+        let flag: u8 = 1 << bit;
         if (plane_mask & flag) != 0 {
             var plane: u32 = 0;
             if bit == 1 { plane = 0x20000; }
             if bit == 2 { plane = 0x40000; }
             if bit == 3 { plane = 0x60000; }
             for i in 512 {
-                let s = (src + plane + (i as u32)) as i64;
-                let d = (dst + plane + (i as u32)) as i64;
+                let s: i64 = src + plane + (i as u32);
+                let d: i64 = dst + plane + (i as u32);
                 mmu.tvram[d] = mmu.tvram[s];
             }
         }
@@ -700,8 +700,8 @@ fn mmu_write8(mmu: M68kMMU&, addr: u32, val: u8) {
             // CRTC operation port (Raster Copy & Fast Clear)
             mmu.crtc_mode = (val | (mmu.crtc_mode & 0x02));
             if (mmu.crtc_mode & 8) != 0 {
-                let src_line = mmu.crtc_regs[0x2C] as u32;
-                let dst_line = mmu.crtc_regs[0x2D] as u32;
+                let src_line: u32 = mmu.crtc_regs[0x2C];
+                let dst_line: u32 = mmu.crtc_regs[0x2D];
                 let mask = mmu.crtc_regs[0x2B];
                 mmu_tvram_raster_copy(mmu, src_line, dst_line, mask);
             }
@@ -717,8 +717,8 @@ fn mmu_write8(mmu: M68kMMU&, addr: u32, val: u8) {
         mmu.crtc_regs[reg] = val;
         if reg == 0x2D {
             if (mmu.crtc_mode & 8) != 0 {
-                let src_line = mmu.crtc_regs[0x2C] as u32;
-                let dst_line = val as u32;
+                let src_line: u32 = mmu.crtc_regs[0x2C];
+                let dst_line: u32 = val;
                 let mask = mmu.crtc_regs[0x2B];
                 mmu_tvram_raster_copy(mmu, src_line, dst_line, mask);
             }
@@ -877,8 +877,8 @@ fn mmu_read16(mmu: M68kMMU&, addr: u32) -> u16 {
     if mmu_byte_port(a) {
         v = 0xFF00 | (mmu_read8(mmu, addr + 1) as u16);
     } else {
-        let hi = mmu_read8(mmu, addr) as u16;
-        let lo = mmu_read8(mmu, addr + 1) as u16;
+        let hi: u16 = mmu_read8(mmu, addr);
+        let lo: u16 = mmu_read8(mmu, addr + 1);
         v = (hi << 8) | lo;
     }
     if mmu.cpu_access { mmu.wait40 = wait; }
@@ -913,8 +913,8 @@ fn mmu_read32(mmu: M68kMMU&, addr: u32) -> u32 {
         if mmu.cpu_access { mmu.wait40 += 10; }
         return x68k_ram_read32(a as i32);
     }
-    let hi = mmu_read16(mmu, addr) as u32;
-    let lo = mmu_read16(mmu, addr + 2) as u32;
+    let hi: u32 = mmu_read16(mmu, addr);
+    let lo: u32 = mmu_read16(mmu, addr + 2);
     return (hi << 16) | lo;
 }
 

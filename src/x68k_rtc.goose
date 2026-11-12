@@ -48,16 +48,18 @@ fn rtc_days_from_civil(year: i64, month: i64, day: i64) -> i64 {
     return era * 146097 + doe - 719468;
 }
 
-fn rtc_civil_from_days(z0: i64, year: i64&, month: i64&, day: i64&) {
+// 1970-01-01 からの日数を 年, 月, 日 に直す。
+fn rtc_civil_from_days(z0: i64) -> i64, i64, i64 {
     let z = z0 + 719468;
     let era = div_euclid(z, 146097);
     let doe = z - era * 146097;
     let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
     let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
     let mp = (5 * doy + 2) / 153;
-    day = doy - (153 * mp + 2) / 5 + 1;
-    month = if mp < 10 { mp + 3 } else { mp - 9 };
-    year = yoe + era * 400 + (if month <= 2 { 1 } else { 0 });
+    let day = doy - (153 * mp + 2) / 5 + 1;
+    let month = if mp < 10 { mp + 3 } else { mp - 9 };
+    let year = yoe + era * 400 + (if month <= 2 { 1 } else { 0 });
+    return year, month, day;
 }
 
 fn rtc_seconds(rtc: X68kRTC&) -> i64 {
@@ -75,25 +77,24 @@ fn rtc_digit(rtc: X68kRTC&, idx: i32) -> u8 {
     if rtc.rule == 0 && hour >= 12 { hour += 8; }
     let minute = (tod / 60) % 60;
     let second = tod % 60;
-    var y: i64 = 0;
-    var mo: i64 = 0;
-    var d: i64 = 0;
-    rtc_civil_from_days(days, y, mo, d);
+    let y, mo, d = rtc_civil_from_days(days);
     let yy = (y - 1980) % 100;
-    var v: i64 = 0;
-    if idx == 0 { v = second % 10; }
-    else if idx == 1 { v = second / 10; }
-    else if idx == 2 { v = minute % 10; }
-    else if idx == 3 { v = minute / 10; }
-    else if idx == 4 { v = hour % 10; }
-    else if idx == 5 { v = hour / 10; }
-    else if idx == 6 { v = (days + rtc.week_gap) % 7; }
-    else if idx == 7 { v = d % 10; }
-    else if idx == 8 { v = d / 10; }
-    else if idx == 9 { v = mo % 10; }
-    else if idx == 10 { v = mo / 10; }
-    else if idx == 11 { v = yy % 10; }
-    else if idx == 12 { v = yy / 10; }
+    let v = match idx {
+        0 => second % 10,
+        1 => second / 10,
+        2 => minute % 10,
+        3 => minute / 10,
+        4 => hour % 10,
+        5 => hour / 10,
+        6 => (days + rtc.week_gap) % 7,
+        7 => d % 10,
+        8 => d / 10,
+        9 => mo % 10,
+        10 => mo / 10,
+        11 => yy % 10,
+        12 => yy / 10,
+        _ => 0,
+    };
     return v as u8;
 }
 
@@ -122,10 +123,7 @@ fn rtc_read(rtc: X68kRTC&, reg: i32) -> u8 {
     if rtc.bank == 0 { return rtc_digit(rtc, idx); }
     if r == 0x15 { return rtc.rule; }
     if r == 0x17 {
-        var y: i64 = 0;
-        var mo: i64 = 0;
-        var d: i64 = 0;
-        rtc_civil_from_days(div_euclid(rtc_seconds(rtc), 86400), y, mo, d);
+        let y, mo, d = rtc_civil_from_days(div_euclid(rtc_seconds(rtc), 86400));
         return ((y - 1980) % 4) as u8;
     }
     return rtc.bank1[r as i64] & 15;
@@ -149,10 +147,10 @@ fn rtc_write(rtc: X68kRTC&, reg: i32, val: u8) {
     let idx = (r >> 1);
     if rtc.bank == 1 {
         if r == 0x15 {
-            let d = (val & 1) as i64;
+            let d: i64 = val & 1;
             if d != rtc.rule {
                 // Keep the 12/20-hour digit and reinterpret it.
-                let h1 = (rtc_digit(rtc, 5) >> 1) as i64;
+                let h1: i64 = rtc_digit(rtc, 5) >> 1;
                 let old = if rtc.rule == 0 { 43200 } else { 72000 };
                 let new = if d == 0 { 43200 } else { 72000 };
                 rtc_add_seconds(rtc, h1 * (new - old));
@@ -166,8 +164,8 @@ fn rtc_write(rtc: X68kRTC&, reg: i32, val: u8) {
     }
     let masks: u8[13] = [15, 7, 15, 7, 15, 3, 7, 15, 3, 15, 1, 15, 15];
     if idx > 12 { return; }
-    let d = (val & masks[idx]) as i64;
-    let cur = rtc_digit(rtc, idx) as i64;
+    let d: i64 = val & masks[idx];
+    let cur: i64 = rtc_digit(rtc, idx);
     if idx == 0 { rtc_add_seconds(rtc, d - cur); }
     else if idx == 1 { rtc_add_seconds(rtc, (d - cur) * 10); }
     else if idx == 2 { rtc_add_seconds(rtc, (d - cur) * 60); }

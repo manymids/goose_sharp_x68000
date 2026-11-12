@@ -64,7 +64,7 @@ fn dma_readmem24_word(addr: u32) -> u16 {
 // レジスタは 1 チャネル 64 バイト。24 bit アドレスの最上位バイト (0x0C, 0x14, 0x1C) は 0 が読める。
 fn dmac_read(dmac: X68kDMAC&, addr: u32) -> u8 {
     if addr >= 0x00E84100 { return 0; }
-    let ch = ((addr >> 6) & 0x03) as! i32;
+    let ch = ((addr >> 6) & 0x03) as i32;
     // ch3 は C 側 DMA[3] が進めた MTC/CSR を、読む前に Goose へ戻す。
     if ch == 3 { dmac_sound_pull(dmac); }
     let c .= dmac.ch[ch];
@@ -130,7 +130,7 @@ fn dmac_write_ccr(c: X68kDMAChannel&, data: u8) {
 
 fn dmac_write(dmac: X68kDMAC&, addr: u32, data: u8) {
     if addr >= 0x00E84100 { return; }
-    let ch = ((addr >> 6) & 0x03) as! i32;
+    let ch = ((addr >> 6) & 0x03) as i32;
     // 1 バイト書きで残りのカウンタを古い Goose 値のまま C へ戻さない。
     if ch == 3 { dmac_sound_pull(dmac); }
     let c .= dmac.ch[ch];

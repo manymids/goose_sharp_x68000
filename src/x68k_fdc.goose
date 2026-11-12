@@ -93,111 +93,121 @@ fn fdc_ephase_end(fdc: X68kFDC&) {
 fn fdc_exec_cmd(fdc: X68kFDC&) {
     let cmd = fdc.cmd;
 
-    if cmd == FDC_SPECIFY {
-        // 何もしない
-    } else if cmd == FDC_SENSE_DEVICE {
-        let us = (fdc.prm_buf[1] & 7);
-        fdc.st0 = us;
-        var st3: u8 = us;
-        if fdc.cyl == 0 { st3 |= 0x10; } // Track 0
-        if c_fdd_is_loaded(fdc.drv) { st3 |= 0x20; } // Ready
-        fdc.rsp_buf[0] = st3;
-    } else if cmd == FDC_RECALIBRATE {
-        fdc.st0 = (fdc.prm_buf[1] & 7);
-        fdc.cyl = 0;
-        if !c_fdd_is_loaded(fdc.drv) {
-            fdc.st0 |= 0x48; // no FD
-        } else if fdc.drv >= 0 && fdc.drv < 2 {
-            fdc.st0 |= 0x20; // with FD and drive
-        } else {
-            fdc.st0 |= 0x50; // no drive
-        }
-        fdc.int_pending = true;
-    } else if cmd == FDC_SENSE_INT {
-        fdc.rsp_buf[0] = fdc.st0;
-        fdc.rsp_buf[1] = fdc.cyl as u8;
-        fdc.st0 = 0x80;
-    } else if cmd == FDC_SEEK {
-        fdc.st0 = (fdc.prm_buf[1] & 7);
-        if c_fdd_is_loaded(fdc.drv) {
-            fdc.cyl = fdc.prm_buf[2];
-            fdc.st0 |= 0x20;
-        } else {
-            fdc.st0 |= 0x48;
-        }
-        fdc.int_pending = true;
-    } else if cmd == FDC_READ_ID {
-        fdc.st0 = fdc.prm_buf[1] & 7;
-        let hd = (fdc.prm_buf[1] >> 2) & 1;
-        if c_fdd_is_loaded(fdc.drv) {
-            fdc.rsp_buf[0] = fdc.st0;
-            fdc.rsp_buf[1] = fdc.st1;
-            fdc.rsp_buf[2] = fdc.st2;
-            fdc.rsp_buf[3] = fdc.cyl as u8;
-            fdc.rsp_buf[4] = hd;
-            fdc.rsp_buf[5] = 1; // 1-based sector
-            fdc.rsp_buf[6] = 3; // 1024 bytes (2HD)
-        } else {
-            fdc.st0 |= 0x48;
-            fdc.rsp_buf[0] = fdc.st0;
-            fdc.rsp_buf[1] = fdc.st1;
-            fdc.rsp_buf[2] = fdc.st2;
-            fdc.rsp_buf[3] = 0;
-            fdc.rsp_buf[4] = 0;
-            fdc.rsp_buf[5] = 0;
-            fdc.rsp_buf[6] = 0;
-        }
-        fdc.int_pending = true;
-    } else if cmd == FDC_WRITE_DATA || cmd == FDC_WRITE_DELETED {
-        fdc.st0 = (fdc.prm_buf[1] & 7);
-        fdc.wexec = false;
-        if c_fdd_is_loaded(fdc.drv) {
-            let hd = (fdc.prm_buf[1] >> 2) & 1;
-            let trk = fdc.cyl * 2 + hd;
-            let n = fdc.prm_buf[5] as i32;
-            if c_fdd_seek(fdc.drv, trk) == 0 {
-                fdc.st0 |= 0x40;
-                fdc.st1 |= 0x04;
-                fdc_ephase_end(fdc);
+    match cmd {
+        FDC_SPECIFY => {
+            // 何もしない
+        },
+        FDC_SENSE_DEVICE => {
+            let us = (fdc.prm_buf[1] & 7);
+            fdc.st0 = us;
+            var st3: u8 = us;
+            if fdc.cyl == 0 { st3 |= 0x10; } // Track 0
+            if c_fdd_is_loaded(fdc.drv) { st3 |= 0x20; } // Ready
+            fdc.rsp_buf[0] = st3;
+        },
+        FDC_RECALIBRATE => {
+            fdc.st0 = (fdc.prm_buf[1] & 7);
+            fdc.cyl = 0;
+            if !c_fdd_is_loaded(fdc.drv) {
+                fdc.st0 |= 0x48; // no FD
+            } else if fdc.drv >= 0 && fdc.drv < 2 {
+                fdc.st0 |= 0x20; // with FD and drive
             } else {
+                fdc.st0 |= 0x50; // no drive
+            }
+            fdc.int_pending = true;
+        },
+        FDC_SENSE_INT => {
+            fdc.rsp_buf[0] = fdc.st0;
+            fdc.rsp_buf[1] = fdc.cyl as u8;
+            fdc.st0 = 0x80;
+        },
+        FDC_SEEK => {
+            fdc.st0 = (fdc.prm_buf[1] & 7);
+            if c_fdd_is_loaded(fdc.drv) {
+                fdc.cyl = fdc.prm_buf[2];
+                fdc.st0 |= 0x20;
+            } else {
+                fdc.st0 |= 0x48;
+            }
+            fdc.int_pending = true;
+        },
+        FDC_READ_ID => {
+            fdc.st0 = fdc.prm_buf[1] & 7;
+            let hd = (fdc.prm_buf[1] >> 2) & 1;
+            if c_fdd_is_loaded(fdc.drv) {
+                fdc.rsp_buf[0] = fdc.st0;
+                fdc.rsp_buf[1] = fdc.st1;
+                fdc.rsp_buf[2] = fdc.st2;
+                fdc.rsp_buf[3] = fdc.cyl as u8;
+                fdc.rsp_buf[4] = hd;
+                fdc.rsp_buf[5] = 1; // 1-based sector
+                fdc.rsp_buf[6] = 3; // 1024 bytes (2HD)
+            } else {
+                fdc.st0 |= 0x48;
+                fdc.rsp_buf[0] = fdc.st0;
+                fdc.rsp_buf[1] = fdc.st1;
+                fdc.rsp_buf[2] = fdc.st2;
+                fdc.rsp_buf[3] = 0;
+                fdc.rsp_buf[4] = 0;
+                fdc.rsp_buf[5] = 0;
+                fdc.rsp_buf[6] = 0;
+            }
+            fdc.int_pending = true;
+        },
+        FDC_WRITE_DATA, FDC_WRITE_DELETED => {
+            fdc.st0 = (fdc.prm_buf[1] & 7);
+            fdc.wexec = false;
+            if c_fdd_is_loaded(fdc.drv) {
+                let hd = (fdc.prm_buf[1] >> 2) & 1;
+                let trk = fdc.cyl * 2 + hd;
+                let n: i32 = fdc.prm_buf[5];
+                if c_fdd_seek(fdc.drv, trk) == 0 {
+                    fdc.st0 |= 0x40;
+                    fdc.st1 |= 0x04;
+                    fdc_ephase_end(fdc);
+                } else {
+                    let sec_size = if n > 0 { (128 << n) as i32 } else { 1024 };
+                    fdc.bufnum = sec_size;
+                    fdc.wrptr = 0;
+                    fdc.wexec = true;
+                }
+            } else {
+                fdc.st0 |= 0x48;
+                fdc_ephase_end(fdc);
+            }
+        },
+        FDC_READ_DATA, FDC_READ_DELETED => {
+            fdc.st0 = (fdc.prm_buf[1] & 7);
+            fdc.wexec = false;
+            if c_fdd_is_loaded(fdc.drv) {
+                let hd = (fdc.prm_buf[1] >> 2) & 1;
+                let trk = fdc.cyl * 2 + hd;
+                let c: i32 = fdc.prm_buf[2];
+                let h: i32 = fdc.prm_buf[3];
+                let r: i32 = fdc.prm_buf[4];
+                let n: i32 = fdc.prm_buf[5];
+
                 let sec_size = if n > 0 { (128 << n) as i32 } else { 1024 };
-                fdc.bufnum = sec_size;
-                fdc.wrptr = 0;
-                fdc.wexec = true;
-            }
-        } else {
-            fdc.st0 |= 0x48;
-            fdc_ephase_end(fdc);
-        }
-    } else if cmd == FDC_READ_DATA || cmd == FDC_READ_DELETED {
-        fdc.st0 = (fdc.prm_buf[1] & 7);
-        fdc.wexec = false;
-        if c_fdd_is_loaded(fdc.drv) {
-            let hd = (fdc.prm_buf[1] >> 2) & 1;
-            let trk = fdc.cyl * 2 + hd;
-            let c = fdc.prm_buf[2] as i32;
-            let h = fdc.prm_buf[3] as i32;
-            let r = fdc.prm_buf[4] as i32;
-            let n = fdc.prm_buf[5] as i32;
 
-            let sec_size = if n > 0 { (128 << n) as i32 } else { 1024 };
-
-            let ok = c_fdd_read_fdc(fdc.drv, trk, c, h, r, n, fdc.data_buf[0]);
-            if ok != 0 {
-                fdc.bufnum = sec_size;
-                fdc.rdptr = 0;
+                let ok = c_fdd_read_fdc(fdc.drv, trk, c, h, r, n, fdc.data_buf[0]);
+                if ok != 0 {
+                    fdc.bufnum = sec_size;
+                    fdc.rdptr = 0;
+                } else {
+                    fdc.st0 |= 0x40; // Abnormal termination
+                    fdc.st1 |= 0x04; // No data
+                    fdc_ephase_end(fdc);
+                }
             } else {
-                fdc.st0 |= 0x40; // Abnormal termination
-                fdc.st1 |= 0x04; // No data
+                fdc.st0 |= 0x48;
                 fdc_ephase_end(fdc);
             }
-        } else {
-            fdc.st0 |= 0x48;
-            fdc_ephase_end(fdc);
-        }
-    } else {
-        // 未サポートコマンド
-        fdc.st0 |= 0x80; // Invalid command
+        },
+        _ => {
+            // 未サポートコマンド
+            fdc.st0 |= 0x80; // Invalid command
+        },
     }
 }
 
@@ -281,10 +291,10 @@ fn fdc_write_buffer(fdc: X68kFDC&, last: bool) {
     if fdc.cmd == FDC_WRITE_DATA || fdc.cmd == FDC_WRITE_DELETED {
         let hd = (fdc.prm_buf[1] >> 2) & 1;
         let trk = fdc.cyl * 2 + hd;
-        let c = fdc.prm_buf[2] as i32;
-        let h = fdc.prm_buf[3] as i32;
-        let r = fdc.prm_buf[4] as i32;
-        let n = fdc.prm_buf[5] as i32;
+        let c: i32 = fdc.prm_buf[2];
+        let h: i32 = fdc.prm_buf[3];
+        let r: i32 = fdc.prm_buf[4];
+        let n: i32 = fdc.prm_buf[5];
         let ok = c_fdd_write_fdc(fdc.drv, trk, c, h, r, n, fdc.data_buf[0]);
         if ok == 0 {
             fdc.st0 |= 0x40;

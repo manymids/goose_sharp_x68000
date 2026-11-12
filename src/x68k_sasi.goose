@@ -120,7 +120,7 @@ fn sasi_check_cmd(sasi: X68kSASI&) {
         sasi.phase = SasiPhase.Status;
     } else if op == 0x03 {
         sasi.sense[0] = sasi.error;
-        let hi = ((sasi.sector >> 16) & 0x1f) as! u8;
+        let hi = ((sasi.sector >> 16) & 0x1f) as u8;
         sasi.sense[1] = ((sasi.unit << 5) | hi);
         sasi.sense[2] = (sasi.sector >> 8) as! u8;
         sasi.sense[3] = sasi.sector as! u8;
@@ -132,9 +132,9 @@ fn sasi_check_cmd(sasi: X68kSASI&) {
         sasi.phase = SasiPhase.Status;
         sasi.stat = 0;
     } else if op == 0x08 {
-        let b1 = sasi.cmd[1] as u32;
-        let b2 = sasi.cmd[2] as u32;
-        let b3 = sasi.cmd[3] as u32;
+        let b1: u32 = sasi.cmd[1];
+        let b2: u32 = sasi.cmd[2];
+        let b3: u32 = sasi.cmd[3];
         sasi.sector = ((b1 & 0x1f) << 16) | (b2 << 8) | b3;
         sasi.blocks = sasi.cmd[4];
         sasi.phase = SasiPhase.Data;
@@ -146,9 +146,9 @@ fn sasi_check_cmd(sasi: X68kSASI&) {
             sasi.error = 0x0f;
         }
     } else if op == 0x0a {
-        let b1 = sasi.cmd[1] as u32;
-        let b2 = sasi.cmd[2] as u32;
-        let b3 = sasi.cmd[3] as u32;
+        let b1: u32 = sasi.cmd[1];
+        let b2: u32 = sasi.cmd[2];
+        let b3: u32 = sasi.cmd[3];
         sasi.sector = ((b1 & 0x1f) << 16) | (b2 << 8) | b3;
         sasi.blocks = sasi.cmd[4];
         sasi.phase = SasiPhase.Data;

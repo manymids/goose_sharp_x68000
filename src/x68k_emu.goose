@@ -147,7 +147,7 @@ fn x68k_emu_step_core(emu: X68kEmulator&) -> i32 {
     var took_level1 = false;
     if (emu.mmu.ioc_int_stat & 0x80) != 0 && (emu.mmu.ioc_int_stat & 0x04) != 0 {
         if cpu_int_mask(emu.cpu) < 1 {
-            let vect = emu.mmu.ioc_int_vect as i32;
+            let vect: i32 = emu.mmu.ioc_int_vect;
             emu.mmu.ioc_int_stat &= 0x7F;
             if vect > 0 {
                 m68k_interrupt(emu.cpu, emu.mmu, 1, vect);
@@ -189,11 +189,11 @@ fn x68k_frame_cycles10(mmu: M68kMMU&) -> i64 {
     let oscs: i64[3] = [38863632, 69551900, 50349800];
     let osc_of: i32[16] = [0, 0, 0, 0, 1, 1, 1, 2, 0, 0, 0, 0, 1, 1, 1, 2];
     let div_of: i64[16] = [8, 4, 8, 8, 6, 3, 2, 2, 8, 4, 8, 8, 8, 4, 2, 2];
-    let r20 = mmu.crtc_regs[0x29] as i32;
-    let hrl = ((mmu.sysport_keyctrl >> 1) & 1) as i32;
+    let r20: i32 = mmu.crtc_regs[0x29];
+    let hrl: i32 = (mmu.sysport_keyctrl >> 1) & 1;
     let k = (hrl << 3) | ((r20 >> 2) & 4) | (r20 & 3);
     let columns = (mmu.crtc_regs[0x01] as i64) + 1;
-    let lines = x68k_frame_lines(mmu) as i64;
+    let lines: i64 = x68k_frame_lines(mmu);
     if columns < 2 { return if (r20 & 0x10) != 0 { 180310 } else { 162707 }; }
     return 8 * div_of[k] * columns * lines * 10000000 / oscs[osc_of[k]];
 }

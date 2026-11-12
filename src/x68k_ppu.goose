@@ -30,11 +30,11 @@ fn pal_text_idx(mmu: M68kMMU&, idx: i32) -> u16 {
 fn ppu_sprites_to_line(ppu: X68kPPU&, mmu: M68kMMU&, pri: i32, width: i32, sy: i32) {
     let crtc_hstart = crtc_word(mmu, CRTC_HSTART) & 1023;
     let crtc_vstart = crtc_word(mmu, CRTC_VSTART) & 1023;
-    let reg0d = mmu.crtc_regs[0x0D] as i32;
-    let reg29 = mmu.crtc_regs[0x29] as i32;
-    let bgreg_0d = mmu.bgreg[0x0D] as i32;
-    let bgreg_0f = mmu.bgreg[0x0F] as i32;
-    let bgreg_11 = mmu.bgreg[0x11] as i32;
+    let reg0d: i32 = mmu.crtc_regs[0x0D];
+    let reg29: i32 = mmu.crtc_regs[0x29];
+    let bgreg_0d: i32 = mmu.bgreg[0x0D];
+    let bgreg_0f: i32 = mmu.bgreg[0x0F];
+    let bgreg_11: i32 = mmu.bgreg[0x11];
     let s1 = (if (bgreg_11 & 4) != 0 { 2 } else { 1 }) - (if (bgreg_11 & 16) != 0 { 1 } else { 0 });
     let s2 = (if (reg29 & 4) != 0 { 2 } else { 1 }) - (if (reg29 & 16) != 0 { 1 } else { 0 });
     var vlinebg: u32 = sy as u32;
@@ -65,7 +65,7 @@ fn ppu_sprites_to_line(ppu: X68kPPU&, mmu: M68kMMU&, pri: i32, width: i32, sy: i
         y = 0 - y;
         y += 16;
         if y > 15 { continue; }
-        let ctrl_i = ctrl as i32;
+        let ctrl_i: i32 = ctrl;
         let pat = ctrl_i & 0xFF;
         let flip_x = (ctrl_i & 0x4000) != 0;
         let flip_y = (ctrl_i & 0x8000) != 0;
@@ -82,7 +82,7 @@ fn ppu_sprites_to_line(ppu: X68kPPU&, mmu: M68kMMU&, pri: i32, width: i32, sy: i
             let src = pat * 256 + src_y * 16 + src_x;
             let col = mmu.bg_chr16[src] & 0x0F;
             if col == 0 { continue; }
-            let ti = tt as i64;
+            let ti: i64 = tt;
             let pri_n = (cur * 8) as u16;
             if ppu.line_bpri[ti] < pri_n { continue; }
             ppu.line_bg[ti] = pal_text_idx(mmu, pal_bank | (col));
@@ -135,7 +135,7 @@ fn ppu_draw_bg_map(ppu: X68kPPU&, mmu: M68kMMU&, screen_w: i32, sy: i32, scroll_
             continue;
         }
         let attr = mmu.bgram[map];
-        let attr_i = attr as i32;
+        let attr_i: i32 = attr;
         let si = if wide { (mmu.bgram[map + 1] as i32) << 8 } else { (mmu.bgram[map + 1] as i32) << 6 };
         let ebp = if wide { fine << 4 } else { fine << 3 };
         var origin: i32 = 0;
@@ -279,8 +279,8 @@ fn pal_grph(mmu: M68kMMU&, idx: i32) -> u16 {
 }
 
 fn pal_to_argb(pal_val: u16) -> u32 {
-    let gg = (pal_val & 1) as u32;
-    let pv = pal_val as u32;
+    let gg: u32 = pal_val & 1;
+    let pv: u32 = pal_val;
     let r6 = ((pv >> 5) & 62) | gg;
     let g6 = ((pv >> 10) & 62) | gg;
     let b6 = (pv & 62) | gg;
@@ -585,14 +585,16 @@ fn ppu_grp16_sp_line(ppu: X68kPPU&, mmu: M68kMMU&, sy: i32, width: i32) {
     }
 }
 
-fn ppu_grp_lines(ppu: X68kPPU&, mmu: M68kMMU&, sy: i32, width: i32, gon: bool&, tron: bool&, pron: bool&) {
+// グラフィック面を 1 ライン描く。戻り値は順に、通常のグラフィックを描いたか、半透明用の面を描いたか、
+// 特殊プライオリティ用の面を描いたか。
+fn ppu_grp_lines(ppu: X68kPPU&, mmu: M68kMMU&, sy: i32, width: i32) -> bool, bool, bool {
     let vc0 = mmu.vcreg[1];
     let vc1_1 = mmu.vcreg[0x101];
     let vc2_0 = mmu.vcreg[0x200];
     let vc2_1 = mmu.vcreg[0x201];
-    gon = false;
-    tron = false;
-    pron = false;
+    var gon = false;
+    var tron = false;
+    var pron = false;
     let kind = vc0 & 3;
     if kind == 0 {
         if (vc0 & 4) != 0 {
@@ -668,6 +670,7 @@ fn ppu_grp_lines(ppu: X68kPPU&, mmu: M68kMMU&, sy: i32, width: i32, gon: bool&, 
             }
         }
     }
+    return gon, tron, pron;
 }
 
 fn scr_raw(ppu: X68kPPU&, i: i32, w: u16, opaq: bool) {
@@ -768,10 +771,10 @@ fn ppu_text_one_line(ppu: X68kPPU&, mmu: M68kMMU&, width: i32, sy: i32, opaq: bo
     let start_col = ((scroll_x / 8) & 127) as i32;
     for col: i32 in col_bytes {
         let off = line_base + ((start_col + col) & 127);
-        let b0 = mmu.tvram[off] as u32;
-        let b1 = mmu.tvram[off + 0x20000] as u32;
-        let b2 = mmu.tvram[off + 0x40000] as u32;
-        let b3 = mmu.tvram[off + 0x60000] as u32;
+        let b0: u32 = mmu.tvram[off];
+        let b1: u32 = mmu.tvram[off + 0x20000];
+        let b2: u32 = mmu.tvram[off + 0x40000];
+        let b3: u32 = mmu.tvram[off + 0x60000];
         let any_bits = b0 | b1 | b2 | b3;
         for px: i32 in 8 {
             let x = col * 8 + px;
@@ -936,7 +939,7 @@ fn ppu_apply_screen(mmu: M68kMMU&) {
     let vstart = crtc_word(mmu, CRTC_VSTART) & 1023;
     let vend = crtc_word(mmu, CRTC_VEND) & 1023;
     if vend > vstart { dot_y = vend - vstart; }
-    let mode = mmu.crtc_regs[0x29] as i32;
+    let mode: i32 = mmu.crtc_regs[0x29];
     if (mode & 0x14) == 0x10 {
         dot_y = dot_y / 2;
     } else if (mode & 0x14) == 0x04 {
@@ -963,13 +966,10 @@ fn ppu_draw_sprite_line(ppu: X68kPPU&, mmu: M68kMMU&, sy: i32) {
     if width > 1024 { width = 1024; }
     if width < 1 { return; }
     ppu_clear_front(ppu);
-    var gon = false;
-    var tron = false;
-    var pron = false;
-    let vc1_0 = mmu.vcreg[0x100] as i32;
-    let vc2_0 = mmu.vcreg[0x200] as i32;
-    let vc2_1 = mmu.vcreg[0x201] as i32;
-    ppu_grp_lines(ppu, mmu, sy, width, gon, tron, pron);
+    let vc1_0: i32 = mmu.vcreg[0x100];
+    let vc2_0: i32 = mmu.vcreg[0x200];
+    let vc2_1: i32 = mmu.vcreg[0x201];
+    let gon, tron, pron = ppu_grp_lines(ppu, mmu, sy, width);
     let sp_on = (vc2_1 & 0x40) != 0 && (mmu.bgreg[0x11] & 2) == 0;
     let text_on = (vc2_1 & 0x20) != 0;
     var ton = false;

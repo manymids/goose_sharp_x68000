@@ -44,8 +44,12 @@ fn digit_code(ch: u8) -> i32 {
     return codes[(ch - '0') as i32];
 }
 
+// key_code がスキャンコードの代わりに返す値
+let KEY_UNKNOWN = -1; // 対応するキーがない
+let KEY_BLOCKED = -2; // エミュレータ側の機能に割り当てているので送らない
+
 fn key_code(name: const u8[:]) -> i32 {
-    if name == "f12" || name == "scrolllock" { return -2; }
+    if name == "f12" || name == "scrolllock" { return KEY_BLOCKED; }
     if name.len == 1 {
         let ch = name[0];
         if ch >= 'a' && ch <= 'z' { return az_code(ch); }
@@ -62,7 +66,7 @@ fn key_code(name: const u8[:]) -> i32 {
     if name == "right" { return 0x3d; }
     if name == "shift" || name == "lshift" { return 0x70; }
     if name == "f1" { return 0x63; }
-    return -1;
+    return KEY_UNKNOWN;
 }
 
 fn type_set_key(emu: X68kEmulator&, code: i32, down: bool) {

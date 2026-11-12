@@ -25,37 +25,37 @@ fn x68k_ram_write(off: i32, val: u8) {
 
 fn x68k_ram_read16(off: i32) -> u16 {
     if off >= 0 && off + 1 < g_ram_limit && off + 1 < 12582912 {
-        let hi = g_x68k_ram[off as i64] as u16;
-        let lo = g_x68k_ram[(off + 1) as i64] as u16;
+        let hi: u16 = g_x68k_ram[off as i64];
+        let lo: u16 = g_x68k_ram[(off + 1) as i64];
         return (hi << 8) | lo;
     }
-    let hi = x68k_ram_read(off) as u16;
-    let lo = x68k_ram_read(off + 1) as u16;
+    let hi: u16 = x68k_ram_read(off);
+    let lo: u16 = x68k_ram_read(off + 1);
     return (hi << 8) | lo;
 }
 
 fn x68k_ram_write16(off: i32, val: u16) {
     if off >= 0 && off + 1 < g_ram_limit && off + 1 < 12582912 {
         g_x68k_ram[off as i64] = (val >> 8) as! u8;
-        g_x68k_ram[(off + 1) as i64] = (val & 0xFF) as! u8;
+        g_x68k_ram[(off + 1) as i64] = (val & 0xFF) as u8;
         return;
     }
     x68k_ram_write(off, (val >> 8) as! u8);
-    x68k_ram_write(off + 1, (val & 0xFF) as! u8);
+    x68k_ram_write(off + 1, (val & 0xFF) as u8);
 }
 
 fn x68k_ram_read32(off: i32) -> u32 {
     if off >= 0 && off + 3 < g_ram_limit && off + 3 < 12582912 {
-        let b0 = g_x68k_ram[off as i64] as u32;
-        let b1 = g_x68k_ram[(off + 1) as i64] as u32;
-        let b2 = g_x68k_ram[(off + 2) as i64] as u32;
-        let b3 = g_x68k_ram[(off + 3) as i64] as u32;
+        let b0: u32 = g_x68k_ram[off as i64];
+        let b1: u32 = g_x68k_ram[(off + 1) as i64];
+        let b2: u32 = g_x68k_ram[(off + 2) as i64];
+        let b3: u32 = g_x68k_ram[(off + 3) as i64];
         return (b0 << 24) | (b1 << 16) | (b2 << 8) | b3;
     }
-    let b0 = x68k_ram_read(off) as u32;
-    let b1 = x68k_ram_read(off + 1) as u32;
-    let b2 = x68k_ram_read(off + 2) as u32;
-    let b3 = x68k_ram_read(off + 3) as u32;
+    let b0: u32 = x68k_ram_read(off);
+    let b1: u32 = x68k_ram_read(off + 1);
+    let b2: u32 = x68k_ram_read(off + 2);
+    let b3: u32 = x68k_ram_read(off + 3);
     return (b0 << 24) | (b1 << 16) | (b2 << 8) | b3;
 }
 
@@ -64,11 +64,11 @@ fn x68k_ram_write32(off: i32, val: u32) {
         g_x68k_ram[off as i64] = (val >> 24) as! u8;
         g_x68k_ram[(off + 1) as i64] = (val >> 16) as! u8;
         g_x68k_ram[(off + 2) as i64] = (val >> 8) as! u8;
-        g_x68k_ram[(off + 3) as i64] = (val & 0xFF) as! u8;
+        g_x68k_ram[(off + 3) as i64] = (val & 0xFF) as u8;
         return;
     }
     x68k_ram_write(off, (val >> 24) as! u8);
     x68k_ram_write(off + 1, (val >> 16) as! u8);
     x68k_ram_write(off + 2, (val >> 8) as! u8);
-    x68k_ram_write(off + 3, (val & 0xFF) as! u8);
+    x68k_ram_write(off + 3, (val & 0xFF) as u8);
 }

@@ -355,7 +355,7 @@ fn test_input() {
     check("control characters have no key", !type_has_key(0x01));
     check("key name return", key_code("return") == 0x1D);
     check("key name a", key_code("a") == 0x1E);
-    check("unknown key name", key_code("nosuchkey") == -1);
+    check("unknown key name", key_code("nosuchkey") == KEY_UNKNOWN);
     check("joypad up", joy_mask("up") == 0x01);
     check("joypad trg2", joy_mask("b") == 0x40);
 }
@@ -438,10 +438,7 @@ fn test_rtc() {
     check("month 13 rolls into the next year", rtc_days_from_civil(2025, 13, 1) == rtc_days_from_civil(2026, 1, 1));
     var ok = true;
     for day in -800..40000 {
-        var y: i64 = 0;
-        var m: i64 = 0;
-        var d: i64 = 0;
-        rtc_civil_from_days(day, y, m, d);
+        let y, m, d = rtc_civil_from_days(day);
         if rtc_days_from_civil(y, m, d) != day || m < 1 || m > 12 || d < 1 || d > 31 { ok = false; }
     }
     check("civil date round trip", ok);
