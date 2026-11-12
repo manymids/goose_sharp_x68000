@@ -31,14 +31,13 @@ fn session_run(emu: X68kEmulator&, frames: i32) -> i32 {
     return used;
 }
 
-// 再開してからの実測 fps と、画面モードの公称値 (31 kHz: 55 Hz, 15 kHz: 61 Hz) に対する百分率。
+// 再開してからの実測 fps と、CRTC が決める公称値に対する百分率。
 fn session_measure(emu: X68kEmulator&, now: u64) -> i32, i32 {
     let s .= emu.session;
     let elapsed = (now - s.speed_start_ms) as i64;
     let frames = emu.total_frames - s.speed_start_frame;
     let fps = if elapsed > 50 { ((frames * 1000) / elapsed) as i32 } else { 0 };
-    let nominal: i32 = if (emu.mmu.crtc_regs[0x29] & 0x10) != 0 { 55 } else { 61 };
-    return fps, (fps * 100) / nominal;
+    return fps, (fps * 100) / x68k_nominal_fps(emu.mmu);
 }
 
 fn session_pause(emu: X68kEmulator&, now: u64) {

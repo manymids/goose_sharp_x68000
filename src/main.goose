@@ -271,8 +271,10 @@ fn main() {
             }
             mcp_set_layers(mask);
         } else if arg == "--ram" && arg_idx + 1 < cmd_args.len {
-            // 互換のために受け取るだけ。RAM は 12 MB 固定。
+            // 互換のために受け取る。RAM は 12 MB 固定なので、違う値には一言出す。
             arg_idx++;
+            let n, ok = parse_int(cmd_args[arg_idx]);
+            if !ok || n != 12 { write_stderr("warning: --ram is ignored; RAM is fixed at 12 MB\n"); }
         } else {
             if arg.len > 0 && arg[0] == '-' { launch_error("unknown option or missing option value (use --help)\n"); }
             content_path.clear();

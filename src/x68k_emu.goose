@@ -198,6 +198,12 @@ fn x68k_frame_cycles10(mmu: M68kMMU&) -> i64 {
     return 8 * div_of[k] * columns * lines * 10000000 / oscs[osc_of[k]];
 }
 
+// CRTC が決める 1 秒あたりのフレーム数 (四捨五入)。768x512 の 31 kHz で 55、15 kHz で 61。
+fn x68k_nominal_fps(mmu: M68kMMU&) -> i32 {
+    let cycles = x68k_frame_cycles10(mmu);
+    return ((10000000 + cycles / 2) / cycles) as i32;
+}
+
 // 1フレーム分のエミュレーション実行 (px68k WinX68k_Exec 走査線駆動準拠)
 fn x68k_emu_run_frame(emu: X68kEmulator&) {
     assert(x68k_emu_active(emu));

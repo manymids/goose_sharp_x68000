@@ -356,6 +356,12 @@ fn test_input() {
     check("key name return", key_code("return") == 0x1D);
     check("key name a", key_code("a") == 0x1E);
     check("unknown key name", key_code("nosuchkey") == KEY_UNKNOWN);
+    check("function keys", key_code("f1") == 0x63 && key_code("f2") == 0x64 && key_code("f10") == 0x6C);
+    check("F11 does not exist, F12 is blocked", key_code("f11") == KEY_UNKNOWN && key_code("f12") == KEY_BLOCKED);
+    check("XF keys", key_code("xf1") == 0x55 && key_code("xf5") == 0x59 && key_code("xf6") == KEY_UNKNOWN);
+    check("modifier keys", key_code("ctrl") == 0x71 && key_code("opt1") == 0x72 && key_code("opt2") == 0x73);
+    check("editing keys", key_code("del") == 0x37 && key_code("ins") == 0x5E && key_code("undo") == 0x3A);
+    check("a bare 'f' is the letter", key_code("f") == 0x21);
     check("joypad up", joy_mask("up") == 0x01);
     check("joypad trg2", joy_mask("b") == 0x40);
 }

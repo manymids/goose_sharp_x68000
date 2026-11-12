@@ -1345,7 +1345,7 @@ fn mcp_checkpoint_call(emu: X68kEmulator&, tool_name: const u8[:], args: const u
     }
 
     if tool_name == "arcl_speed" {
-        let nom = (10000000 / x68k_frame_cycles10(emu.mmu)) as i32;
+        let nom = x68k_nominal_fps(emu.mmu);
         let fps, pct, running = session_speed(emu, win32_ui_get_ticks_ms());
         let run = if running { "true" } else { "false" };
         var obj: u8[>..] = [];
@@ -2108,7 +2108,13 @@ fn mcp_inspect_call(emu: X68kEmulator&, tool_name: const u8[:], args: const u8[:
             push_hex_byte(obj, emu.mmu.dmac.ch[i].scr);
             obj.append(",\"ccr\":");
             push_hex_byte(obj, ccr);
-            format(obj, ",\"mtc\":", mtc, ",\"mar\":", mar, ",\"dar\":", dar, ",\"btc\":", btc, ",\"bar\":", bar, ",\"niv\":");
+            format(obj, ",\"mtc\":", mtc, ",\"mar\":\"");
+            hex_u32(mar, obj);
+            obj.append("\",\"dar\":\"");
+            hex_u32(dar, obj);
+            format(obj, "\",\"btc\":", btc, ",\"bar\":\"");
+            hex_u32(bar, obj);
+            obj.append("\",\"niv\":");
             push_hex_byte(obj, emu.mmu.dmac.ch[i].niv);
             obj.append(",\"eiv\":");
             push_hex_byte(obj, emu.mmu.dmac.ch[i].eiv);

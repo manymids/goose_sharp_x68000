@@ -1,7 +1,6 @@
 // Sharp X68000 DMAコントローラ (HD63450 / DMAC) in Goose
 // ※実機 ROM / ブートセクタ自走用
 
-import os;
 import .x68k_bridge;
 import .x68k_fdc;
 import .x68k_ram;
@@ -223,8 +222,6 @@ fn dmac_exec_fdc(dmac: X68kDMAC&, fdc: X68kFDC&, mmu: M68kMMU&) -> bool {
                         dmac.ch[0].mar = dma_readmem24_dword(dmac.ch[0].bar) & 0x00FFFFFF;
                         dmac.ch[0].mtc = dma_readmem24_word(dmac.ch[0].bar + 4);
                         dmac.ch[0].bar = dma_readmem24_dword(dmac.ch[0].bar + 6) & 0x00FFFFFF;
-                        write_stderr(str("   Chain next link block: MAR=0x", dmac.ch[0].mar, " MTC=", dmac.ch[0].mtc,
-                              " next BAR=0x", dmac.ch[0].bar, "\n"));
                     }
                 } else {
                     if dmac.ch[0].btc > 0 {
@@ -233,8 +230,6 @@ fn dmac_exec_fdc(dmac: X68kDMAC&, fdc: X68kFDC&, mmu: M68kMMU&) -> bool {
                             dmac.ch[0].mar = dma_readmem24_dword(dmac.ch[0].bar) & 0x00FFFFFF;
                             dmac.ch[0].mtc = dma_readmem24_word(dmac.ch[0].bar + 4);
                             dmac.ch[0].bar += 6;
-                            write_stderr(str("   Chain next array block: MAR=0x", dmac.ch[0].mar, " MTC=", dmac.ch[0].mtc,
-                                  " next BAR=0x", dmac.ch[0].bar, "\n"));
                         }
                     }
                 }

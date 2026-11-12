@@ -1,4 +1,5 @@
 // Keyboard/joypad operations independent of transport.
+import std;
 import .x68k_emu;
 import .x68k_mfp;
 import .x68k_bridge;
@@ -65,7 +66,33 @@ fn key_code(name: const u8[:]) -> i32 {
     if name == "left" { return 0x3b; }
     if name == "right" { return 0x3d; }
     if name == "shift" || name == "lshift" { return 0x70; }
-    if name == "f1" { return 0x63; }
+    if name == "ctrl" { return 0x71; }
+    if name == "opt1" { return 0x72; }
+    if name == "opt2" { return 0x73; }
+    // F1-F10 は 0x63 から、XF1-XF5 は 0x55 から並ぶ。
+    if name.len >= 2 && name[0] == 'f' {
+        let n, ok = parse_int(name[1..]);
+        if ok && n >= 1 && n <= 10 { return (0x62 + n) as i32; }
+    }
+    if name.len == 3 && name[0] == 'x' && name[1] == 'f' && name[2] >= '1' && name[2] <= '5' {
+        return 0x55 + (name[2] - '1');
+    }
+    if name == "home" { return 0x36; }
+    if name == "del" || name == "delete" { return 0x37; }
+    if name == "rollup" { return 0x38; }
+    if name == "rolldown" { return 0x39; }
+    if name == "undo" { return 0x3a; }
+    if name == "clr" { return 0x3f; }
+    if name == "help" { return 0x54; }
+    if name == "kana" { return 0x5a; }
+    if name == "romaji" { return 0x5b; }
+    if name == "code" { return 0x5c; }
+    if name == "caps" { return 0x5d; }
+    if name == "ins" || name == "insert" { return 0x5e; }
+    if name == "hiragana" { return 0x5f; }
+    if name == "zenkaku" { return 0x60; }
+    if name == "break" { return 0x61; }
+    if name == "copy" { return 0x62; }
     return KEY_UNKNOWN;
 }
 
