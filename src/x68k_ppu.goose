@@ -52,6 +52,7 @@ fn ppu_sprites_to_line(ppu: X68kPPU&, mmu: M68kMMU&, pri: i32, width: i32, sy: i
     }
     let bg_vline = (bgreg_0f - crtc_vstart) / (if (bgreg_11 & 4) != 0 { 1 } else { 2 });
     let h_adj = (bgreg_0d - (crtc_hstart + 4)) * 8;
+    // 番号の大きいスプライトから順に見る (cur が番号)。
     var n = 127;
     while n >= 0 {
         let cur = n;
@@ -64,17 +65,16 @@ fn ppu_sprites_to_line(ppu: X68kPPU&, mmu: M68kMMU&, pri: i32, width: i32, sy: i
         if (ply & 3) != (pri as u8) { continue; }
         let t0 = (((raw_x) + h_adj) & 0x3FF) as u32;
         if t0 >= ((width + LINE_PAD) as u32) { continue; }
-        var y: u32 = (raw_y & 0x3FF);
-        y -= vlinebg;
-        y += (bg_vline as! u32);
-        y = 0 - y;
-        y += 16;
-        if y > 15 { continue; }
+        // このラインがスプライトの何行目に当たるか。スプライト座標は画面の上端が 16。
+        // 符号なし 32 bit で折り返すので、スプライトの外のラインは 15 より大きな値になる。
+        let line_y = vlinebg - (bg_vline as! u32);
+        let row: u32 = line_y + 16 - (raw_y & 0x3FF);
+        if row > 15 { continue; }
         let ctrl_i: i32 = ctrl;
         let pat = ctrl_i & 0xFF;
         let flip_x = (ctrl_i & 0x4000) != 0;
         let flip_y = (ctrl_i & 0x8000) != 0;
-        let src_y = if flip_y { 15 - (y as i32) } else { y as i32 };
+        let src_y = if flip_y { 15 - (row as i32) } else { row as i32 };
         let pal_bank = (ctrl_i & 0x0F00) >> 4;
         var px = 0;
         var t = t0;
@@ -111,8 +111,7 @@ fn ppu_plot_bg(ppu: X68kPPU&, mmu: M68kMMU&, sx: i32, screen_w: i32, idx: u8) {
 
 fn ppu_draw_bg_map(ppu: X68kPPU&, mmu: M68kMMU&, screen_w: i32, sy: i32, scroll_x: i32, scroll_y: i32, adjust: i32, vline: i32, top: i32, wide: bool, ng: bool) {
     let line = (scroll_y as u32) + (sy as u32) - (vline as! u32);
-    var span: i32 = 8;
-    if wide { span = 16; }
+    let span: i32 = if wide { 16 } else { 8 };
     let rel = scroll_x - adjust;
     // x_phase: 画面左端でのタイル内の横位置。map_col: BG マップ上の列 (1 タイル 2 バイト)。
     let x_phase = (rel & (span - 1)) ^ 15;
@@ -123,19 +122,17 @@ fn ppu_draw_bg_map(ppu: X68kPPU&, mmu: M68kMMU&, screen_w: i32, sy: i32, scroll_
         xmask = 0x3F0;
     }
     var map_col = (rel & xmask) >> shift;
-    var row_shift: i32 = 4;
-    if wide { row_shift = 3; }
+    let row_shift: i32 = if wide { 3 } else { 4 };
     let row = ((line & (xmask as u32)) << row_shift) as i32;
     let fine = (line & ((span - 1) as u32)) as i32;
     let tiles = screen_w / span + 2;
     var sx0: i32 = x_phase - 15;
-    var chr_bytes: i32 = 16384;
-    if wide { chr_bytes = 65536; }
+    let chr_bytes: i32 = if wide { PCG16_BYTES } else { PCG8_BYTES };
     var tile: i32 = 0;
     while tile < tiles {
         let map = top + row + (map_col & 0x7F);
         map_col = (map_col + 2) & 0x7F;
-        if map < 0 || map + 1 >= 32768 {
+        if map < 0 || map + 1 >= BGRAM_BYTES {
             sx0 += span;
             tile += 1;
             continue;
@@ -169,8 +166,7 @@ fn ppu_draw_bg_map(ppu: X68kPPU&, mmu: M68kMMU&, screen_w: i32, sy: i32, scroll_
                 // 上書きすると色 0 のタイルが手前の地面を消して格子になる。
                 let nib = if wide { mmu.bg_chr16[src] & 0x0F } else { mmu.bg_chr8[src] & 0x0F };
                 let t = sx0 + j + LINE_PAD;
-                var covered = false;
-                if t >= 0 && t < LINE_BUF_W && (ppu.line_tr[t] & 2) != 0 { covered = true; }
+                let covered = t >= 0 && t < LINE_BUF_W && (ppu.line_tr[t] & 2) != 0;
                 if nib != 0 || (!ng && !covered) {
                     ppu_plot_bg(ppu, mmu, sx0 + j, screen_w, nib | pal_hi);
                 }
@@ -186,14 +182,12 @@ fn ppu_bg_plane(ppu: X68kPPU&, mmu: M68kMMU&, which: i32, width: i32, sy: i32, n
     let hstart = (((r0[0x04] as i32) << 8) | (r0[0x05])) & 1023;
     let vstart = (((r0[0x0C] as i32) << 8) | (r0[0x0D])) & 1023;
     let adjust = ((mmu.bgreg[0x0D]) - (hstart + 4)) * 8;
-    var vdiv: i32 = 2;
-    if (mmu.bgreg[0x11] & 4) != 0 { vdiv = 1; }
+    let vdiv: i32 = if (mmu.bgreg[0x11] & 4) != 0 { 1 } else { 2 };
     let vline = ((mmu.bgreg[0x0F]) - vstart) / vdiv;
     let cfg = mmu.bgreg[0x09];
     if which == 1 {
         if (cfg & 8) == 0 || (mmu.bgreg[0x11] & 3) != 0 { return; }
-        var top: i32 = 0x4000;
-        if (cfg & 0x30) != 0 { top = 0x6000; }
+        let top: i32 = if (cfg & 0x30) != 0 { 0x6000 } else { 0x4000 };
         var mask: i32 = 511;
         let sx1 = (((mmu.bgreg[0x04] as i32) << 8) | (mmu.bgreg[0x05])) & mask;
         let sy1 = (((mmu.bgreg[0x06] as i32) << 8) | (mmu.bgreg[0x07])) & mask;
@@ -201,12 +195,9 @@ fn ppu_bg_plane(ppu: X68kPPU&, mmu: M68kMMU&, which: i32, width: i32, sy: i32, n
         return;
     }
     if (cfg & 1) == 0 { return; }
-    var chr16 = false;
-    if (mmu.bgreg[0x11] & 3) != 0 { chr16 = true; }
-    var mask: i32 = 511;
-    if chr16 { mask = 1023; }
-    var top: i32 = 0x4000;
-    if (cfg & 0x06) != 0 { top = 0x6000; }
+    let chr16 = (mmu.bgreg[0x11] & 3) != 0;
+    let mask: i32 = if chr16 { 1023 } else { 511 };
+    let top: i32 = if (cfg & 0x06) != 0 { 0x6000 } else { 0x4000 };
     let sx0 = (((mmu.bgreg[0x00] as i32) << 8) | (mmu.bgreg[0x01])) & mask;
     let sy0 = (((mmu.bgreg[0x02] as i32) << 8) | (mmu.bgreg[0x03])) & mask;
     ppu_draw_bg_map(ppu, mmu, width, sy, sx0, sy0, adjust, vline, top, chr16, ng);
@@ -306,8 +297,7 @@ fn argb_avg(a: u32, b: u32) -> u32 {
 }
 
 fn ppu_grp4_store(ppu: X68kPPU&, mmu: M68kMMU&, sx: i32, v: u16, high: bool, opaq: bool) {
-    var idx: i32 = (v & 0x0F);
-    if high { idx = ((v >> 4) & 0x0F); }
+    let idx: i32 = if high { ((v >> 4) & 0x0F) } else { (v & 0x0F) };
     if opaq || idx != 0 {
         ppu.grp[sx] = pal_grph(mmu, idx);
         ppu.grp_mix[sx] = 0;
@@ -318,8 +308,7 @@ fn ppu_grp4_line(ppu: X68kPPU&, mmu: M68kMMU&, page: i32, sy: i32, width: i32, o
     let p = page & 3;
     let scroll_x = crtc_pair(mmu, grp_xhi(p)) & grp_mask(p);
     let scroll_y = crtc_pair(mmu, grp_yhi(p)) & grp_mask(p);
-    var high = false;
-    if (p & 1) != 0 { high = true; }
+    let high = (p & 1) != 0;
     var y = scroll_y + (sy as u32);
     if (mmu.crtc_regs[0x29] & 0x1C) == 0x1C { y = y + (sy as u32); }
     y = (y & 0x1FF) << 10;
@@ -350,16 +339,13 @@ fn ppu_grp4_sp_line(ppu: X68kPPU&, mmu: M68kMMU&, page: i32, sy: i32, width: i32
     if (mmu.crtc_regs[0x29] & 0x1C) == 0x1C { y = y + (sy as u32); }
     y = (y & 0x1FF) << 10;
     let x = scroll_x & 0x1FF;
-    var add: u32 = 0;
-    if (p & 2) != 0 { add = 1; }
+    let add: u32 = if (p & 2) != 0 { 1 } else { 0 };
     var off = y + x * 2 + add;
     var left = (x ^ 0x1FF) + 1;
-    var high = false;
-    if (p & 1) != 0 { high = true; }
+    let high = (p & 1) != 0;
     for i: i32 in width {
         let b = gvram_at(mmu, off);
-        var nib = b;
-        if high { nib = b >> 4; }
+        let nib = if high { b >> 4 } else { b };
         let bit0 = (nib & 1) != 0;
         let col = pal_grph(mmu, (nib & 0x0E));
         if !bit0 {
@@ -383,13 +369,11 @@ fn ppu_grp4_tr_line(ppu: X68kPPU&, mmu: M68kMMU&, page: i32, sy: i32, width: i32
     if (mmu.crtc_regs[0x29] & 0x1C) == 0x1C { y = y + (sy as u32); }
     y = (y & 0x1FF) << 10;
     y += ((p >> 1) as u32);
-    var high = false;
-    if (p & 1) != 0 { high = true; }
+    let high = (p & 1) != 0;
     var x = scroll_x & 0x1FF;
     for i: i32 in width {
         let b = gvram_at(mmu, y + x * 2);
-        var nib: i32 = (b & 0x0F);
-        if high { nib = ((b >> 4) & 0x0F); }
+        let nib: i32 = if high { ((b >> 4) & 0x0F) } else { (b & 0x0F) };
         let v0 = ppu.sp[i];
         var wrote = false;
         if v0 != 0 && nib != 0 {
@@ -402,8 +386,7 @@ fn ppu_grp4_tr_line(ppu: X68kPPU&, mmu: M68kMMU&, page: i32, sy: i32, width: i32
             }
         }
         if !wrote && (opaq || (v0 == 0 && nib != 0)) {
-            var stored: u16 = 0;
-            if v0 == 0 { stored = pal_grph(mmu, nib); }
+            let stored: u16 = if v0 == 0 { pal_grph(mmu, nib) } else { 0 };
             ppu.grp[i] = stored;
             ppu.grp_mix[i] = 0;
         } else if !wrote && !opaq && v0 != 0 && nib == 0 {
@@ -515,13 +498,11 @@ fn ppu_grp8_sp_line(ppu: X68kPPU&, mmu: M68kMMU&, page: i32, sy: i32, width: i32
         let raw = (gvram_at(mmu, off) & 0x0F) | (gvram_at(mmu, off0) & 0xF0);
         let v = raw & 0xFE;
         if (raw & 1) == 0 {
-            var col: u16 = 0;
-            if v != 0 { col = pal_grph(mmu, v); }
+            let col: u16 = if v != 0 { pal_grph(mmu, v) } else { 0 };
             ppu.sp[i] = 0;
             ppu.sp2[i] = col;
         } else {
-            var col: u16 = 0;
-            if v != 0 { col = pal_grph(mmu, v) | 1; }
+            let col: u16 = if v != 0 { pal_grph(mmu, v) | 1 } else { 0 };
             ppu.sp[i] = col;
             ppu.sp2[i] = 0;
         }
@@ -648,8 +629,7 @@ fn ppu_grp_lines(ppu: X68kPPU&, mmu: M68kMMU&, sy: i32, width: i32) -> bool, boo
         }
     } else if kind == 1 || kind == 2 {
         var opaq = true;
-        var page_first: i32 = 0;
-        if (vc1_1 & 3) > ((vc1_1 >> 4) & 3) { page_first = 1; }
+        let page_first: i32 = if (vc1_1 & 3) > ((vc1_1 >> 4) & 3) { 1 } else { 0 };
         let page_second = page_first ^ 1;
         if (vc2_0 & 0x10) != 0 && (vc2_1 & 1) != 0 {
             ppu_grp8_sp_line(ppu, mmu, page_first, sy, width);
@@ -860,8 +840,7 @@ fn ppu_compose_back(ppu: X68kPPU&, sy: i32, screen_w: i32, width: i32, gon: bool
             tdrawed = true;
             opaq = false;
         } else {
-            var td = false;
-            if (vc1_0 & 0x0C) == 0x08 { td = true; }
+            let td = (vc1_0 & 0x0C) == 0x08;
             ppu_blit_bg(ppu, width, opaq, td, 2);
             tdrawed = true;
             opaq = false;
@@ -880,8 +859,7 @@ fn ppu_compose_back(ppu: X68kPPU&, sy: i32, screen_w: i32, width: i32, gon: bool
         if (vc2_0 & 0x5D) == 0x1D && (vc1_0 & 0x03) == 0 && tron {
             ppu_blit_text_tr(ppu, width, opaq);
         } else {
-            var td2 = false;
-            if (vc1_0 & 0x30) >= 0x10 { td2 = true; }
+            let td2 = (vc1_0 & 0x30) >= 0x10;
             ppu_blit_bg(ppu, width, opaq, td2, 1);
         }
         opaq = false;
@@ -892,8 +870,7 @@ fn ppu_compose_back(ppu: X68kPPU&, sy: i32, screen_w: i32, width: i32, gon: bool
         opaq = false;
     }
     if (vc1_0 & 0x30) == 0 && bgon {
-        var td3 = false;
-        if (vc1_0 & 0x0C) >= 0x04 { td3 = true; }
+        let td3 = (vc1_0 & 0x0C) >= 0x04;
         ppu_blit_bg(ppu, width, opaq, td3, 2);
         tdrawed = true;
         opaq = false;
@@ -931,8 +908,7 @@ fn ppu_compose_back(ppu: X68kPPU&, sy: i32, screen_w: i32, width: i32, gon: bool
         }
     }
     for x: i32 in width {
-        var c = pal_to_argb(ppu.scr[x]);
-        if ppu.scr_mix[x] != 0 { c = ppu.scr_argb[x]; }
+        let c = if ppu.scr_mix[x] != 0 { ppu.scr_argb[x] } else { pal_to_argb(ppu.scr[x]) };
         ppu.fb[sy * screen_w + x] = c;
     }
 }
@@ -989,8 +965,7 @@ fn ppu_draw_line(ppu: X68kPPU&, mmu: M68kMMU&, sy: i32) {
             ton = true;
         }
         if sp_on {
-            var opaq = false;
-            if !ton { opaq = true; }
+            let opaq = !ton;
             // px68k BG_DrawLine(..., gd=0)。パターン 0 は描かない。
             ppu_bg_draw_line(ppu, mmu, width, sy, opaq, true);
             bgon = true;
@@ -1005,8 +980,7 @@ fn ppu_draw_line(ppu: X68kPPU&, mmu: M68kMMU&, sy: i32) {
             bgon = true;
         }
         if text_on {
-            var opaq = false;
-            if !bgon { opaq = true; }
+            let opaq = !bgon;
             ppu_text_one_line(ppu, mmu, width, sy, opaq);
             ton = true;
         }

@@ -10,6 +10,9 @@ import .x68k_rom;
 import .x68k_rtc;
 
 let ADDR_MASK = 0x00FFFFFF; // 68000 のアドレスバスは 24 bit
+let BGRAM_BYTES = 32768;   // BG マップと PCG ($EB8000-$EBFFFF)
+let PCG8_BYTES = 16384;    // 8x8 パターンを 1 ドット 1 バイトに展開したもの
+let PCG16_BYTES = 65536;   // 16x16 パターンを 1 ドット 1 バイトに展開したもの
 let VRAM_BYTES = 524288;    // TVRAM と GVRAM はそれぞれ 512 KB
 
 struct M68kMMU {
@@ -25,9 +28,9 @@ struct M68kMMU {
     vcreg: u8[1024] = [0; 1024],
     sprite: u8[2048] = [0; 2048],
     bgreg: u8[32] = [0; 32],
-    bgram: u8[32768] = [0; 32768],
-    bg_chr8: u8[16384] = [0; 16384],
-    bg_chr16: u8[65536] = [0; 65536],
+    bgram: u8[BGRAM_BYTES] = [0; BGRAM_BYTES],
+    bg_chr8: u8[PCG8_BYTES] = [0; PCG8_BYTES],
+    bg_chr16: u8[PCG16_BYTES] = [0; PCG16_BYTES],
     tvram: u8[VRAM_BYTES] = [0; VRAM_BYTES],
     gvram: u8[VRAM_BYTES] = [0; VRAM_BYTES],
     ioc_int_stat: u8 = 0,
@@ -110,8 +113,8 @@ fn mmu_init(mmu: M68kMMU&) {
 
 fn mmu_clear_video(mmu: M68kMMU&) {
     mmu.pal = [0; 1024]; mmu.vcreg = [0; 1024];
-    mmu.sprite = [0; 2048]; mmu.bgreg = [0; 32]; mmu.bgram = [0; 32768];
-    mmu.bg_chr8 = [0; 16384]; mmu.bg_chr16 = [0; 65536];
+    mmu.sprite = [0; 2048]; mmu.bgreg = [0; 32]; mmu.bgram = [0; BGRAM_BYTES];
+    mmu.bg_chr8 = [0; PCG8_BYTES]; mmu.bg_chr16 = [0; PCG16_BYTES];
     mmu.tvram = [0; VRAM_BYTES]; mmu.gvram = [0; VRAM_BYTES];
 }
 
@@ -336,7 +339,7 @@ fn mmu_write_bgram(mmu: M68kMMU&, off: i32, val: u8) {
         mmu.bg_chr8[off * 2 + 1] = val & 15;
     }
     let bg16 = ((off & 3) * 2) + ((off & 0x3C) * 4) + ((off & 0x40) >> 3) + ((off & 0x7F80) * 2);
-    if bg16 + 1 < 65536 {
+    if bg16 + 1 < PCG16_BYTES {
         mmu.bg_chr16[bg16] = val >> 4;
         mmu.bg_chr16[bg16 + 1] = val & 15;
     }
