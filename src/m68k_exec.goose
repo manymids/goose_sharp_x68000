@@ -117,7 +117,7 @@ fn ea_calc_addr(cpu: M68kCPU&, mmu: M68kMMU&, mode: i32, reg: i32, size: i32) ->
     if mode == 7 {
         if reg == 0 { // (xxx).W
             // 符号拡張した 32bit を返す。バスは mmu 側で 24bit に切る。
-            // ここで切ると PEA/LEA が 0xFFFFFFFF ではなく 0x00FFFFFF になる。
+            // ここで切ると PEA/LEA が 0xFFFFFFFF ではなく ADDR_MASK になる。
             let w = fetch16(cpu, mmu) as! i16;
             return (w) as! u32;
         }
@@ -1808,7 +1808,7 @@ fn m68k_step(cpu: M68kCPU&, mmu: M68kMMU&) -> i32 {
     var cycles = m68k_step_core(cpu, mmu);
     // A jump to an odd address faults in the jumping instruction.
     if mmu.fault == 0 && (cpu.pc & 1) != 0 && !cpu.halted {
-        mmu_fault(mmu, 3, cpu.pc & 0x00FFFFFF, false);
+        mmu_fault(mmu, 3, cpu.pc & ADDR_MASK, false);
     }
     if mmu.fault != 0 {
         m68k_group0(cpu, mmu, d, sr);

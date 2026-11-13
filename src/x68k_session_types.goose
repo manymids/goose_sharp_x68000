@@ -1,8 +1,10 @@
 // Host control metadata. Not part of an emulated-machine checkpoint.
 // Owned by the emulator; no borrowed references and no transport state.
+let SNAPSHOT_NAME_MAX = 63; // スナップショット名の最大バイト数
+
 struct X68kSession {
     keys: bool[128] = [false; 128],
-    snapshot_names: u8[..63][32] = [""; 32],
+    snapshot_names: u8[..63][32] = [""; 32], // [SNAPSHOT_SLOTS] 件、各 SNAPSHOT_NAME_MAX バイトまで
     rewind_on: bool = false,
     rewind_interval: i32 = 60,
     rewind_count: i32 = 0,

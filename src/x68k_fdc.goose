@@ -38,17 +38,22 @@ fn fdc_cmd_rsp_len(cmd: i32) -> i32 {
     return table[cmd & 31];
 }
 
+// コマンドは 3 つの相を進む。
+//   コマンド相: CPU がコマンドとパラメータを書く (prm_left が残りバイト数)
+//   実行相:     セクタのデータを data_buf 経由で受け渡す (buf_len がセクタ長、writing なら CPU/DMA → FDC)
+//   結果相:     CPU が結果を読む (rsp_left が残りバイト数)
+// read_pos / write_pos は、その相で使っているバッファ内の位置。
 struct X68kFDC {
     cmd: i32 = 0,
     cyl: i32 = 0,
     drv: i32 = 0,
     ctrl: u8 = 0,
-    wexec: bool = false,
-    rdptr: i32 = 0,
-    wrptr: i32 = 0,
-    rdnum: i32 = 0,
-    wrnum: i32 = 0,
-    bufnum: i32 = 0,
+    writing: bool = false,
+    read_pos: i32 = 0,
+    write_pos: i32 = 0,
+    rsp_left: i32 = 0,
+    prm_left: i32 = 0,
+    buf_len: i32 = 0,
     st0: u8 = 0,
     st1: u8 = 0,
     st2: u8 = 0,
@@ -73,9 +78,9 @@ fn fdc_ephase_end(fdc: X68kFDC&) {
     fdc.rsp_buf[5] = fdc.prm_buf[4]; // R
     fdc.rsp_buf[6] = fdc.prm_buf[5]; // N
 
-    fdc.bufnum = 0;
-    fdc.rdptr = 0;
-    fdc.wexec = false;
+    fdc.buf_len = 0;
+    fdc.read_pos = 0;
+    fdc.writing = false;
     fdc.int_pending = true;
 
     var idc: u8 = 0;
@@ -157,7 +162,7 @@ fn fdc_exec_cmd(fdc: X68kFDC&) {
         },
         FDC_WRITE_DATA, FDC_WRITE_DELETED => {
             fdc.st0 = (fdc.prm_buf[1] & 7);
-            fdc.wexec = false;
+            fdc.writing = false;
             if c_fdd_is_loaded(fdc.drv) {
                 let hd = (fdc.prm_buf[1] >> 2) & 1;
                 let trk = fdc.cyl * 2 + hd;
@@ -168,9 +173,9 @@ fn fdc_exec_cmd(fdc: X68kFDC&) {
                     fdc_ephase_end(fdc);
                 } else {
                     let sec_size = if n > 0 { (128 << n) as i32 } else { 1024 };
-                    fdc.bufnum = sec_size;
-                    fdc.wrptr = 0;
-                    fdc.wexec = true;
+                    fdc.buf_len = sec_size;
+                    fdc.write_pos = 0;
+                    fdc.writing = true;
                 }
             } else {
                 fdc.st0 |= 0x48;
@@ -179,7 +184,7 @@ fn fdc_exec_cmd(fdc: X68kFDC&) {
         },
         FDC_READ_DATA, FDC_READ_DELETED => {
             fdc.st0 = (fdc.prm_buf[1] & 7);
-            fdc.wexec = false;
+            fdc.writing = false;
             if c_fdd_is_loaded(fdc.drv) {
                 let hd = (fdc.prm_buf[1] >> 2) & 1;
                 let trk = fdc.cyl * 2 + hd;
@@ -192,8 +197,8 @@ fn fdc_exec_cmd(fdc: X68kFDC&) {
 
                 let ok = c_fdd_read_fdc(fdc.drv, trk, c, h, r, n, fdc.data_buf[0]);
                 if ok != 0 {
-                    fdc.bufnum = sec_size;
-                    fdc.rdptr = 0;
+                    fdc.buf_len = sec_size;
+                    fdc.read_pos = 0;
                 } else {
                     fdc.st0 |= 0x40; // Abnormal termination
                     fdc.st1 |= 0x04; // No data
@@ -238,29 +243,29 @@ fn fdc_next_track(fdc: X68kFDC&) {
 fn fdc_read(fdc: X68kFDC&, reg: i32) -> u8 {
     if reg == 1 { // 0x00E94001: Main Status Register (MSR)
         var msr: u8 = 0x80; // RQM: Always Request for Master (Ready)
-        if fdc.rdnum > 0 && !fdc.wexec {
+        if fdc.rsp_left > 0 && !fdc.writing {
             msr |= 0x40; // DIO: 1 = FDC -> CPU (Data from FDC)
         }
-        if fdc.wrnum > 0 || fdc.rdnum > 0 {
+        if fdc.prm_left > 0 || fdc.rsp_left > 0 {
             msr |= 0x10; // CB: FDC Busy
         }
-        if fdc.rdnum == 1 && fdc.cmd == FDC_SENSE_INT {
+        if fdc.rsp_left == 1 && fdc.cmd == FDC_SENSE_INT {
             msr &= 0xAF;
         }
         return msr;
     } else if reg == 3 { // 0x00E94003: Data Register (FIFO)
-        if fdc.bufnum > 0 {
-            let ret = fdc.data_buf[fdc.rdptr];
-            fdc.rdptr++;
-            if fdc.rdptr >= fdc.bufnum {
-                fdc.rdptr = 0;
+        if fdc.buf_len > 0 {
+            let ret = fdc.data_buf[fdc.read_pos];
+            fdc.read_pos++;
+            if fdc.read_pos >= fdc.buf_len {
+                fdc.read_pos = 0;
                 fdc_next_track(fdc);
             }
             return ret;
-        } else if fdc.rdnum > 0 {
-            let ret = fdc.rsp_buf[fdc.rdptr];
-            fdc.rdptr++;
-            fdc.rdnum--;
+        } else if fdc.rsp_left > 0 {
+            let ret = fdc.rsp_buf[fdc.read_pos];
+            fdc.read_pos++;
+            fdc.rsp_left--;
             return ret;
         }
         return 0;
@@ -280,8 +285,8 @@ fn fdc_read(fdc: X68kFDC&, reg: i32) -> u8 {
 // デバッガ用。データレジスタの次のバイトを、読み位置を進めずに返す。
 fn fdc_peek(fdc: X68kFDC&, reg: i32) -> u8 {
     if reg != 3 { return fdc_read(fdc, reg); }
-    if fdc.bufnum > 0 { return fdc.data_buf[fdc.rdptr]; }
-    if fdc.rdnum > 0 { return fdc.rsp_buf[fdc.rdptr]; }
+    if fdc.buf_len > 0 { return fdc.data_buf[fdc.read_pos]; }
+    if fdc.rsp_left > 0 { return fdc.rsp_buf[fdc.read_pos]; }
     return 0;
 }
 
@@ -313,32 +318,32 @@ fn fdc_write_buffer(fdc: X68kFDC&, last: bool) {
 // FDC レジスタ書き込み (0x00E94001 .. 0x00E94007)
 fn fdc_write(fdc: X68kFDC&, reg: i32, val: u8) {
     if reg == 3 { // 0x00E94003: Data Register (FIFO)
-        if fdc.bufnum > 0 {
-            fdc.data_buf[fdc.wrptr] = val;
-            fdc.wrptr++;
-            if fdc.wrptr >= fdc.bufnum {
+        if fdc.buf_len > 0 {
+            fdc.data_buf[fdc.write_pos] = val;
+            fdc.write_pos++;
+            if fdc.write_pos >= fdc.buf_len {
                 fdc_write_buffer(fdc, false);
-                fdc.wrptr = 0;
+                fdc.write_pos = 0;
             }
         } else {
-            if fdc.wrnum > 0 {
+            if fdc.prm_left > 0 {
                 // Writing parameters
-                fdc.prm_buf[fdc.wrptr] = val;
-                fdc.wrptr++;
-                fdc.wrnum--;
+                fdc.prm_buf[fdc.write_pos] = val;
+                fdc.write_pos++;
+                fdc.prm_left--;
             } else {
                 // Command byte
                 fdc.cmd = (val & 0x1F);
-                fdc.rdptr = 0;
-                fdc.wrptr = 0;
-                fdc.rdnum = 0;
-                fdc.wrnum = fdc_cmd_prm_len(fdc.cmd);
-                fdc.prm_buf[fdc.wrptr] = val;
-                fdc.wrptr++;
+                fdc.read_pos = 0;
+                fdc.write_pos = 0;
+                fdc.rsp_left = 0;
+                fdc.prm_left = fdc_cmd_prm_len(fdc.cmd);
+                fdc.prm_buf[fdc.write_pos] = val;
+                fdc.write_pos++;
             }
-            if fdc.wrnum == 0 {
-                fdc.wrptr = 0;
-                fdc.rdnum = fdc_cmd_rsp_len(fdc.cmd);
+            if fdc.prm_left == 0 {
+                fdc.write_pos = 0;
+                fdc.rsp_left = fdc_cmd_rsp_len(fdc.cmd);
                 fdc.st1 = 0;
                 fdc.st2 = 0;
                 fdc_exec_cmd(fdc);

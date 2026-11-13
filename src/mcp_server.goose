@@ -554,7 +554,7 @@ fn append_named_key(emu: X68kEmulator&, out: u8[>..]&, name: const u8[:], first:
     first = false;
 }
 
-fn h3_frames_ok(frames: i32) -> bool {
+fn run_frames_ok(frames: i32) -> bool {
     return frames >= 1 && frames <= 36000;
 }
 
@@ -732,7 +732,7 @@ fn command_line(emu: X68kEmulator&, out: u8[>..]&) {
 fn mcp_control_call(emu: X68kEmulator&, tool_name: const u8[:], args: const u8[:], id_buf: const u8[:]) -> bool {
     if tool_name == "arcl_run" {
         let frames = extract_json_int(args, "frames", 1);
-        if !h3_frames_ok(frames) {
+        if !run_frames_ok(frames) {
             mcp_write_text(id_buf, "frames must be between 1 and 36000", true);
             return true;
         }
@@ -1270,199 +1270,214 @@ fn mcp_input_call(emu: X68kEmulator&, tool_name: const u8[:], args: const u8[:],
     return false;
 }
 
+fn mcp_tool_save_state(emu: X68kEmulator&, args: const u8[:], id_buf: const u8[:]) {
+    let slot = extract_json_int(args, "slot", 0);
+    if slot < 0 || slot > 9 {
+        mcp_write_text(id_buf, "slot must be between 0 and 9", true);
+        return;
+    }
+    if !session_save(emu, slot) {
+        mcp_write_text(id_buf, "failed to allocate save-state buffer", true);
+        return;
+    }
+    var obj: u8[>..] = [];
+    format(obj, "{\"slot\":", slot);
+    append_machine(obj, emu, 0, false, true);
+    obj.append("}");
+    mcp_write_object(id_buf, obj);
+}
+
+fn mcp_tool_load_state(emu: X68kEmulator&, args: const u8[:], id_buf: const u8[:]) {
+    let slot = extract_json_int(args, "slot", 0);
+    if slot < 0 || slot > 9 {
+        mcp_write_text(id_buf, "slot must be between 0 and 9", true);
+        return;
+    }
+    if !session_load(emu, slot) {
+        mcp_write_text(id_buf, "save-state slot is empty or incompatible", true);
+        return;
+    }
+    var obj: u8[>..] = [];
+    format(obj, "{\"slot\":", slot);
+    append_machine(obj, emu, 0, false, true);
+    obj.append("}");
+    mcp_write_object(id_buf, obj);
+}
+
+fn mcp_tool_rewind(emu: X68kEmulator&, args: const u8[:], id_buf: const u8[:]) {
+    var act: u8[>..] = [];
+    if !extract_json_str(args, "action", act) {
+        mcp_write_text(id_buf, "missing required string field 'action' (enable/disable/status/rewind)", true);
+        return;
+    }
+    if act == "enable" {
+        let interval = extract_json_int(args, "interval", 60);
+        if interval < 10 || interval > 36000 {
+            mcp_write_text(id_buf, "interval must be between 10 and 36000", true);
+            return;
+        }
+        rewind_enable(emu, interval);
+        var obj: u8[>..] = [];
+        format(obj, "{\"action\":\"enable\",\"interval\":", interval, ",\"depth\":8");
+        append_machine(obj, emu, 0, false, true);
+        obj.append("}");
+        mcp_write_object(id_buf, obj);
+        return;
+    }
+    if act == "disable" {
+        rewind_disable(emu);
+        var obj: u8[>..] = [];
+        obj.append("{\"action\":\"disable\"");
+        append_machine(obj, emu, 0, false, true);
+        obj.append("}");
+        mcp_write_object(id_buf, obj);
+        return;
+    }
+    if act == "status" {
+        let on = if emu.session.rewind_on { "true" } else { "false" };
+        var obj: u8[>..] = [];
+        format(obj, "{\"action\":\"status\",\"enabled\":", on, ",\"interval\":", emu.session.rewind_interval, ",\"depth\":8,\"entries\":", emu.session.rewind_count, ",\"total_bytes\":", state_total(STATE_REWIND));
+        append_machine(obj, emu, 0, false, true);
+        obj.append("}");
+        mcp_write_object(id_buf, obj);
+        return;
+    }
+    if act == "rewind" {
+        let steps = extract_json_int(args, "steps", 1);
+        if steps < 1 || steps > emu.session.rewind_count {
+            mcp_write_text(id_buf, "not enough rewind history for that many steps", true);
+            return;
+        }
+        if !rewind_restore(emu, steps) {
+            mcp_write_text(id_buf, "core failed to restore rewind snapshot", true);
+            return;
+        }
+        var obj: u8[>..] = [];
+        format(obj, "{\"action\":\"rewind\",\"steps\":", steps);
+        append_machine(obj, emu, 0, false, true);
+        obj.append("}");
+        mcp_write_object(id_buf, obj);
+        return;
+    }
+    mcp_write_text(id_buf, "action must be enable, disable, status, or rewind", true);
+}
+
+fn mcp_tool_speed(emu: X68kEmulator&, args: const u8[:], id_buf: const u8[:]) {
+    let nom = x68k_nominal_fps(emu.mmu);
+    let fps, pct, running = session_speed(emu, win32_ui_get_ticks_ms());
+    let run = if running { "true" } else { "false" };
+    var obj: u8[>..] = [];
+    format(obj, "{\"running\":", run, ",\"fps\":", fps, ",\"nominal_fps\":", nom, ",\"speed_percent\":", pct);
+    append_machine(obj, emu, 0, false, true);
+    obj.append("}");
+    mcp_write_object(id_buf, obj);
+}
+
+fn mcp_tool_snapshot(emu: X68kEmulator&, args: const u8[:], id_buf: const u8[:]) {
+    var act: u8[>..] = [];
+    if !extract_json_str(args, "action", act) {
+        mcp_write_text(id_buf, "missing required string field 'action' (create/restore/delete/list)", true);
+        return;
+    }
+    if act == "list" {
+        var obj: u8[>..] = [];
+        obj.append("{\"action\":\"list\",\"snapshots\":[");
+        var first = true;
+        for i: i32 in 32 {
+            if state_saved(STATE_SNAPSHOT, i) {
+                if !first { obj.append(","); }
+                first = false;
+                var name: u8[>..] = [];
+                snapshot_name(emu, i, name);
+                var quoted: u8[>..] = [];
+                json_append_quoted(quoted, name);
+                format(obj, "{\"name\":", quoted, ",\"frame\":", state_frame(STATE_SNAPSHOT, i), ",\"bytes\":", state_bytes(STATE_SNAPSHOT, i), "}");
+            }
+        }
+        format(obj, "],\"total_bytes\":", state_total(STATE_SNAPSHOT));
+        append_machine(obj, emu, 0, false, true);
+        obj.append("}");
+        mcp_write_object(id_buf, obj);
+        return;
+    }
+    var name: u8[>..] = [];
+    if !extract_json_str(args, "snapshot_name", name) || name.len == 0 || name.len > 63 {
+        mcp_write_text(id_buf, "missing required string field 'snapshot_name'", true);
+        return;
+    }
+    if act == "create" {
+        let idx = snapshot_create(emu, name);
+        if idx == SNAPSHOT_FULL {
+            mcp_write_text(id_buf, "snapshot table is full (max 32) - delete one first", true);
+            return;
+        }
+        if idx < 0 {
+            mcp_write_text(id_buf, "failed to allocate snapshot buffer", true);
+            return;
+        }
+        var quoted: u8[>..] = [];
+        json_append_quoted(quoted, name);
+        var obj: u8[>..] = [];
+        format(obj, "{\"action\":\"create\",\"name\":", quoted, ",\"bytes\":", state_bytes(STATE_SNAPSHOT, idx), ",\"total_bytes\":", state_total(STATE_SNAPSHOT));
+        append_machine(obj, emu, 0, false, true);
+        obj.append("}");
+        mcp_write_object(id_buf, obj);
+        return;
+    }
+    let idx = snapshot_find(emu, name);
+    if idx < 0 {
+        mcp_write_text(id_buf, "no snapshot with that name", true);
+        return;
+    }
+    if act == "restore" {
+        if !snapshot_restore(emu, name) {
+            mcp_write_text(id_buf, "core failed to restore state (incompatible snapshot?)", true);
+            return;
+        }
+        var quoted: u8[>..] = [];
+        json_append_quoted(quoted, name);
+        var obj: u8[>..] = [];
+        format(obj, "{\"action\":\"restore\",\"name\":", quoted);
+        append_machine(obj, emu, 0, false, true);
+        obj.append("}");
+        mcp_write_object(id_buf, obj);
+        return;
+    }
+    if act == "delete" {
+        snapshot_delete(emu, name);
+        var quoted: u8[>..] = [];
+        json_append_quoted(quoted, name);
+        var obj: u8[>..] = [];
+        format(obj, "{\"action\":\"delete\",\"name\":", quoted, ",\"total_bytes\":", state_total(STATE_SNAPSHOT));
+        append_machine(obj, emu, 0, false, true);
+        obj.append("}");
+        mcp_write_object(id_buf, obj);
+        return;
+    }
+    mcp_write_text(id_buf, "action must be create, restore, delete, or list", true);
+}
+
 fn mcp_checkpoint_call(emu: X68kEmulator&, tool_name: const u8[:], args: const u8[:], id_buf: const u8[:]) -> bool {
     if tool_name == "arcl_save_state" {
-        let slot = extract_json_int(args, "slot", 0);
-        if slot < 0 || slot > 9 {
-            mcp_write_text(id_buf, "slot must be between 0 and 9", true);
-            return true;
-        }
-        if !session_save(emu, slot) {
-            mcp_write_text(id_buf, "failed to allocate save-state buffer", true);
-            return true;
-        }
-        var obj: u8[>..] = [];
-        format(obj, "{\"slot\":", slot);
-        append_machine(obj, emu, 0, false, true);
-        obj.append("}");
-        mcp_write_object(id_buf, obj);
+        mcp_tool_save_state(emu, args, id_buf);
         return true;
     }
-
     if tool_name == "arcl_load_state" {
-        let slot = extract_json_int(args, "slot", 0);
-        if slot < 0 || slot > 9 {
-            mcp_write_text(id_buf, "slot must be between 0 and 9", true);
-            return true;
-        }
-        if !session_load(emu, slot) {
-            mcp_write_text(id_buf, "save-state slot is empty or incompatible", true);
-            return true;
-        }
-        var obj: u8[>..] = [];
-        format(obj, "{\"slot\":", slot);
-        append_machine(obj, emu, 0, false, true);
-        obj.append("}");
-        mcp_write_object(id_buf, obj);
+        mcp_tool_load_state(emu, args, id_buf);
         return true;
     }
-
     if tool_name == "arcl_rewind" {
-        var act: u8[>..] = [];
-        if !extract_json_str(args, "action", act) {
-            mcp_write_text(id_buf, "missing required string field 'action' (enable/disable/status/rewind)", true);
-            return true;
-        }
-        if act == "enable" {
-            let interval = extract_json_int(args, "interval", 60);
-            if interval < 10 || interval > 36000 {
-                mcp_write_text(id_buf, "interval must be between 10 and 36000", true);
-                return true;
-            }
-            rewind_enable(emu, interval);
-            var obj: u8[>..] = [];
-            format(obj, "{\"action\":\"enable\",\"interval\":", interval, ",\"depth\":8");
-            append_machine(obj, emu, 0, false, true);
-            obj.append("}");
-            mcp_write_object(id_buf, obj);
-            return true;
-        }
-        if act == "disable" {
-            rewind_disable(emu);
-            var obj: u8[>..] = [];
-            obj.append("{\"action\":\"disable\"");
-            append_machine(obj, emu, 0, false, true);
-            obj.append("}");
-            mcp_write_object(id_buf, obj);
-            return true;
-        }
-        if act == "status" {
-            let on = if emu.session.rewind_on { "true" } else { "false" };
-            var obj: u8[>..] = [];
-            format(obj, "{\"action\":\"status\",\"enabled\":", on, ",\"interval\":", emu.session.rewind_interval, ",\"depth\":8,\"entries\":", emu.session.rewind_count, ",\"total_bytes\":", state_total(STATE_REWIND));
-            append_machine(obj, emu, 0, false, true);
-            obj.append("}");
-            mcp_write_object(id_buf, obj);
-            return true;
-        }
-        if act == "rewind" {
-            let steps = extract_json_int(args, "steps", 1);
-            if steps < 1 || steps > emu.session.rewind_count {
-                mcp_write_text(id_buf, "not enough rewind history for that many steps", true);
-                return true;
-            }
-            if !rewind_restore(emu, steps) {
-                mcp_write_text(id_buf, "core failed to restore rewind snapshot", true);
-                return true;
-            }
-            var obj: u8[>..] = [];
-            format(obj, "{\"action\":\"rewind\",\"steps\":", steps);
-            append_machine(obj, emu, 0, false, true);
-            obj.append("}");
-            mcp_write_object(id_buf, obj);
-            return true;
-        }
-        mcp_write_text(id_buf, "action must be enable, disable, status, or rewind", true);
+        mcp_tool_rewind(emu, args, id_buf);
         return true;
     }
-
     if tool_name == "arcl_speed" {
-        let nom = x68k_nominal_fps(emu.mmu);
-        let fps, pct, running = session_speed(emu, win32_ui_get_ticks_ms());
-        let run = if running { "true" } else { "false" };
-        var obj: u8[>..] = [];
-        format(obj, "{\"running\":", run, ",\"fps\":", fps, ",\"nominal_fps\":", nom, ",\"speed_percent\":", pct);
-        append_machine(obj, emu, 0, false, true);
-        obj.append("}");
-        mcp_write_object(id_buf, obj);
+        mcp_tool_speed(emu, args, id_buf);
         return true;
     }
-
     if tool_name == "arcl_snapshot" {
-        var act: u8[>..] = [];
-        if !extract_json_str(args, "action", act) {
-            mcp_write_text(id_buf, "missing required string field 'action' (create/restore/delete/list)", true);
-            return true;
-        }
-        if act == "list" {
-            var obj: u8[>..] = [];
-            obj.append("{\"action\":\"list\",\"snapshots\":[");
-            var first = true;
-            for i: i32 in 32 {
-                if state_saved(STATE_SNAPSHOT, i) {
-                    if !first { obj.append(","); }
-                    first = false;
-                    var name: u8[>..] = [];
-                    snapshot_name(emu, i, name);
-                    var quoted: u8[>..] = [];
-                    json_append_quoted(quoted, name);
-                    format(obj, "{\"name\":", quoted, ",\"frame\":", state_frame(STATE_SNAPSHOT, i), ",\"bytes\":", state_bytes(STATE_SNAPSHOT, i), "}");
-                }
-            }
-            format(obj, "],\"total_bytes\":", state_total(STATE_SNAPSHOT));
-            append_machine(obj, emu, 0, false, true);
-            obj.append("}");
-            mcp_write_object(id_buf, obj);
-            return true;
-        }
-        var name: u8[>..] = [];
-        if !extract_json_str(args, "snapshot_name", name) || name.len == 0 || name.len > 63 {
-            mcp_write_text(id_buf, "missing required string field 'snapshot_name'", true);
-            return true;
-        }
-        if act == "create" {
-            let idx = snapshot_create(emu, name);
-            if idx == SNAPSHOT_FULL {
-                mcp_write_text(id_buf, "snapshot table is full (max 32) - delete one first", true);
-                return true;
-            }
-            if idx < 0 {
-                mcp_write_text(id_buf, "failed to allocate snapshot buffer", true);
-                return true;
-            }
-            var quoted: u8[>..] = [];
-            json_append_quoted(quoted, name);
-            var obj: u8[>..] = [];
-            format(obj, "{\"action\":\"create\",\"name\":", quoted, ",\"bytes\":", state_bytes(STATE_SNAPSHOT, idx), ",\"total_bytes\":", state_total(STATE_SNAPSHOT));
-            append_machine(obj, emu, 0, false, true);
-            obj.append("}");
-            mcp_write_object(id_buf, obj);
-            return true;
-        }
-        let idx = snapshot_find(emu, name);
-        if idx < 0 {
-            mcp_write_text(id_buf, "no snapshot with that name", true);
-            return true;
-        }
-        if act == "restore" {
-            if !snapshot_restore(emu, name) {
-                mcp_write_text(id_buf, "core failed to restore state (incompatible snapshot?)", true);
-                return true;
-            }
-            var quoted: u8[>..] = [];
-            json_append_quoted(quoted, name);
-            var obj: u8[>..] = [];
-            format(obj, "{\"action\":\"restore\",\"name\":", quoted);
-            append_machine(obj, emu, 0, false, true);
-            obj.append("}");
-            mcp_write_object(id_buf, obj);
-            return true;
-        }
-        if act == "delete" {
-            snapshot_delete(emu, name);
-            var quoted: u8[>..] = [];
-            json_append_quoted(quoted, name);
-            var obj: u8[>..] = [];
-            format(obj, "{\"action\":\"delete\",\"name\":", quoted, ",\"total_bytes\":", state_total(STATE_SNAPSHOT));
-            append_machine(obj, emu, 0, false, true);
-            obj.append("}");
-            mcp_write_object(id_buf, obj);
-            return true;
-        }
-        mcp_write_text(id_buf, "action must be create, restore, delete, or list", true);
+        mcp_tool_snapshot(emu, args, id_buf);
         return true;
     }
-
     return false;
 }
 
@@ -1823,7 +1838,7 @@ fn mcp_tool_read_mem(emu: X68kEmulator&, args: const u8[:], id_buf: const u8[:])
 }
 
 fn mcp_tool_disasm(emu: X68kEmulator&, args: const u8[:], id_buf: const u8[:]) {
-    var addr = emu.cpu.pc & 0x00FFFFFF;
+    var addr = emu.cpu.pc & ADDR_MASK;
     if json_key_value(args, 0, "address") >= 0 {
         addr = extract_json_addr(args, "address", addr);
     }
@@ -1846,8 +1861,8 @@ fn mcp_tool_breakpoint(emu: X68kEmulator&, args: const u8[:], id_buf: const u8[:
         emu.break_armed = false;
         emu.hit_break = false;
     } else {
-        let addr = extract_json_addr(args, "address", emu.cpu.pc & 0x00FFFFFF);
-        emu.break_pc = addr & 0x00FFFFFF;
+        let addr = extract_json_addr(args, "address", emu.cpu.pc & ADDR_MASK);
+        emu.break_pc = addr & ADDR_MASK;
         emu.break_armed = true;
         emu.hit_break = false;
     }

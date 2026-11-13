@@ -210,9 +210,10 @@ fn x68k_emu_run_frame(emu: X68kEmulator&) {
     c_set_current_frame(emu.total_frames as i32);
     // bit4 が立っているのは 31kHz（px68k VID_MODE = MODE_HIGH）。サイクル予算の数値はそのまま。
     let is_31k = (emu.mmu.crtc_regs[0x29] & 0x10) != 0;
-    let vsync_base: i32 = x68k_frame_cycles10(emu.mmu) as i32;
+    // 1 フレームの長さ (0.1 us 単位 = 10 MHz のクロック数)
+    let frame_len10: i32 = x68k_frame_cycles10(emu.mmu) as i32;
     let mhz = if emu.clock_mhz > 0 { emu.clock_mhz } else { 10 };
-    let clk_total = (vsync_base * mhz) / 10;
+    let clk_total = (frame_len10 * mhz) / 10;
 
     let vline_total = x68k_frame_lines(emu.mmu);
 
@@ -226,7 +227,7 @@ fn x68k_emu_run_frame(emu: X68kEmulator&) {
     emu.mmu.mfp.hsync_start = hstart;
     emu.mmu.mfp.hsync_end = hend;
 
-    ppu_begin_frame(emu.ppu, emu.mmu);
+    ppu_begin_frame(emu.mmu);
 
     var vline: i32 = 0;
     var clk_count: i32 = 0;
@@ -243,27 +244,27 @@ fn x68k_emu_run_frame(emu: X68kEmulator&) {
         emu.mmu.mfp.in_vdisp = (vline >= crtc_vstart && vline < crtc_vend);
 
         // HSYNC 割り込み & Timer B HSYNC イベントカウント
-        mfp_trigger_int(emu.mmu.mfp, 0);
+        mfp_trigger_int(emu.mmu.mfp, MFP_IRQ_HSYNC);
         mfp_timer_b_hsync(emu.mmu.mfp);
 
         // CRTC ラスタ割り込み (IERA bit 1 / AER bit 6 == 0)
         if (emu.mmu.mfp.regs[MFP_AER] & 0x40) == 0 && vline == crtc_intline {
-            mfp_trigger_int(emu.mmu.mfp, 1);
+            mfp_trigger_int(emu.mmu.mfp, MFP_IRQ_RASTER);
         }
 
         // V-DISP 割り込み (AER bit 4)
         if (emu.mmu.mfp.regs[MFP_AER] & 0x10) != 0 {
             if vline == crtc_vstart {
-                mfp_trigger_int(emu.mmu.mfp, 9);
+                mfp_trigger_int(emu.mmu.mfp, MFP_IRQ_VDISP);
             }
         } else {
             if crtc_vend >= vline_total {
                 if vline == (crtc_vend - vline_total) {
-                    mfp_trigger_int(emu.mmu.mfp, 9);
+                    mfp_trigger_int(emu.mmu.mfp, MFP_IRQ_VDISP);
                 }
             } else {
                 if vline == (vline_total - 1) {
-                    mfp_trigger_int(emu.mmu.mfp, 9);
+                    mfp_trigger_int(emu.mmu.mfp, MFP_IRQ_VDISP);
                 }
             }
         }
@@ -271,7 +272,7 @@ fn x68k_emu_run_frame(emu: X68kEmulator&) {
         // 走査線内のサイクル実行
         let clk_next = ((clk_total as i64) * ((vline + 1)) / (vline_total)) as i32;
         while clk_count < clk_next {
-            if emu.break_armed && (emu.cpu.pc & 0x00FFFFFF) == (emu.break_pc & 0x00FFFFFF) {
+            if emu.break_armed && (emu.cpu.pc & ADDR_MASK) == (emu.break_pc & ADDR_MASK) {
                 emu.hit_break = true;
                 return;
             }
@@ -286,16 +287,16 @@ fn x68k_emu_run_frame(emu: X68kEmulator&) {
         emu.mmu.mfp.crtc_intline = crtc_intline;
         mfp_timer_a(emu.mmu.mfp, vline, crtc_vstart, crtc_vend, vline_total);
         if (emu.mmu.mfp.regs[MFP_AER] & 0x40) != 0 && vline == crtc_intline {
-            mfp_trigger_int(emu.mmu.mfp, 1);
+            mfp_trigger_int(emu.mmu.mfp, MFP_IRQ_RASTER);
         }
 
-        // 音源タイマーステップ (clk_line = vsync_base / vline_total)
-        let clk_line = vsync_base / vline_total;
+        // 音源タイマーステップ (clk_line = frame_len10 / vline_total)
+        let clk_line = frame_len10 / vline_total;
         dmac_sound_push(emu.mmu.dmac);
         c_sound_scanline_timer(clk_line as u32);
         dmac_sound_pull(emu.mmu.dmac);
         if c_sound_poll_irq() != 0 {
-            mfp_trigger_int(emu.mmu.mfp, 12);
+            mfp_trigger_int(emu.mmu.mfp, MFP_IRQ_OPM);
         }
 
         // px68k WinDraw_DrawLine: sprites from the registers at the end of this scanline
@@ -305,15 +306,15 @@ fn x68k_emu_run_frame(emu: X68kEmulator&) {
             if vstep == 1 {
                 if (vline & 1) != 0 {
                     let sy = ((vline - crtc_vstart) * vstep) / 2;
-                    ppu_draw_sprite_line(emu.ppu, emu.mmu, sy as i32);
+                    ppu_draw_line(emu.ppu, emu.mmu, sy as i32);
                 }
             } else if vstep == 4 {
                 let sy = ((vline - crtc_vstart) * vstep) / 2;
-                ppu_draw_sprite_line(emu.ppu, emu.mmu, sy as i32);
-                ppu_draw_sprite_line(emu.ppu, emu.mmu, (sy + 1) as i32);
+                ppu_draw_line(emu.ppu, emu.mmu, sy as i32);
+                ppu_draw_line(emu.ppu, emu.mmu, (sy + 1) as i32);
             } else {
                 let sy = ((vline - crtc_vstart) * vstep) / 2;
-                ppu_draw_sprite_line(emu.ppu, emu.mmu, sy as i32);
+                ppu_draw_line(emu.ppu, emu.mmu, sy as i32);
             }
         }
 

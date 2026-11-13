@@ -9,6 +9,9 @@ import .x68k_ram;
 import .x68k_rom;
 import .x68k_rtc;
 
+let ADDR_MASK = 0x00FFFFFF; // 68000 のアドレスバスは 24 bit
+let VRAM_BYTES = 524288;    // TVRAM と GVRAM はそれぞれ 512 KB
+
 struct M68kMMU {
     reset_overlay: bool = true,
     crtc_regs: u8[64] = [0; 64],
@@ -25,8 +28,8 @@ struct M68kMMU {
     bgram: u8[32768] = [0; 32768],
     bg_chr8: u8[16384] = [0; 16384],
     bg_chr16: u8[65536] = [0; 65536],
-    tvram: u8[524288] = [0; 524288],
-    gvram: u8[524288] = [0; 524288],
+    tvram: u8[VRAM_BYTES] = [0; VRAM_BYTES],
+    gvram: u8[VRAM_BYTES] = [0; VRAM_BYTES],
     ioc_int_stat: u8 = 0,
     ioc_int_vect: u8 = 0,
     sasi_irq: bool = false,
@@ -109,7 +112,7 @@ fn mmu_clear_video(mmu: M68kMMU&) {
     mmu.pal = [0; 1024]; mmu.vcreg = [0; 1024];
     mmu.sprite = [0; 2048]; mmu.bgreg = [0; 32]; mmu.bgram = [0; 32768];
     mmu.bg_chr8 = [0; 16384]; mmu.bg_chr16 = [0; 65536];
-    mmu.tvram = [0; 524288]; mmu.gvram = [0; 524288];
+    mmu.tvram = [0; VRAM_BYTES]; mmu.gvram = [0; VRAM_BYTES];
 }
 
 fn gvram_type(r20: u8) -> i32 {
@@ -123,17 +126,17 @@ fn gvram_addr1024(adr: u32) -> u32 {
 }
 
 fn gvram_get(mmu: M68kMMU&, i: u32) -> u8 {
-    if i >= 524288 { return 0; }
+    if i >= VRAM_BYTES { return 0; }
     return mmu.gvram[i as i64];
 }
 
 fn gvram_set(mmu: M68kMMU&, i: u32, val: u8) {
-    if i >= 524288 { return; }
+    if i >= VRAM_BYTES { return; }
     mmu.gvram[i as i64] = val;
 }
 
 fn gvram_and16(mmu: M68kMMU&, off: u32, mask: u16) {
-    if off + 1 >= 524288 { return; }
+    if off + 1 >= VRAM_BYTES { return; }
     let lo: u16 = mmu.gvram[off as i64];
     let hi: u16 = mmu.gvram[(off + 1) as i64];
     let next = (lo | (hi << 8)) & mask;
@@ -188,7 +191,7 @@ fn mmu_gvram_cpu_read(mmu: M68kMMU&, off: i32, r20: u8) -> u8 {
         if (adr & 1) == 0 { return 0; }
         var i = gvram_addr1024(adr);
         if (adr & 0x100000) == 0 { i = i ^ 1; }
-        if i >= 524288 { return 0; }
+        if i >= VRAM_BYTES { return 0; }
         let b = gvram_get(mmu, i);
         if (adr & 0x400) != 0 { return b >> 4; }
         return b & 0x0F;
@@ -225,7 +228,7 @@ fn mmu_gvram_cpu_write(mmu: M68kMMU&, off: i32, val: u8, r20: u8) {
         if (adr & 1) == 0 { return; }
         var i = gvram_addr1024(adr);
         if (adr & 0x100000) == 0 { i = i ^ 1; }
-        if i >= 524288 { return; }
+        if i >= VRAM_BYTES { return; }
         let cur = gvram_get(mmu, i);
         if (adr & 0x400) != 0 {
             gvram_set(mmu, i, (cur & 0x0F) | ((val & 0x0F) << 4));
@@ -271,13 +274,13 @@ fn mmu_gvram_cpu_write(mmu: M68kMMU&, off: i32, val: u8, r20: u8) {
 }
 
 fn tvram_store(mmu: M68kMMU&, adr: u32, data: u8) {
-    if adr < 524288 {
+    if adr < VRAM_BYTES {
         mmu.tvram[adr as i64] = data;
     }
 }
 
 fn tvram_store_mask(mmu: M68kMMU&, adr: u32, data: u8, r2e: u8, r2f: u8) {
-    if adr >= 524288 { return; }
+    if adr >= VRAM_BYTES { return; }
     let m = if (adr & 1) != 0 { r2f } else { r2e };
     let cur = mmu.tvram[adr as i64];
     mmu.tvram[adr as i64] = (cur & m) | (data & (m ^ 0xFF));
@@ -592,7 +595,7 @@ fn mmu_io_read8(mmu: M68kMMU&, a: u32) -> u8 {
 
 // 8 bit 読み出し。RAM、GVRAM、TVRAM の順に見て、残りは mmu_io_read8 へ。
 fn mmu_read8(mmu: M68kMMU&, addr: u32) -> u8 {
-    let a = addr & 0x00FFFFFF;
+    let a = addr & ADDR_MASK;
     if mmu.cpu_access {
         if (mmu.fault != 0 || mmu.user_mode || a >= 0xE86000) && mmu_check8(mmu, a, false) { return 0xFF; }
         mmu.wait40 += mmu_wait40(a);
@@ -626,7 +629,7 @@ fn mmu_read8(mmu: M68kMMU&, addr: u32) -> u8 {
 // デバッガ用の読み出し。読むと状態が変わるレジスタ (MFP の UDR、FDC のデータ、SASI) は
 // 状態を進めずに値だけ返す。それ以外は mmu_read8 と同じ。
 fn mmu_peek8(mmu: M68kMMU&, addr: u32) -> u8 {
-    let a = addr & 0x00FFFFFF;
+    let a = addr & ADDR_MASK;
     if (a & 0xFFFFC0) == 0xE88000 && (a & 1) != 0 && ((a & 0x3F) >> 1) == MFP_UDR {
         return mmu.mfp.last_key;
     }
@@ -684,7 +687,7 @@ fn mmu_io_write8(mmu: M68kMMU&, a: u32, val: u8) {
     // 0x00E84000 - 0x00E840FF: DMAC (HD63450)
     if (a & 0xFFFF00) == 0xE84000 {
         dmac_write(mmu.dmac, a, val);
-        if (mmu.dmac.ch[0].csr & 0x08) != 0 && mmu.fdc.bufnum > 0 {
+        if (mmu.dmac.ch[0].csr & 0x08) != 0 && mmu.fdc.buf_len > 0 {
             let cpu_access = mmu.cpu_access;
             mmu.cpu_access = false;
             dmac_exec_fdc(mmu.dmac, mmu.fdc, mmu);
@@ -753,7 +756,7 @@ fn mmu_io_write8(mmu: M68kMMU&, a: u32, val: u8) {
     if (a & 0xFFFF00) == 0xE94000 {
         let reg = (a & 0x07) as i32;
         fdc_write(mmu.fdc, reg, val);
-        if (mmu.dmac.ch[0].csr & 0x08) != 0 && mmu.fdc.bufnum > 0 {
+        if (mmu.dmac.ch[0].csr & 0x08) != 0 && mmu.fdc.buf_len > 0 {
             let cpu_access = mmu.cpu_access;
             mmu.cpu_access = false;
             dmac_exec_fdc(mmu.dmac, mmu.fdc, mmu);
@@ -835,7 +838,7 @@ fn mmu_io_write8(mmu: M68kMMU&, a: u32, val: u8) {
 
 // 8 bit 書き込み。RAM、GVRAM、TVRAM の順に見て、残りは mmu_io_write8 へ。
 fn mmu_write8(mmu: M68kMMU&, addr: u32, val: u8) {
-    let a = addr & 0x00FFFFFF;
+    let a = addr & ADDR_MASK;
     if mmu.cpu_access {
         if (mmu.fault != 0 || mmu.user_mode || a >= 0xE86000) && mmu_check8(mmu, a, true) { return; }
         mmu.wait40 += mmu_wait40(a);
@@ -867,18 +870,18 @@ fn mmu_write8(mmu: M68kMMU&, addr: u32, val: u8) {
 
 // Both bytes sit in the RAM window (through 0xBFFFFF). The last byte stays on the byte path.
 fn mmu_ram16(addr: u32) -> bool {
-    let a = addr & 0x00FFFFFF;
+    let a = addr & ADDR_MASK;
     return a < 0xBFFFFF;
 }
 
 fn mmu_ram32(addr: u32) -> bool {
-    let a = addr & 0x00FFFFFF;
+    let a = addr & ADDR_MASK;
     return a < 0xBFFFFD;
 }
 
 // 16-bit Big-Endian Read
 fn mmu_read16(mmu: M68kMMU&, addr: u32) -> u16 {
-    let a = addr & 0x00FFFFFF;
+    let a = addr & ADDR_MASK;
     if mmu.cpu_access && (mmu.fault != 0 || (a & 1) != 0 || mmu.user_mode) && mmu_check_wide(mmu, a, false) { return 0xFFFF; }
     if !(mmu.reset_overlay && a < 8) && mmu_ram16(addr) {
         if mmu.cpu_access { mmu.wait40 += 5; }
@@ -899,7 +902,7 @@ fn mmu_read16(mmu: M68kMMU&, addr: u32) -> u16 {
 
 // 16-bit Big-Endian Write
 fn mmu_write16(mmu: M68kMMU&, addr: u32, val: u16) {
-    let a = addr & 0x00FFFFFF;
+    let a = addr & ADDR_MASK;
     if mmu.cpu_access && (mmu.fault != 0 || (a & 1) != 0 || mmu.user_mode) && mmu_check_wide(mmu, a, true) { return; }
     if mmu_ram16(addr) {
         if mmu.cpu_access { mmu.wait40 += 5; }
@@ -919,7 +922,7 @@ fn mmu_write16(mmu: M68kMMU&, addr: u32, val: u16) {
 
 // 32-bit Big-Endian Read
 fn mmu_read32(mmu: M68kMMU&, addr: u32) -> u32 {
-    let a = addr & 0x00FFFFFF;
+    let a = addr & ADDR_MASK;
     if mmu.cpu_access && (mmu.fault != 0 || (a & 1) != 0 || mmu.user_mode) && mmu_check_wide(mmu, a, false) { return 0xFFFFFFFF; }
     if !(mmu.reset_overlay && a < 8) && mmu_ram32(addr) {
         if mmu.cpu_access { mmu.wait40 += 10; }
@@ -932,7 +935,7 @@ fn mmu_read32(mmu: M68kMMU&, addr: u32) -> u32 {
 
 // 32-bit Big-Endian Write
 fn mmu_write32(mmu: M68kMMU&, addr: u32, val: u32) {
-    let a = addr & 0x00FFFFFF;
+    let a = addr & ADDR_MASK;
     if mmu.cpu_access && (mmu.fault != 0 || (a & 1) != 0 || mmu.user_mode) && mmu_check_wide(mmu, a, true) { return; }
     if mmu_ram32(addr) {
         if mmu.cpu_access { mmu.wait40 += 10; }
@@ -942,212 +945,4 @@ fn mmu_write32(mmu: M68kMMU&, addr: u32, val: u32) {
     }
     mmu_write16(mmu, addr, ((val >> 16) & 0xFFFF) as u16);
     mmu_write16(mmu, addr + 2, (val & 0xFFFF) as u16);
-}
-
-fn dma_bump(addr: u32&, scr: u8, plus_mask: u8, minus_mask: u8, step: u32) {
-    if (scr & plus_mask) != 0 {
-        addr += step;
-    } else if (scr & minus_mask) != 0 {
-        addr -= step;
-    }
-}
-
-// SASI は DMAC ch1。px68k DMA_Exec(1) が 0xE96001 をメモリ空間として読む。
-fn dmac_pump_sasi(mmu: M68kMMU&) {
-    if (mmu.dmac.ch[1].csr & 0x08) == 0 { return; }
-    if (mmu.dmac.ch[1].ccr & 0x20) != 0 { return; }
-    if (mmu.dmac.ch[1].csr & 0x80) != 0 { return; }
-    let ocr = mmu.dmac.ch[1].ocr;
-    let scr = mmu.dmac.ch[1].scr;
-    let kind = ((ocr >> 4) & 3) + ((mmu.dmac.ch[1].dcr >> 1) & 4);
-    while (mmu.dmac.ch[1].csr & 0x08) != 0 && (mmu.dmac.ch[1].csr & 0x80) == 0 && mmu.dmac.ch[1].mtc != 0 && sasi_is_ready(mmu.sasi) {
-        let dev_to_mem = (ocr & 0x80) != 0;
-        var src = if dev_to_mem { mmu.dmac.ch[1].dar } else { mmu.dmac.ch[1].mar };
-        var dst = if dev_to_mem { mmu.dmac.ch[1].mar } else { mmu.dmac.ch[1].dar };
-        var n = 1;
-        var step = 1;
-        if kind == 1 { n = 2; }
-        if kind == 2 { n = 4; }
-        if kind == 5 { n = 1; step = 2; }
-        if kind == 6 { n = 1; step = 4; }
-        for i in n {
-            if step == 2 {
-                let w = mmu_read16(mmu, src);
-                mmu_write16(mmu, dst, w);
-            } else if step == 4 {
-                let w = mmu_read32(mmu, src);
-                mmu_write32(mmu, dst, w);
-            } else {
-                let b = mmu_read8(mmu, src);
-                mmu_write8(mmu, dst, b);
-            }
-            if dev_to_mem {
-                dma_bump(dst, scr, 4, 8, step as u32);
-                dma_bump(src, scr, 1, 2, if kind == 4 { step as u32 } else { (step * 2) as u32 });
-            } else {
-                dma_bump(src, scr, 4, 8, step as u32);
-                dma_bump(dst, scr, 1, 2, if kind == 4 { step as u32 } else { (step * 2) as u32 });
-            }
-            if dev_to_mem {
-                mmu.dmac.ch[1].mar = dst;
-                mmu.dmac.ch[1].dar = src;
-            } else {
-                mmu.dmac.ch[1].mar = src;
-                mmu.dmac.ch[1].dar = dst;
-            }
-        }
-        if mmu.dmac.ch[1].mtc != 0 {
-            mmu.dmac.ch[1].mtc -= 1;
-        }
-        if mmu.dmac.ch[1].mtc == 0 {
-            mmu.dmac.ch[1].csr |= 0x80;
-            mmu.dmac.ch[1].csr &= 0xF7;
-            if (mmu.dmac.ch[1].ccr & 0x08) != 0 {
-                mmu.dmac.int_ch |= 2;
-                mmu.dmac.int_pending = true;
-            }
-        }
-    }
-}
-
-fn dmac_ch2_fail(mmu: M68kMMU&, err: u8) {
-    mmu.dmac.ch[2].cer = err;
-    mmu.dmac.ch[2].csr |= 0x10;
-    mmu.dmac.ch[2].csr &= 0xF7;
-    mmu.dmac.ch[2].ccr &= 0x7F;
-    if (mmu.dmac.ch[2].ccr & 0x08) != 0 {
-        mmu.dmac.int_ch |= 4;
-        mmu.dmac.int_pending = true;
-    }
-}
-
-fn dmac_ch2_raise(mmu: M68kMMU&) {
-    if (mmu.dmac.ch[2].ccr & 0x08) != 0 {
-        mmu.dmac.int_ch |= 4;
-        mmu.dmac.int_pending = true;
-    }
-}
-
-// px68k DMA_Exec(2)。沙羅曼蛇はスプライト 1024 バイトを ch2 のバーストで $EB0000 へ書く。
-// OCR&3==2 は Mercury の Ready 待ちなので、ここでは動かさない。
-fn dmac_ch2_unit(mmu: M68kMMU&) -> i32 {
-    let ocr = mmu.dmac.ch[2].ocr;
-    let scr = mmu.dmac.ch[2].scr;
-    let kind = ((ocr >> 4) & 3) + ((mmu.dmac.ch[2].dcr >> 1) & 4);
-    let dev_to_mem = (ocr & 0x80) != 0;
-    var n: i32 = 1;
-    var mar_step: u32 = 1;
-    var dar_step: u32 = 1;
-    var width: i32 = 1;
-    if kind == 0 || kind == 3 {
-        dar_step = 2;
-    } else if kind == 1 {
-        n = 2;
-        dar_step = 2;
-    } else if kind == 2 {
-        n = 4;
-        dar_step = 2;
-    } else if kind == 4 {
-        dar_step = 1;
-    } else if kind == 5 {
-        mar_step = 2;
-        dar_step = 2;
-        width = 2;
-    } else if kind == 6 {
-        mar_step = 4;
-        dar_step = 4;
-        width = 4;
-    } else {
-        return 0;
-    }
-    for i: i32 in n {
-        var src = mmu.dmac.ch[2].mar;
-        var dst = mmu.dmac.ch[2].dar;
-        if dev_to_mem {
-            src = mmu.dmac.ch[2].dar;
-            dst = mmu.dmac.ch[2].mar;
-        }
-        if width != 1 && ((src & 1) != 0 || (dst & 1) != 0) {
-            var err: u8 = 0x05;
-            if (src & 1) != 0 {
-                if dev_to_mem { err = 0x06; }
-            } else if dev_to_mem {
-                err = 0x05;
-            } else {
-                err = 0x06;
-            }
-            dmac_ch2_fail(mmu, err);
-            return 1;
-        }
-        if width == 4 {
-            let w = mmu_read32(mmu, src);
-            mmu_write32(mmu, dst, w);
-        } else if width == 2 {
-            let w = mmu_read16(mmu, src);
-            mmu_write16(mmu, dst, w);
-        } else {
-            let b = mmu_read8(mmu, src);
-            mmu_write8(mmu, dst, b);
-        }
-        dma_bump(mmu.dmac.ch[2].mar, scr, 4, 8, mar_step);
-        dma_bump(mmu.dmac.ch[2].dar, scr, 1, 2, dar_step);
-    }
-    return 0;
-}
-
-fn dmac_ch2_on_zero(mmu: M68kMMU&) {
-    let ocr = mmu.dmac.ch[2].ocr;
-    if (ocr & 8) != 0 {
-        if (ocr & 4) != 0 {
-            if mmu.dmac.ch[2].bar != 0 {
-                let bar = mmu.dmac.ch[2].bar;
-                mmu.dmac.ch[2].mar = mmu_read32(mmu, bar) & 0x00FFFFFF;
-                mmu.dmac.ch[2].mtc = mmu_read16(mmu, bar + 4);
-                mmu.dmac.ch[2].bar = mmu_read32(mmu, bar + 6) & 0x00FFFFFF;
-                if mmu.dmac.ch[2].mtc == 0 { dmac_ch2_fail(mmu, 0x0D); }
-            }
-        } else {
-            mmu.dmac.ch[2].btc -= 1;
-            if mmu.dmac.ch[2].btc != 0 {
-                let bar = mmu.dmac.ch[2].bar;
-                mmu.dmac.ch[2].mar = mmu_read32(mmu, bar) & 0x00FFFFFF;
-                mmu.dmac.ch[2].mtc = mmu_read16(mmu, bar + 4);
-                mmu.dmac.ch[2].bar = bar + 6;
-                if mmu.dmac.ch[2].mtc == 0 { dmac_ch2_fail(mmu, 0x0D); }
-            }
-        }
-    } else if (mmu.dmac.ch[2].ccr & 0x40) != 0 {
-        mmu.dmac.ch[2].csr |= 0x40;
-        dmac_ch2_raise(mmu);
-        if mmu.dmac.ch[2].bar != 0 {
-            mmu.dmac.ch[2].mar = mmu.dmac.ch[2].bar;
-            mmu.dmac.ch[2].mtc = mmu.dmac.ch[2].btc;
-            mmu.dmac.ch[2].csr |= 0x08;
-            mmu.dmac.ch[2].bar = 0;
-            mmu.dmac.ch[2].btc = 0;
-            mmu.dmac.ch[2].ccr &= 0xBF;
-            if mmu.dmac.ch[2].mtc == 0 { dmac_ch2_fail(mmu, 0x0D); }
-        }
-    }
-    if mmu.dmac.ch[2].mtc == 0 && (mmu.dmac.ch[2].csr & 0x10) == 0 {
-        mmu.dmac.ch[2].csr |= 0x80;
-        mmu.dmac.ch[2].csr &= 0xF7;
-        dmac_ch2_raise(mmu);
-    }
-}
-
-fn dmac_exec_ch2(mmu: M68kMMU&) {
-    if (mmu.dmac.ch[2].ocr & 3) == 2 { return; }
-    var left: i32 = 65536;
-    while left > 0 && (mmu.dmac.ch[2].csr & 0x08) != 0 && (mmu.dmac.ch[2].ccr & 0x20) == 0 && (mmu.dmac.ch[2].csr & 0x80) == 0 && mmu.dmac.ch[2].mtc != 0 {
-        left -= 1;
-        if dmac_ch2_unit(mmu) != 0 { return; }
-        if mmu.dmac.ch[2].mtc != 0 {
-            mmu.dmac.ch[2].mtc -= 1;
-        }
-        if mmu.dmac.ch[2].mtc == 0 {
-            dmac_ch2_on_zero(mmu);
-        }
-        if (mmu.dmac.ch[2].ocr & 3) != 1 { return; }
-    }
 }

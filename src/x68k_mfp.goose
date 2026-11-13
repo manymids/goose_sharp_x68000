@@ -25,6 +25,17 @@ let MFP_RSR = 21;
 let MFP_TSR = 22;
 let MFP_UDR = 23;
 
+// 割り込み要因の番号 (mfp_trigger_int の irq)。0 が最優先で、ベクタは VR の上位 4 bit + (15 - 番号)。
+let MFP_IRQ_HSYNC = 0;    // GPIP7: 水平同期
+let MFP_IRQ_RASTER = 1;   // GPIP6: CRTC のラスタ割り込み
+let MFP_IRQ_TIMER_A = 2;
+let MFP_IRQ_KEY = 3;      // キーボードの受信バッファフル
+let MFP_IRQ_TIMER_B = 7;
+let MFP_IRQ_VDISP = 9;    // GPIP4: 垂直表示期間
+let MFP_IRQ_TIMER_C = 10;
+let MFP_IRQ_TIMER_D = 11;
+let MFP_IRQ_OPM = 12;     // GPIP3: FM 音源
+
 struct X68kMFP {
     regs: u8[24] = [0; 24],
     timer_reload: u8[4] = [0; 4],
@@ -238,7 +249,7 @@ fn mfp_timer_a(mfp: X68kMFP&, vline: i32, vstart: i32, vend: i32, vline_total: i
             mfp.regs[MFP_TADR]--;
             if mfp.regs[MFP_TADR] == 0 {
                 mfp.regs[MFP_TADR] = mfp.timer_reload[0];
-                mfp_trigger_int(mfp, 2); // Timer-A 割込
+                mfp_trigger_int(mfp, MFP_IRQ_TIMER_A);
             }
         }
     }
@@ -250,14 +261,14 @@ fn mfp_timer_b_hsync(mfp: X68kMFP&) {
         mfp.regs[MFP_TBDR]--;
         if mfp.regs[MFP_TBDR] == 0 {
             mfp.regs[MFP_TBDR] = mfp.timer_reload[1];
-            mfp_trigger_int(mfp, 7); // Timer-B 割込
+            mfp_trigger_int(mfp, MFP_IRQ_TIMER_B);
         }
     }
 }
 
 // タイマ進行 & 割込トリガー (プリスケーラカウント: px68k MFP_Timer 準拠)
 fn mfp_step_timers(mfp: X68kMFP&, cycles: i32) {
-    let timer_ints: i32[4] = [2, 7, 10, 11];
+    let timer_ints: i32[4] = [MFP_IRQ_TIMER_A, MFP_IRQ_TIMER_B, MFP_IRQ_TIMER_C, MFP_IRQ_TIMER_D];
 
     // タイマ A, B, C, D
     for chan in 4 {
@@ -302,7 +313,7 @@ fn mfp_keyboard_int(mfp: X68kMFP&) {
             mfp.last_key = mfp.key_buf[mfp.key_rp];
             mfp.key_rp = (mfp.key_rp + 1) & 127;
             mfp.key_int_flag = true;
-            mfp_trigger_int(mfp, 3);
+            mfp_trigger_int(mfp, MFP_IRQ_KEY);
         }
     } else if !mfp.key_int_flag {
         mfp.last_key = 0;

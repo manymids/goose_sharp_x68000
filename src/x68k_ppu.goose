@@ -6,10 +6,15 @@ import .m68k_mmu;
 var g_screen_w: i32 = 768;
 var g_screen_h: i32 = 512;
 
+// BG / スプライト / テキストの作業用ラインバッファは、左に LINE_PAD ドットの余白を持つ。
+// 画面の x は添字 x + LINE_PAD。スプライトが左端からはみ出しても添字が負にならない。
+let LINE_PAD = 16;
+let LINE_BUF_W = 1040; // 1024 + LINE_PAD
+
 struct X68kPPU {
-    line_bg: u16[1040] = [0; 1040],
-    line_tr: u8[1040] = [0; 1040],
-    line_bpri: u16[1040] = [0; 1040],
+    line_bg: u16[LINE_BUF_W] = [0; LINE_BUF_W],
+    line_tr: u8[LINE_BUF_W] = [0; LINE_BUF_W],
+    line_bpri: u16[LINE_BUF_W] = [0; LINE_BUF_W],
     grp: u16[1024] = [0; 1024],
     grp_mix: u8[1024] = [0; 1024],
     grp_argb: u32[1024] = [0; 1024],
@@ -58,7 +63,7 @@ fn ppu_sprites_to_line(ppu: X68kPPU&, mmu: M68kMMU&, pri: i32, width: i32, sy: i
         let ply = mmu.sprite[base + 7];
         if (ply & 3) != (pri as u8) { continue; }
         let t0 = (((raw_x) + h_adj) & 0x3FF) as u32;
-        if t0 >= ((width + 16) as u32) { continue; }
+        if t0 >= ((width + LINE_PAD) as u32) { continue; }
         var y: u32 = (raw_y & 0x3FF);
         y -= vlinebg;
         y += (bg_vline as! u32);
@@ -78,7 +83,7 @@ fn ppu_sprites_to_line(ppu: X68kPPU&, mmu: M68kMMU&, pri: i32, width: i32, sy: i
             let tt = t;
             px += 1;
             t += 1;
-            if tt < 16 || tt >= ((width + 16) as u32) || tt >= 1040 { continue; }
+            if tt < LINE_PAD || tt >= ((width + LINE_PAD) as u32) || tt >= LINE_BUF_W { continue; }
             let src = pat * 256 + src_y * 16 + src_x;
             let col = mmu.bg_chr16[src] & 0x0F;
             if col == 0 { continue; }
@@ -97,8 +102,8 @@ fn ppu_plot_bg(ppu: X68kPPU&, mmu: M68kMMU&, sx: i32, screen_w: i32, idx: u8) {
     let pal = 0x200 + (idx as i32) * 2;
     if pal + 1 >= 1024 { return; }
     let p_val = ((mmu.pal[pal] as u16) << 8) | (mmu.pal[pal + 1]);
-    let t = sx + 16;
-    if t >= 16 && t < 1040 {
+    let t = sx + LINE_PAD;
+    if t >= LINE_PAD && t < LINE_BUF_W {
         ppu.line_bg[t] = p_val;
         ppu.line_tr[t] |= 2;
     }
@@ -109,26 +114,27 @@ fn ppu_draw_bg_map(ppu: X68kPPU&, mmu: M68kMMU&, screen_w: i32, sy: i32, scroll_
     var span: i32 = 8;
     if wide { span = 16; }
     let rel = scroll_x - adjust;
-    let edi = (rel & (span - 1)) ^ 15;
+    // x_phase: 画面左端でのタイル内の横位置。map_col: BG マップ上の列 (1 タイル 2 バイト)。
+    let x_phase = (rel & (span - 1)) ^ 15;
     var shift: i32 = 2;
     var xmask: i32 = 0x1F8;
     if wide {
         shift = 3;
         xmask = 0x3F0;
     }
-    var ecx = (rel & xmask) >> shift;
+    var map_col = (rel & xmask) >> shift;
     var row_shift: i32 = 4;
     if wide { row_shift = 3; }
     let row = ((line & (xmask as u32)) << row_shift) as i32;
     let fine = (line & ((span - 1) as u32)) as i32;
     let tiles = screen_w / span + 2;
-    var sx0: i32 = edi - 15;
+    var sx0: i32 = x_phase - 15;
     var chr_bytes: i32 = 16384;
     if wide { chr_bytes = 65536; }
     var tile: i32 = 0;
     while tile < tiles {
-        let map = top + row + (ecx & 0x7F);
-        ecx = (ecx + 2) & 0x7F;
+        let map = top + row + (map_col & 0x7F);
+        map_col = (map_col + 2) & 0x7F;
         if map < 0 || map + 1 >= 32768 {
             sx0 += span;
             tile += 1;
@@ -136,21 +142,22 @@ fn ppu_draw_bg_map(ppu: X68kPPU&, mmu: M68kMMU&, screen_w: i32, sy: i32, scroll_
         }
         let attr = mmu.bgram[map];
         let attr_i: i32 = attr;
-        let si = if wide { (mmu.bgram[map + 1] as i32) << 8 } else { (mmu.bgram[map + 1] as i32) << 6 };
-        let ebp = if wide { fine << 4 } else { fine << 3 };
+        // pat_base: パターン番号から求めた PCG 内の先頭。pat_row: そのパターン内の行の位置。
+        let pat_base = if wide { (mmu.bgram[map + 1] as i32) << 8 } else { (mmu.bgram[map + 1] as i32) << 6 };
+        let pat_row = if wide { fine << 4 } else { fine << 3 };
         var origin: i32 = 0;
         var d: i32 = 1;
         if attr_i < 0x40 {
-            origin = si + ebp;
+            origin = pat_base + pat_row;
             d = 1;
         } else if ((attr_i - 0x40) & 0x80) != 0 {
-            origin = si + (if wide { 0xFF } else { 0x3F }) - ebp;
+            origin = pat_base + (if wide { 0xFF } else { 0x3F }) - pat_row;
             d = -1;
         } else if (attr as! i8) >= 0x40 {
-            origin = si + ebp + (span - 1);
+            origin = pat_base + pat_row + (span - 1);
             d = -1;
         } else {
-            origin = si + (if wide { 0xF0 } else { 0x38 }) - ebp;
+            origin = pat_base + (if wide { 0xF0 } else { 0x38 }) - pat_row;
             d = 1;
         }
         let pal_hi = ((attr_i << 4) & 0xFF) as u8;
@@ -161,9 +168,9 @@ fn ppu_draw_bg_map(ppu: X68kPPU&, mmu: M68kMMU&, screen_w: i32, sy: i32, scroll_
                 // gd 経路でも、すでに BG かスプライトがある画素は上書きしない。
                 // 上書きすると色 0 のタイルが手前の地面を消して格子になる。
                 let nib = if wide { mmu.bg_chr16[src] & 0x0F } else { mmu.bg_chr8[src] & 0x0F };
-                let t = sx0 + j + 16;
+                let t = sx0 + j + LINE_PAD;
                 var covered = false;
-                if t >= 0 && t < 1040 && (ppu.line_tr[t] & 2) != 0 { covered = true; }
+                if t >= 0 && t < LINE_BUF_W && (ppu.line_tr[t] & 2) != 0 { covered = true; }
                 if nib != 0 || (!ng && !covered) {
                     ppu_plot_bg(ppu, mmu, sx0 + j, screen_w, nib | pal_hi);
                 }
@@ -211,9 +218,9 @@ fn ppu_clear_front(ppu: X68kPPU&) {
 
 fn ppu_bg_line_clear(ppu: X68kPPU&, mmu: M68kMMU&, width: i32, opaq: bool) {
     let fill = pal_text_idx(mmu, 0);
-    var i: i32 = 16;
-    let end = width + 16;
-    while i < end && i < 1040 {
+    var i: i32 = LINE_PAD;
+    let end = width + LINE_PAD;
+    while i < end && i < LINE_BUF_W {
         ppu.line_bpri[i as i64] = 0xFFFF;
         if opaq { ppu.line_bg[i as i64] = fill; }
         i += 1;
@@ -222,9 +229,9 @@ fn ppu_bg_line_clear(ppu: X68kPPU&, mmu: M68kMMU&, width: i32, opaq: bool) {
 
 fn ppu_bg_fill_pal0(ppu: X68kPPU&, mmu: M68kMMU&, width: i32) {
     let fill = pal_text_idx(mmu, 0);
-    var i: i32 = 16;
-    let end = width + 16;
-    while i < end && i < 1040 {
+    var i: i32 = LINE_PAD;
+    let end = width + LINE_PAD;
+    while i < end && i < LINE_BUF_W {
         ppu.line_bg[i as i64] = fill;
         i += 1;
     }
@@ -705,7 +712,7 @@ fn ppu_blit_sp2(ppu: X68kPPU&, width: i32, opaq: bool) {
 fn ppu_blit_bg(ppu: X68kPPU&, width: i32, opaq: bool, td: bool, flagbit: i32) {
     var i: i32 = 0;
     while i < width {
-        let t = i + 16;
+        let t = i + LINE_PAD;
         if !opaq && td && (ppu.line_tr[t] & (flagbit as u8)) == 0 {
             i += 1;
             continue;
@@ -717,7 +724,7 @@ fn ppu_blit_bg(ppu: X68kPPU&, width: i32, opaq: bool, td: bool, flagbit: i32) {
 
 fn ppu_blit_text_tr(ppu: X68kPPU&, width: i32, opaq: bool) {
     for i: i32 in width {
-        let t = i + 16;
+        let t = i + LINE_PAD;
         let w = ppu.sp[i];
         let v = ppu.line_bg[t];
         if opaq {
@@ -740,7 +747,7 @@ fn ppu_blit_text_tr(ppu: X68kPPU&, width: i32, opaq: bool) {
 
 fn ppu_blit_bg_tr(ppu: X68kPPU&, width: i32, opaq: bool) {
     for i: i32 in width {
-        let t = i + 16;
+        let t = i + LINE_PAD;
         let w = ppu.sp[i];
         let v = ppu.line_bg[t];
         if opaq {
@@ -779,7 +786,7 @@ fn ppu_text_one_line(ppu: X68kPPU&, mmu: M68kMMU&, width: i32, sy: i32, opaq: bo
         for px: i32 in 8 {
             let x = col * 8 + px;
             if x >= width { return; }
-            let t = x + 16;
+            let t = x + LINE_PAD;
             let mask: u32 = 0x80 >> (px as u32);
             var c_idx: i32 = 0;
             if (any_bits & mask) != 0 {
@@ -953,14 +960,16 @@ fn ppu_apply_screen(mmu: M68kMMU&) {
     c_set_screen_mode(dot_x, dot_y);
 }
 
-fn ppu_begin_frame(ppu: X68kPPU&, mmu: M68kMMU&) {
+fn ppu_begin_frame(mmu: M68kMMU&) {
     ppu_apply_screen(mmu);
     var black: u32 = 0xFF000000;
     c_clear_framebuffer(black);
     c_set_frame_ready(1);
 }
 
-fn ppu_draw_sprite_line(ppu: X68kPPU&, mmu: M68kMMU&, sy: i32) {
+// 画面の 1 ライン (sy) を描く。グラフィック、テキスト、BG、スプライトを面ごとに作り、
+// ビデオコントローラの優先順位で合成してフレームバッファへ書く。
+fn ppu_draw_line(ppu: X68kPPU&, mmu: M68kMMU&, sy: i32) {
     if sy < 0 || sy >= g_screen_h { return; }
     var width = g_screen_w;
     if width > 1024 { width = 1024; }

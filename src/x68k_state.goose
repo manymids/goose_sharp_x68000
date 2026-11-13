@@ -26,20 +26,26 @@ struct X68kCheckpoint {
     clock_mhz: i32 = 10,
 }
 
-var g_checkpoints: X68kCheckpoint[50] = [X68kCheckpoint {}; 50];
+// g_checkpoints の並び: セーブスロット、名前付きスナップショット、巻き戻しリングの順。
+let SAVE_SLOTS = 10;
+let SNAPSHOT_SLOTS = 32;
+let REWIND_SLOTS = 8;
+let CHECKPOINT_SLOTS = 50; // 上の 3 つの合計
+
+var g_checkpoints: X68kCheckpoint[CHECKPOINT_SLOTS] = [X68kCheckpoint {}; CHECKPOINT_SLOTS];
 
 fn state_capacity(bank: i32) -> i32 {
-    if bank == STATE_SLOT { return 10; }
-    if bank == STATE_SNAPSHOT { return 32; }
-    if bank == STATE_REWIND { return 8; }
+    if bank == STATE_SLOT { return SAVE_SLOTS; }
+    if bank == STATE_SNAPSHOT { return SNAPSHOT_SLOTS; }
+    if bank == STATE_REWIND { return REWIND_SLOTS; }
     return 0;
 }
 
 fn state_index(bank: i32, idx: i32) -> i32 {
     if idx < 0 || idx >= state_capacity(bank) { return -1; }
     if bank == STATE_SLOT { return idx; }
-    if bank == STATE_SNAPSHOT { return 10 + idx; }
-    return 42 + idx;
+    if bank == STATE_SNAPSHOT { return SAVE_SLOTS + idx; }
+    return SAVE_SLOTS + SNAPSHOT_SLOTS + idx;
 }
 
 fn state_saved(bank: i32, idx: i32) -> bool {

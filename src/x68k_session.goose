@@ -14,8 +14,8 @@ fn session_run_frame(emu: X68kEmulator&) {
     if !s.rewind_on || s.rewind_interval < 1 || emu.total_frames <= 0 { return; }
     if (emu.total_frames % (s.rewind_interval)) != 0 { return; }
     if !state_capture(emu, STATE_REWIND, s.rewind_next) { return; }
-    s.rewind_next = (s.rewind_next + 1) % 8;
-    if s.rewind_count < 8 { s.rewind_count += 1; }
+    s.rewind_next = (s.rewind_next + 1) % REWIND_SLOTS;
+    if s.rewind_count < REWIND_SLOTS { s.rewind_count += 1; }
 }
 
 fn session_run(emu: X68kEmulator&, frames: i32) -> i32 {
@@ -85,8 +85,8 @@ fn session_load(emu: X68kEmulator&, slot: i32) -> bool {
 }
 
 fn snapshot_find(emu: X68kEmulator&, name: const u8[:]) -> i32 {
-    if name.len == 0 || name.len > 63 { return -1; }
-    for idx: i32 in 32 {
+    if name.len == 0 || name.len > SNAPSHOT_NAME_MAX { return -1; }
+    for idx: i32 in SNAPSHOT_SLOTS {
         if state_saved(STATE_SNAPSHOT, idx) && emu.session.snapshot_names[idx] == name { return idx; }
     }
     return -1;
@@ -98,10 +98,10 @@ fn snapshot_name(emu: X68kEmulator&, idx: i32, out: u8[>..]&) {
 }
 
 fn snapshot_create(emu: X68kEmulator&, name: const u8[:]) -> i32 {
-    if name.len == 0 || name.len > 63 { return SNAPSHOT_INVALID; }
+    if name.len == 0 || name.len > SNAPSHOT_NAME_MAX { return SNAPSHOT_INVALID; }
     var idx = snapshot_find(emu, name);
     if idx < 0 {
-        for i: i32 in 32 {
+        for i: i32 in SNAPSHOT_SLOTS {
             if !state_saved(STATE_SNAPSHOT, i) {
                 idx = i;
                 break;
@@ -141,14 +141,14 @@ fn rewind_disable(emu: X68kEmulator&) {
     emu.session.rewind_on = false;
     emu.session.rewind_count = 0;
     emu.session.rewind_next = 0;
-    for idx: i32 in 8 { state_drop(STATE_REWIND, idx); }
+    for idx: i32 in REWIND_SLOTS { state_drop(STATE_REWIND, idx); }
 }
 
 fn rewind_restore(emu: X68kEmulator&, steps: i32) -> bool {
     let s .= emu.session;
     if steps < 1 || steps > s.rewind_count { return false; }
     var idx = s.rewind_next - steps;
-    while idx < 0 { idx += 8; }
+    while idx < 0 { idx += REWIND_SLOTS; }
     if !state_restore(emu, STATE_REWIND, idx) { return false; }
     s.rewind_count -= steps;
     s.rewind_next = idx;

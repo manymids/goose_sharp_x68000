@@ -386,7 +386,7 @@ fn test_fdc_tables() {
     fdc_write(fdc, 3, 0x08);
     check("peeking the result does not consume it", fdc_peek(fdc, 3) == 0x48 && fdc_peek(fdc, 3) == 0x48);
     check("SenseIntStatus: ST0 abnormal, not ready", fdc_read(fdc, 3) == 0x48);
-    check("reading moves on to the cylinder byte", fdc_peek(fdc, 3) == 0x00 && fdc.rdnum == 1);
+    check("reading moves on to the cylinder byte", fdc_peek(fdc, 3) == 0x00 && fdc.rsp_left == 1);
 }
 
 // デバッガ用の読み出しは、読むと状態が変わるレジスタを進めない。
