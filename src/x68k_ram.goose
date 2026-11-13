@@ -11,24 +11,31 @@ fn x68k_ram_limit() -> i32 {
     return g_ram_limit;
 }
 
+// 添字は i64 に広げてから範囲を確かめる。i32 のまま off + 1 のように計算すると、桁あふれの
+// 可能性が残ってコンパイラが境界検査を外せない (goose check --bce-lines で確認できる)。
+
 fn x68k_ram_in(off: i32) -> bool {
     return off >= 0 && off < g_ram_limit && off < RAM_BYTES;
 }
 
-fn x68k_ram_read(off: i32) -> u8 {
-    if !x68k_ram_in(off) { return 0; }
-    return g_x68k_ram[off as i64];
+checkfree fn x68k_ram_read(off: i32) -> u8 {
+    let o: i64 = off;
+    if o < 0 || o >= g_ram_limit || o >= RAM_BYTES { return 0; }
+    return g_x68k_ram[o];
 }
 
-fn x68k_ram_write(off: i32, val: u8) {
-    if !x68k_ram_in(off) { return; }
-    g_x68k_ram[off as i64] = val;
+checkfree fn x68k_ram_write(off: i32, val: u8) {
+    let o: i64 = off;
+    if o < 0 || o >= g_ram_limit || o >= RAM_BYTES { return; }
+    g_x68k_ram[o] = val;
 }
 
-fn x68k_ram_read16(off: i32) -> u16 {
-    if off >= 0 && off + 1 < g_ram_limit && off + 1 < RAM_BYTES {
-        let hi: u16 = g_x68k_ram[off as i64];
-        let lo: u16 = g_x68k_ram[(off + 1) as i64];
+// 2 バイトとも RAM の中なら直接読む。端をまたぐときは 1 バイトずつ (範囲外は 0)。
+checkfree fn x68k_ram_read16(off: i32) -> u16 {
+    let o: i64 = off;
+    if o >= 0 && o + 1 < g_ram_limit && o + 1 < RAM_BYTES {
+        let hi: u16 = g_x68k_ram[o];
+        let lo: u16 = g_x68k_ram[o + 1];
         return (hi << 8) | lo;
     }
     let hi: u16 = x68k_ram_read(off);
@@ -36,22 +43,24 @@ fn x68k_ram_read16(off: i32) -> u16 {
     return (hi << 8) | lo;
 }
 
-fn x68k_ram_write16(off: i32, val: u16) {
-    if off >= 0 && off + 1 < g_ram_limit && off + 1 < RAM_BYTES {
-        g_x68k_ram[off as i64] = (val >> 8) as! u8;
-        g_x68k_ram[(off + 1) as i64] = (val & 0xFF) as u8;
+checkfree fn x68k_ram_write16(off: i32, val: u16) {
+    let o: i64 = off;
+    if o >= 0 && o + 1 < g_ram_limit && o + 1 < RAM_BYTES {
+        g_x68k_ram[o] = (val >> 8) as! u8;
+        g_x68k_ram[o + 1] = (val & 0xFF) as u8;
         return;
     }
     x68k_ram_write(off, (val >> 8) as! u8);
     x68k_ram_write(off + 1, (val & 0xFF) as u8);
 }
 
-fn x68k_ram_read32(off: i32) -> u32 {
-    if off >= 0 && off + 3 < g_ram_limit && off + 3 < RAM_BYTES {
-        let b0: u32 = g_x68k_ram[off as i64];
-        let b1: u32 = g_x68k_ram[(off + 1) as i64];
-        let b2: u32 = g_x68k_ram[(off + 2) as i64];
-        let b3: u32 = g_x68k_ram[(off + 3) as i64];
+checkfree fn x68k_ram_read32(off: i32) -> u32 {
+    let o: i64 = off;
+    if o >= 0 && o + 3 < g_ram_limit && o + 3 < RAM_BYTES {
+        let b0: u32 = g_x68k_ram[o];
+        let b1: u32 = g_x68k_ram[o + 1];
+        let b2: u32 = g_x68k_ram[o + 2];
+        let b3: u32 = g_x68k_ram[o + 3];
         return (b0 << 24) | (b1 << 16) | (b2 << 8) | b3;
     }
     let b0: u32 = x68k_ram_read(off);
@@ -61,12 +70,13 @@ fn x68k_ram_read32(off: i32) -> u32 {
     return (b0 << 24) | (b1 << 16) | (b2 << 8) | b3;
 }
 
-fn x68k_ram_write32(off: i32, val: u32) {
-    if off >= 0 && off + 3 < g_ram_limit && off + 3 < RAM_BYTES {
-        g_x68k_ram[off as i64] = (val >> 24) as! u8;
-        g_x68k_ram[(off + 1) as i64] = (val >> 16) as! u8;
-        g_x68k_ram[(off + 2) as i64] = (val >> 8) as! u8;
-        g_x68k_ram[(off + 3) as i64] = (val & 0xFF) as u8;
+checkfree fn x68k_ram_write32(off: i32, val: u32) {
+    let o: i64 = off;
+    if o >= 0 && o + 3 < g_ram_limit && o + 3 < RAM_BYTES {
+        g_x68k_ram[o] = (val >> 24) as! u8;
+        g_x68k_ram[o + 1] = (val >> 16) as! u8;
+        g_x68k_ram[o + 2] = (val >> 8) as! u8;
+        g_x68k_ram[o + 3] = (val & 0xFF) as u8;
         return;
     }
     x68k_ram_write(off, (val >> 24) as! u8);

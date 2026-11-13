@@ -158,7 +158,9 @@ stdio対応のMCPクライアントから、次のように起動します。初
 | コンソール（L1） | `arcl_console_read`、`arcl_command`、`arcl_mount` |
 | デバッグ（L2） | `arcl_registers`、`arcl_read_mem`、`arcl_write_mem`、`arcl_step`、`arcl_breakpoint`、`arcl_disasm` |
 | 機器観測（L3） | `arcl_video`、`arcl_irq`、`arcl_dma`、`arcl_vram`、`x68k_opm` |
-| 保存 | `arcl_save_state`、`arcl_load_state`、`arcl_snapshot` / `arcl_rewind`（L4） |
+| 保存 | `arcl_save_state`、`arcl_load_state`（`path` を付けるとファイルへ保存・ファイルから復元）、`arcl_snapshot` / `arcl_rewind`（L4） |
+
+ステートファイルは約 16 MB に、挿入中のFD/HDDイメージの大きさを足したサイズになります（40 MB のHDDなら約 56 MB）。メディアの内容も含むので、読み込みにはディスクイメージが要りません。書いたのと同じビルドでだけ読めます。壊れたファイルや別の版のファイルは理由を返して拒否し、機械の状態は変えません。
 
 正確な公開ツールと引数は接続先の `tools/list` で確認できます。通常保存は0〜9の10スロット、名前付きsnapshotは最大32件、rewindは8件です。これらはメモリ上の保存で、終了後のファイル再開には対応していません。
 
@@ -240,7 +242,7 @@ goose build .\src\test_core.goose -o .\test_core.exe
 .\test_core.exe
 ```
 
-すべて通ると `263 / 263 checks passed` と表示し、失敗があれば内容を出して終了コード1で終わります。`--debug` を付けてビルドすると、桁あふれと範囲の検査も有効になります。
+すべて通ると `276 / 276 checks passed` と表示し、失敗があれば内容を出して終了コード1で終わります。`--debug` を付けてビルドすると、桁あふれと範囲の検査も有効になります。
 
 ## 困ったとき・既知の制限
 
@@ -248,7 +250,7 @@ goose build .\src\test_core.goose -o .\test_core.exe
 - 意図しないディスクでGUIが起動する場合は、`--no-disk` で起動するか、終了後にINIを退避してください。ARCLではINIは読みません。
 - 音声デバイスが使用できない場合は警告して無音で実行します。
 - 現在のファイルダイアログ・パス処理にはWin32の文字コード・`MAX_PATH`の制約があります。パスに問題が出る場合は、短い英数字のフォルダで確認してください。
-- 単一の登録中機械を前提としています。複数インスタンスのコア共有、セーブ状態の永続化、マウス、すべてのVRAMモード・ソフトの完全互換は未対応または未保証です。
+- 単一の登録中機械を前提としています。複数インスタンスのコア共有、マウス、すべてのVRAMモード・ソフトの完全互換は未対応または未保証です。
 
 不具合報告には、ビルド種別、Windows環境、起動引数、イメージ形式、再現操作、ログや画面を添えてください。BIOSやゲーム本体を添付する必要はありません。
 

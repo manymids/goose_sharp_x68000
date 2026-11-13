@@ -2399,6 +2399,149 @@ int c_state_bytes(int bank, int idx) {
     return slot && slot->valid ? slot_bytes(slot) + (int)sizeof(*slot) : 0;
 }
 
+// ---- Slot image: one native slot as a flat byte image, for saving a state to a file.
+// Layout: ArclSlotImage header, then RAM, SRAM, sound state, FD0, FD1, HDD, each with the
+// length the header gives. The image is only meaningful to the build that wrote it; the
+// header carries its own size and ARCL_SLOT_VERSION so that a mismatch is rejected.
+#define ARCL_IMAGE_MAGIC 0x314E3658u /* "X6N1" */
+
+typedef struct {
+    uint32_t magic;
+    uint32_t version;
+    uint32_t header_bytes;
+    uint32_t ram_bytes;
+    uint32_t sound_bytes;
+    uint32_t hdd_len;
+    int32_t hdd_loaded;
+    int32_t sasi_reset_req;
+    int32_t fdd_cap[2];
+    int32_t fdd_len[2];
+    int32_t fdd_kind[2];
+    int32_t fdd_loaded[2];
+    int32_t fdd_trk[2];
+    int32_t fdd_cur[2];
+    uint32_t fdd_d88_top[2];
+    uint32_t fdd_d88_cur[2];
+    int32_t fdd_delay[2];
+    int32_t fdd_media_enable;
+    int32_t fdd_media_pending;
+    int32_t ppu_phase;
+    ArclIoLatches io;
+} ArclSlotImage;
+
+int64_t c_state_export_size(int bank, int idx) {
+    const ArclHwSlot *slot = state_slot(bank, idx);
+    if (!slot_check(slot)) return 0;
+    return (int64_t)sizeof(ArclSlotImage) + slot_bytes(slot);
+}
+
+// Writes the image into out and returns its size, or 0 if the slot is empty or out is too small.
+int64_t c_state_export(int bank, int idx, X68kByteView out) {
+    const ArclHwSlot *slot = state_slot(bank, idx);
+    int64_t need = c_state_export_size(bank, idx);
+    ArclSlotImage h;
+    uint8_t *p;
+    int drive;
+    if (need <= 0 || !out.data || out.len < need) return 0;
+    memset(&h, 0, sizeof(h));
+    h.magic = ARCL_IMAGE_MAGIC;
+    h.version = ARCL_SLOT_VERSION;
+    h.header_bytes = (uint32_t)sizeof(h);
+    h.ram_bytes = (uint32_t)slot->ram_bytes;
+    h.sound_bytes = (uint32_t)slot->sound_bytes;
+    h.hdd_len = (uint32_t)slot->hdd_len;
+    h.hdd_loaded = slot->hdd_loaded;
+    h.sasi_reset_req = slot->sasi_reset_req;
+    for (drive = 0; drive < 2; drive++) {
+        h.fdd_cap[drive] = slot->fdd_cap[drive];
+        h.fdd_len[drive] = slot->fdd_len[drive];
+        h.fdd_kind[drive] = slot->fdd_kind[drive];
+        h.fdd_loaded[drive] = slot->fdd_loaded[drive];
+        h.fdd_trk[drive] = slot->fdd_trk[drive];
+        h.fdd_cur[drive] = slot->fdd_cur[drive];
+        h.fdd_d88_top[drive] = slot->fdd_d88_top[drive];
+        h.fdd_d88_cur[drive] = slot->fdd_d88_cur[drive];
+        h.fdd_delay[drive] = slot->fdd_delay[drive];
+    }
+    h.fdd_media_enable = slot->fdd_media_enable;
+    h.fdd_media_pending = slot->fdd_media_pending;
+    h.ppu_phase = slot->ppu_phase;
+    h.io = slot->io;
+    p = out.data;
+    memcpy(p, &h, sizeof(h)); p += sizeof(h);
+    memcpy(p, slot->ram, slot->ram_bytes); p += slot->ram_bytes;
+    memcpy(p, slot->sram, SRAM_SIZE); p += SRAM_SIZE;
+    if (slot->sound_bytes) { memcpy(p, slot->sound, (size_t)slot->sound_bytes); p += slot->sound_bytes; }
+    for (drive = 0; drive < 2; drive++) {
+        if (slot->fdd_cap[drive]) { memcpy(p, slot->fdd[drive], (size_t)slot->fdd_cap[drive]); p += slot->fdd_cap[drive]; }
+    }
+    if (slot->hdd_len) { memcpy(p, slot->hdd, (size_t)slot->hdd_len); p += slot->hdd_len; }
+    return (int64_t)(p - out.data);
+}
+
+// Builds a slot from an image. Every length is checked against the bytes present before
+// anything is copied, and the finished slot must pass slot_check; the existing slot is
+// replaced only then. Returns 1 on success.
+int c_state_import(int bank, int idx, X68kByteView in) {
+    ArclHwSlot *slot = state_slot(bank, idx);
+    ArclHwSlot next = {0};
+    ArclHwSlot old;
+    ArclSlotImage h;
+    const uint8_t *p;
+    int64_t left;
+    int drive;
+    if (!slot || !in.data || in.len < (int64_t)sizeof(h)) return 0;
+    memcpy(&h, in.data, sizeof(h));
+    if (h.magic != ARCL_IMAGE_MAGIC || h.version != ARCL_SLOT_VERSION || h.header_bytes != sizeof(h)) return 0;
+    if (h.ram_bytes != (uint32_t)g_ram_bytes || h.sound_bytes > (64u << 20) || h.hdd_len > HDD_SIZE) return 0;
+    for (drive = 0; drive < 2; drive++) {
+        if (h.fdd_cap[drive] < 0 || h.fdd_cap[drive] > FDD_MAX_IMAGE) return 0;
+    }
+    left = in.len - (int64_t)sizeof(h);
+    if (left != (int64_t)h.ram_bytes + SRAM_SIZE + h.sound_bytes + h.fdd_cap[0] + h.fdd_cap[1] + h.hdd_len) return 0;
+    p = in.data + sizeof(h);
+#define TAKE(field, size) \
+    do { if (size) { next.field = (uint8_t *)state_alloc((size_t)(size)); \
+         if (!next.field) { slot_dispose(&next); return 0; } \
+         memcpy(next.field, p, (size_t)(size)); p += (size); } } while (0)
+    TAKE(ram, h.ram_bytes);
+    TAKE(sram, SRAM_SIZE);
+    TAKE(sound, h.sound_bytes);
+    TAKE(fdd[0], h.fdd_cap[0]);
+    TAKE(fdd[1], h.fdd_cap[1]);
+    TAKE(hdd, h.hdd_len);
+#undef TAKE
+    next.ram_bytes = h.ram_bytes;
+    next.sound_bytes = (int)h.sound_bytes;
+    next.hdd_len = (int)h.hdd_len;
+    next.hdd_loaded = h.hdd_loaded;
+    next.sasi_reset_req = h.sasi_reset_req;
+    for (drive = 0; drive < 2; drive++) {
+        next.fdd_cap[drive] = h.fdd_cap[drive];
+        next.fdd_len[drive] = h.fdd_len[drive];
+        next.fdd_kind[drive] = h.fdd_kind[drive];
+        next.fdd_loaded[drive] = h.fdd_loaded[drive];
+        next.fdd_trk[drive] = h.fdd_trk[drive];
+        next.fdd_cur[drive] = h.fdd_cur[drive];
+        next.fdd_d88_top[drive] = h.fdd_d88_top[drive];
+        next.fdd_d88_cur[drive] = h.fdd_d88_cur[drive];
+        next.fdd_delay[drive] = h.fdd_delay[drive];
+    }
+    next.fdd_media_enable = h.fdd_media_enable;
+    next.fdd_media_pending = h.fdd_media_pending;
+    next.ppu_phase = h.ppu_phase;
+    next.io = h.io;
+    next.version = ARCL_SLOT_VERSION;
+    next.valid = true;
+    if (!slot_check(&next)) { slot_dispose(&next); return 0; }
+    old = *slot;
+    if (++g_state_generation == 0) ++g_state_generation;
+    next.generation = g_state_generation;
+    *slot = next;
+    slot_dispose(&old);
+    return 1;
+}
+
 #define AUDIO_CAP_RATE 44100
 #define AUDIO_CAP_SECONDS 60
 #define AUDIO_SILENCE_PEAK 256

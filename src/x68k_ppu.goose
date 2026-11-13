@@ -27,12 +27,13 @@ struct X68kPPU {
 }
 
 fn pal_text_idx(mmu: M68kMMU&, idx: i32) -> u16 {
-    let i = idx & 255;
-    let o = 0x200 + i * 2;
-    return ((mmu.pal[o] as u16) << 8) | (mmu.pal[o + 1]);
+    // テキストパレットは pal の 0x200 から。マスクは境界検査を外すためで、値は変わらない。
+    let o = 0x200 + (idx & 255) * 2;
+    return ((mmu.pal[o & 0x3FF] as u16) << 8) | (mmu.pal[(o + 1) & 0x3FF]);
 }
 
 fn ppu_sprites_to_line(ppu: X68kPPU&, mmu: M68kMMU&, pri: i32, width: i32, sy: i32) {
+    assert(width >= 0 && width <= 1024);
     let crtc_hstart = crtc_word(mmu, CRTC_HSTART) & 1023;
     let crtc_vstart = crtc_word(mmu, CRTC_VSTART) & 1023;
     let reg0d: i32 = mmu.crtc_regs[0x0D];
@@ -178,6 +179,7 @@ fn ppu_draw_bg_map(ppu: X68kPPU&, mmu: M68kMMU&, screen_w: i32, sy: i32, scroll_
 }
 
 fn ppu_bg_plane(ppu: X68kPPU&, mmu: M68kMMU&, which: i32, width: i32, sy: i32, ng: bool) {
+    assert(width >= 0 && width <= 1024);
     let r0 = mmu.crtc_regs;
     let hstart = (((r0[0x04] as i32) << 8) | (r0[0x05])) & 1023;
     let vstart = (((r0[0x0C] as i32) << 8) | (r0[0x0D])) & 1023;
@@ -208,6 +210,7 @@ fn ppu_clear_front(ppu: X68kPPU&) {
 }
 
 fn ppu_bg_line_clear(ppu: X68kPPU&, mmu: M68kMMU&, width: i32, opaq: bool) {
+    assert(width >= 0 && width <= 1024);
     let fill = pal_text_idx(mmu, 0);
     var i: i32 = LINE_PAD;
     let end = width + LINE_PAD;
@@ -219,6 +222,7 @@ fn ppu_bg_line_clear(ppu: X68kPPU&, mmu: M68kMMU&, width: i32, opaq: bool) {
 }
 
 fn ppu_bg_fill_pal0(ppu: X68kPPU&, mmu: M68kMMU&, width: i32) {
+    assert(width >= 0 && width <= 1024);
     let fill = pal_text_idx(mmu, 0);
     var i: i32 = LINE_PAD;
     let end = width + LINE_PAD;
@@ -229,6 +233,7 @@ fn ppu_bg_fill_pal0(ppu: X68kPPU&, mmu: M68kMMU&, width: i32) {
 }
 
 fn ppu_bg_draw_line(ppu: X68kPPU&, mmu: M68kMMU&, width: i32, sy: i32, opaq: bool, ng: bool) {
+    assert(width >= 0 && width <= 1024);
     ppu_bg_line_clear(ppu, mmu, width, opaq);
     ppu_sprites_to_line(ppu, mmu, 1, width, sy);
     ppu_bg_plane(ppu, mmu, 1, width, sy, ng);
@@ -271,8 +276,7 @@ fn gvram_le(mmu: M68kMMU&, off: u32) -> u16 {
 }
 
 fn pal_grph(mmu: M68kMMU&, idx: i32) -> u16 {
-    let i = idx & 255;
-    let o = i * 2;
+    let o: i64 = (idx & 255) * 2;
     return ((mmu.pal[o] as u16) << 8) | (mmu.pal[o + 1]);
 }
 
@@ -305,6 +309,7 @@ fn ppu_grp4_store(ppu: X68kPPU&, mmu: M68kMMU&, sx: i32, v: u16, high: bool, opa
 }
 
 fn ppu_grp4_line(ppu: X68kPPU&, mmu: M68kMMU&, page: i32, sy: i32, width: i32, opaq: bool) {
+    assert(width >= 0 && width <= 1024);
     let p = page & 3;
     let scroll_x = crtc_pair(mmu, grp_xhi(p)) & grp_mask(p);
     let scroll_y = crtc_pair(mmu, grp_yhi(p)) & grp_mask(p);
@@ -332,6 +337,7 @@ fn ppu_grp4_line(ppu: X68kPPU&, mmu: M68kMMU&, page: i32, sy: i32, width: i32, o
 }
 
 fn ppu_grp4_sp_line(ppu: X68kPPU&, mmu: M68kMMU&, page: i32, sy: i32, width: i32) {
+    assert(width >= 0 && width <= 1024);
     let p = page & 3;
     let scroll_x = crtc_pair(mmu, grp_xhi(p)) & grp_mask(p);
     let scroll_y = crtc_pair(mmu, grp_yhi(p)) & grp_mask(p);
@@ -362,6 +368,7 @@ fn ppu_grp4_sp_line(ppu: X68kPPU&, mmu: M68kMMU&, page: i32, sy: i32, width: i32
 }
 
 fn ppu_grp4_tr_line(ppu: X68kPPU&, mmu: M68kMMU&, page: i32, sy: i32, width: i32, opaq: bool) {
+    assert(width >= 0 && width <= 1024);
     let p = page & 3;
     let scroll_x = crtc_pair(mmu, grp_xhi(p)) & grp_mask(p);
     let scroll_y = crtc_pair(mmu, grp_yhi(p)) & grp_mask(p);
@@ -398,6 +405,7 @@ fn ppu_grp4_tr_line(ppu: X68kPPU&, mmu: M68kMMU&, page: i32, sy: i32, width: i32
 }
 
 fn ppu_grp4h_line(ppu: X68kPPU&, mmu: M68kMMU&, sy: i32, width: i32, special: bool) {
+    assert(width >= 0 && width <= 1024);
     let scroll_x = crtc_pair(mmu, CRTC_GRP_X) & 1023;
     let scroll_y = crtc_pair(mmu, CRTC_GRP_Y) & 1023;
     var y = scroll_y + (sy as u32);
@@ -442,6 +450,7 @@ fn ppu_grp4h_line(ppu: X68kPPU&, mmu: M68kMMU&, sy: i32, width: i32, special: bo
 }
 
 fn ppu_grp8_line(ppu: X68kPPU&, mmu: M68kMMU&, page: i32, sy: i32, width: i32, opaq: bool) {
+    assert(width >= 0 && width <= 1024);
     let p = page & 1;
     let p0 = p * 2;
     let p1 = p0 + 1;
@@ -478,6 +487,7 @@ fn ppu_grp8_line(ppu: X68kPPU&, mmu: M68kMMU&, page: i32, sy: i32, width: i32, o
 }
 
 fn ppu_grp8_sp_line(ppu: X68kPPU&, mmu: M68kMMU&, page: i32, sy: i32, width: i32) {
+    assert(width >= 0 && width <= 1024);
     let p = page & 1;
     let p0 = p * 2;
     let p1 = p0 + 1;
@@ -520,6 +530,7 @@ fn pal16_adr(b: i32) -> i32 {
 }
 
 fn ppu_grp16_line(ppu: X68kPPU&, mmu: M68kMMU&, sy: i32, width: i32) {
+    assert(width >= 0 && width <= 1024);
     var y = (crtc_pair(mmu, CRTC_GRP_Y) & 1023) + (sy as u32);
     if (mmu.crtc_regs[0x29] & 0x1C) == 0x1C { y = y + (sy as u32); }
     y = (y & 0x1FF) << 10;
@@ -549,6 +560,7 @@ fn ppu_grp16_line(ppu: X68kPPU&, mmu: M68kMMU&, sy: i32, width: i32) {
 }
 
 fn ppu_grp16_sp_line(ppu: X68kPPU&, mmu: M68kMMU&, sy: i32, width: i32) {
+    assert(width >= 0 && width <= 1024);
     var y = (crtc_pair(mmu, CRTC_GRP_Y) & 1023) + (sy as u32);
     if (mmu.crtc_regs[0x29] & 0x1C) == 0x1C { y = y + (sy as u32); }
     y = (y & 0x1FF) << 10;
@@ -576,6 +588,7 @@ fn ppu_grp16_sp_line(ppu: X68kPPU&, mmu: M68kMMU&, sy: i32, width: i32) {
 // グラフィック面を 1 ライン描く。戻り値は順に、通常のグラフィックを描いたか、半透明用の面を描いたか、
 // 特殊プライオリティ用の面を描いたか。
 fn ppu_grp_lines(ppu: X68kPPU&, mmu: M68kMMU&, sy: i32, width: i32) -> bool, bool, bool {
+    assert(width >= 0 && width <= 1024);
     let vc0 = mmu.vcreg[1];
     let vc1_1 = mmu.vcreg[0x101];
     let vc2_0 = mmu.vcreg[0x200];
@@ -674,6 +687,7 @@ fn scr_argb(ppu: X68kPPU&, i: i32, c: u32) {
 }
 
 fn ppu_blit_grp(ppu: X68kPPU&, width: i32, opaq: bool) {
+    assert(width >= 0 && width <= 1024);
     for i: i32 in width {
         if ppu.grp_mix[i] != 0 {
             scr_argb(ppu, i, ppu.grp_argb[i]);
@@ -684,12 +698,14 @@ fn ppu_blit_grp(ppu: X68kPPU&, width: i32, opaq: bool) {
 }
 
 fn ppu_blit_sp2(ppu: X68kPPU&, width: i32, opaq: bool) {
+    assert(width >= 0 && width <= 1024);
     for i: i32 in width {
         scr_raw(ppu, i, ppu.sp2[i], opaq);
     }
 }
 
 fn ppu_blit_bg(ppu: X68kPPU&, width: i32, opaq: bool, td: bool, flagbit: i32) {
+    assert(width >= 0 && width <= 1024);
     var i: i32 = 0;
     while i < width {
         let t = i + LINE_PAD;
@@ -703,6 +719,7 @@ fn ppu_blit_bg(ppu: X68kPPU&, width: i32, opaq: bool, td: bool, flagbit: i32) {
 }
 
 fn ppu_blit_text_tr(ppu: X68kPPU&, width: i32, opaq: bool) {
+    assert(width >= 0 && width <= 1024);
     for i: i32 in width {
         let t = i + LINE_PAD;
         let w = ppu.sp[i];
@@ -726,6 +743,7 @@ fn ppu_blit_text_tr(ppu: X68kPPU&, width: i32, opaq: bool) {
 }
 
 fn ppu_blit_bg_tr(ppu: X68kPPU&, width: i32, opaq: bool) {
+    assert(width >= 0 && width <= 1024);
     for i: i32 in width {
         let t = i + LINE_PAD;
         let w = ppu.sp[i];
@@ -747,6 +765,7 @@ fn ppu_blit_bg_tr(ppu: X68kPPU&, width: i32, opaq: bool) {
 }
 
 fn ppu_text_one_line(ppu: X68kPPU&, mmu: M68kMMU&, width: i32, sy: i32, opaq: bool) {
+    assert(width >= 0 && width <= 1024);
     let scroll_y = crtc_pair(mmu, CRTC_TEXT_Y) & 1023;
     let scroll_x = crtc_pair(mmu, CRTC_TEXT_X) & 1023;
     var vram_y = ((sy as u32) + scroll_y) & 1023;
@@ -796,6 +815,7 @@ fn ppu_text_one_line(ppu: X68kPPU&, mmu: M68kMMU&, width: i32, sy: i32, opaq: bo
 }
 
 fn ppu_compose_back(ppu: X68kPPU&, sy: i32, screen_w: i32, width: i32, gon: bool, ton: bool, bgon: bool, tron: bool, pron: bool, vc1_0: i32, vc2_0: i32) {
+    assert(width >= 0 && width <= 1024);
     for i: i32 in width {
         ppu.scr[i] = 0;
         ppu.scr_mix[i] = 0;

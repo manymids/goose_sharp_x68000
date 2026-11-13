@@ -84,6 +84,18 @@ fn session_load(emu: X68kEmulator&, slot: i32) -> bool {
     return state_restore(emu, STATE_SLOT, slot);
 }
 
+// いまの状態をスロットへ取り、同じ内容をファイルにも書く。
+fn session_save_file(emu: X68kEmulator&, slot: i32, path: const u8[:]) -> bool {
+    return session_save(emu, slot) && state_write_file(STATE_SLOT, slot, path);
+}
+
+// ファイルをスロットへ読み込み、その状態に戻す。
+fn session_load_file(emu: X68kEmulator&, slot: i32, path: const u8[:]) -> StateFileError {
+    let e = state_read_file(STATE_SLOT, slot, path);
+    if e != StateFileError.None { return e; }
+    return if session_load(emu, slot) { StateFileError.None } else { StateFileError.Rejected };
+}
+
 fn snapshot_find(emu: X68kEmulator&, name: const u8[:]) -> i32 {
     if name.len == 0 || name.len > SNAPSHOT_NAME_MAX { return -1; }
     for idx: i32 in SNAPSHOT_SLOTS {

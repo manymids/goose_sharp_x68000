@@ -13,6 +13,7 @@ import .x68k_input;
 import .x68k_fdc;
 import .x68k_dmac;
 import .x68k_rtc;
+import .x68k_state;
 
 var g_checks = 0;
 var g_failures = 0;
@@ -367,6 +368,14 @@ fn test_input() {
     check("joypad trg2", joy_mask("b") == 0x40);
 }
 
+// 結果相で残っているバイト数。結果相でなければ -1。
+fn result_left(fdc: X68kFDC&) -> i32 {
+    match fdc.phase {
+        Result r => r.left,
+        _ => -1,
+    }
+}
+
 fn test_fdc_tables() {
     check("ReadData takes 8 parameter bytes", fdc_cmd_prm_len(FDC_READ_DATA) == 8);
     check("ReadData returns 7 result bytes", fdc_cmd_rsp_len(FDC_READ_DATA) == 7);
@@ -380,14 +389,25 @@ fn test_fdc_tables() {
     // ドライブを選んでいない Seek は「ドライブなし」で終わり、SenseIntStatus で読める。
     var fdc = X68kFDC {};
     fdc_write(fdc, 7, 0x00);
+    check("idle: ready, not busy", fdc_read(fdc, 1) == 0x80 && fdc.phase == FdcPhase.Idle);
     fdc_write(fdc, 3, 0x0F);
+    check("command phase: busy, waiting for the CPU", fdc_read(fdc, 1) == 0x90);
     fdc_write(fdc, 3, 0x00);
+    check("still in the command phase", fdc_read(fdc, 1) == 0x90);
     fdc_write(fdc, 3, 0x05);
+    check("Seek has no result phase", fdc.phase == FdcPhase.Idle);
     check("Seek raises the interrupt", fdc.int_pending);
     fdc_write(fdc, 3, 0x08);
+    check("result phase: data for the CPU", result_left(fdc) == 2 && fdc_read(fdc, 1) == 0xD0);
     check("peeking the result does not consume it", fdc_peek(fdc, 3) == 0x48 && fdc_peek(fdc, 3) == 0x48);
     check("SenseIntStatus: ST0 abnormal, not ready", fdc_read(fdc, 3) == 0x48);
-    check("reading moves on to the cylinder byte", fdc_peek(fdc, 3) == 0x00 && fdc.rsp_left == 1);
+    check("reading moves on to the cylinder byte", fdc_peek(fdc, 3) == 0x00 && result_left(fdc) == 1);
+    fdc_read(fdc, 3);
+    check("the last result byte returns to idle", fdc.phase == FdcPhase.Idle);
+    // 結果を読み残していても、次のコマンドを受け付ける
+    fdc_write(fdc, 3, 0x08);
+    fdc_write(fdc, 3, 0x0F);
+    check("a new command may interrupt the result phase", fdc_read(fdc, 1) == 0x90 && result_left(fdc) == -1);
 }
 
 // デバッガ用の読み出しは、読むと状態が変わるレジスタを進めない。
@@ -573,6 +593,32 @@ fn test_disasm() {
     check_dis([0x4E7A, 0x0002], "DC.W $4e7a", 2);
 }
 
+// ステートファイルの読み込みは、C 側へ渡す前に形式を確かめて弾く。
+fn test_state_file() {
+    var empty: u8[>..] = [];
+    check("empty data is not a state file", state_import(STATE_SLOT, 0, empty[..]) == StateFileError.NotAStateFile);
+    var text: u8[>..] = [];
+    text.append("this is not a state file");
+    check("text is not a state file", state_import(STATE_SLOT, 0, text[..]) == StateFileError.NotAStateFile);
+
+    // 正しいヘッダだけがあって続きが無いもの
+    var header: StateFileHeader[>..] = [];
+    header.push(StateFileHeader { magic: STATE_FILE_MAGIC, version: STATE_VERSION });
+    var image: u8[>..] = [];
+    to_bytes(header, image);
+    check("a header alone is damaged", state_import(STATE_SLOT, 0, image[..]) == StateFileError.Corrupt);
+
+    var old: StateFileHeader[>..] = [];
+    old.push(StateFileHeader { magic: STATE_FILE_MAGIC, version: STATE_VERSION - 1 });
+    var old_image: u8[>..] = [];
+    to_bytes(old, old_image);
+    check("another version is refused", state_import(STATE_SLOT, 0, old_image[..]) == StateFileError.WrongVersion);
+    check("a slot outside the bank is refused", state_import(STATE_SLOT, 99, image[..]) == StateFileError.Rejected);
+
+    var h: u64 = state_hash(STATE_HASH_SEED, "a");
+    check("FNV-1a of \"a\"", h == 0xAF63DC4C8601EC8C);
+}
+
 fn main() {
     test_flag_helpers();
     test_conditions();
@@ -586,6 +632,7 @@ fn main() {
     test_dmac();
     test_rtc();
     test_disasm();
+    test_state_file();
     print(g_checks - g_failures, " / ", g_checks, " checks passed");
     if g_failures > 0 { exit(1); }
 }

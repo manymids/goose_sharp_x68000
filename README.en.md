@@ -159,7 +159,9 @@ The layers exposed by default are L0 and L1. To use debugging, device observatio
 | Console (L1) | `arcl_console_read`, `arcl_command`, `arcl_mount` |
 | Debugging (L2) | `arcl_registers`, `arcl_read_mem`, `arcl_write_mem`, `arcl_step`, `arcl_breakpoint`, `arcl_disasm` |
 | Device observation (L3) | `arcl_video`, `arcl_irq`, `arcl_dma`, `arcl_vram`, `x68k_opm` |
-| Save state | `arcl_save_state`, `arcl_load_state`, `arcl_snapshot` / `arcl_rewind` (L4) |
+| Save state | `arcl_save_state`, `arcl_load_state` (with `path`, save to / restore from a file), `arcl_snapshot` / `arcl_rewind` (L4) |
+
+A state file is about 16 MB plus the size of the inserted FD/HDD images (about 56 MB with a 40 MB HDD). It contains the media, so loading one needs no disk image. It can be read only by the build that wrote it. A damaged file, or one from another version, is refused with a reason and leaves the machine untouched.
 
 Check the exact set of exposed tools and their arguments via `tools/list` on the connection. Regular save states use 10 slots numbered 0–9, named snapshots allow up to 32 entries, and rewind holds 8 entries. These are all in-memory saves and do not support resuming from a file after the process has exited.
 
@@ -241,7 +243,7 @@ goose build .\src\test_core.goose -o .\test_core.exe
 .\test_core.exe
 ```
 
-It prints `263 / 263 checks passed` when everything passes, and reports each failure and exits with status 1 otherwise. Building with `--debug` also enables the overflow and range checks.
+It prints `276 / 276 checks passed` when everything passes, and reports each failure and exits with status 1 otherwise. Building with `--debug` also enables the overflow and range checks.
 
 ## Troubleshooting and known limitations
 
@@ -249,7 +251,7 @@ It prints `263 / 263 checks passed` when everything passes, and reports each fai
 - If the GUI starts with an unintended disk, either launch with `--no-disk` or move the INI file aside after quitting. ARCL does not read the INI.
 - If no audio device is available, the emulator warns and runs silently.
 - The current file dialog and path handling have Win32 character-encoding and `MAX_PATH` constraints. If you run into path issues, try testing with a short, alphanumeric folder name.
-- The emulator assumes a single registered machine instance. Core sharing across multiple instances, persistent save-state storage, a mouse, and full compatibility with every VRAM mode/piece of software are unsupported or unverified.
+- The emulator assumes a single registered machine instance. Core sharing across multiple instances, a mouse, and full compatibility with every VRAM mode/piece of software are unsupported or unverified.
 
 When reporting a bug, please include the build type, Windows environment, launch arguments, image format, reproduction steps, and logs or screenshots. There's no need to attach the BIOS or the game itself.
 

@@ -75,7 +75,8 @@ let CRTC_GRP_X = 0x18;  // R12 グラフィックスクロール X (ページ 0)
 let CRTC_GRP_Y = 0x1A;  // R13 グラフィックスクロール Y (ページ 0)
 
 fn crtc_word(mmu: M68kMMU&, hi: i32) -> i32 {
-    return ((mmu.crtc_regs[hi] as i32) << 8) | mmu.crtc_regs[hi + 1];
+    // crtc_regs は 64 バイト。マスクしておくと境界検査が要らない。
+    return ((mmu.crtc_regs[hi & 63] as i32) << 8) | mmu.crtc_regs[(hi + 1) & 63];
 }
 
 fn mmu_init(mmu: M68kMMU&) {
@@ -139,12 +140,13 @@ fn gvram_set(mmu: M68kMMU&, i: u32, val: u8) {
 }
 
 fn gvram_and16(mmu: M68kMMU&, off: u32, mask: u16) {
-    if off + 1 >= VRAM_BYTES { return; }
-    let lo: u16 = mmu.gvram[off as i64];
-    let hi: u16 = mmu.gvram[(off + 1) as i64];
+    let o: i64 = off;
+    if o + 1 >= VRAM_BYTES { return; }
+    let lo: u16 = mmu.gvram[o];
+    let hi: u16 = mmu.gvram[o + 1];
     let next = (lo | (hi << 8)) & mask;
-    mmu.gvram[off as i64] = next as! u8;
-    mmu.gvram[(off + 1) as i64] = (next >> 8) as! u8;
+    mmu.gvram[o] = next as! u8;
+    mmu.gvram[o + 1] = (next >> 8) as! u8;
 }
 
 fn mmu_gvram_fast_clear(mmu: M68kMMU&, reg2b: u8, reg29: u8, scroll_x: u32, scroll_y: u32) {
@@ -467,12 +469,12 @@ fn mmu_io_read8(mmu: M68kMMU&, a: u32) -> u8 {
 
     // 0x00E82000 - 0x00E823FF: Palette RAM (1024 bytes)
     if a >= 0xE82000 && a < 0xE82400 {
-        return mmu.pal[(a - 0xE82000) as i64];
+        return mmu.pal[a & 0x3FF];
     }
 
     // 0x00E82400 - 0x00E827FF: Video Controller Registers
     if a >= 0xE82400 && a < 0xE82800 {
-        return mmu.vcreg[(a - 0xE82400) as i64];
+        return mmu.vcreg[a & 0x3FF];
     }
 
     // 0x00E84000: DMAC
@@ -565,17 +567,17 @@ fn mmu_io_read8(mmu: M68kMMU&, a: u32) -> u8 {
 
     // 0x00EB0000 - 0x00EB07FF: Sprite Registers
     if a >= 0xEB0000 && a < 0xEB0800 {
-        return mmu.sprite[(a - 0xEB0000) as i64];
+        return mmu.sprite[a & 0x7FF];
     }
 
     // 0x00EB0800 - 0x00EB081F: BG Control Registers
     if a >= 0xEB0800 && a < 0xEB0820 {
-        return mmu.bgreg[(a - 0xEB0800) as i64];
+        return mmu.bgreg[a & 0x1F];
     }
 
     // 0x00EB8000 - 0x00EBFFFF: BG / PCG RAM
     if a >= 0xEB8000 && a < 0xEC0000 {
-        return mmu.bgram[(a - 0xEB8000) as i64];
+        return mmu.bgram[a & 0x7FFF];
     }
 
     // 0xED0000 - 0xED3FFF: SRAM (16KB)
@@ -622,7 +624,7 @@ fn mmu_read8(mmu: M68kMMU&, addr: u32) -> u8 {
 
     // 0xE00000 - 0xE7FFFF: TVRAM (512KB)
     if a < 0xE80000 {
-        return mmu.tvram[(a - 0xE00000) as i64];
+        return mmu.tvram[a & 0x7FFFF];
     }
 
     // 0xE80000 以上: I/O、スプライト / BG、SRAM、ROM
@@ -677,20 +679,20 @@ fn mmu_io_write8(mmu: M68kMMU&, a: u32, val: u8) {
 
     // 0x00E82000 - 0x00E823FF: Palette RAM (1024 bytes)
     if a >= 0xE82000 && a < 0xE82400 {
-        mmu.pal[(a - 0xE82000) as i64] = val;
+        mmu.pal[a & 0x3FF] = val;
         return;
     }
 
     // 0x00E82400 - 0x00E827FF: Video Controller Registers
     if a >= 0xE82400 && a < 0xE82800 {
-        mmu.vcreg[(a - 0xE82400) as i64] = val;
+        mmu.vcreg[a & 0x3FF] = val;
         return;
     }
 
     // 0x00E84000 - 0x00E840FF: DMAC (HD63450)
     if (a & 0xFFFF00) == 0xE84000 {
         dmac_write(mmu.dmac, a, val);
-        if (mmu.dmac.ch[0].csr & 0x08) != 0 && mmu.fdc.buf_len > 0 {
+        if (mmu.dmac.ch[0].csr & 0x08) != 0 && fdc_exec_len(mmu.fdc) > 0 {
             let cpu_access = mmu.cpu_access;
             mmu.cpu_access = false;
             dmac_exec_fdc(mmu.dmac, mmu.fdc, mmu);
@@ -759,7 +761,7 @@ fn mmu_io_write8(mmu: M68kMMU&, a: u32, val: u8) {
     if (a & 0xFFFF00) == 0xE94000 {
         let reg = (a & 0x07) as i32;
         fdc_write(mmu.fdc, reg, val);
-        if (mmu.dmac.ch[0].csr & 0x08) != 0 && mmu.fdc.buf_len > 0 {
+        if (mmu.dmac.ch[0].csr & 0x08) != 0 && fdc_exec_len(mmu.fdc) > 0 {
             let cpu_access = mmu.cpu_access;
             mmu.cpu_access = false;
             dmac_exec_fdc(mmu.dmac, mmu.fdc, mmu);
@@ -816,13 +818,13 @@ fn mmu_io_write8(mmu: M68kMMU&, a: u32, val: u8) {
 
     // 0x00EB0000 - 0x00EB07FF: Sprite Registers
     if a >= 0xEB0000 && a < 0xEB0800 {
-        mmu.sprite[(a - 0xEB0000) as i64] = val;
+        mmu.sprite[a & 0x7FF] = val;
         return;
     }
 
     // 0x00EB0800 - 0x00EB081F: BG Control Registers
     if a >= 0xEB0800 && a < 0xEB0820 {
-        mmu.bgreg[(a - 0xEB0800) as i64] = val;
+        mmu.bgreg[a & 0x1F] = val;
         return;
     }
 

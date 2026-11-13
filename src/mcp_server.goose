@@ -1249,12 +1249,27 @@ fn mcp_tool_save_state(emu: X68kEmulator&, args: const u8[:], id_buf: const u8[:
         mcp_write_text(id_buf, "slot must be between 0 and 9", true);
         return;
     }
+    // path があれば、スロットに加えてファイルにも保存する。
+    var path: u8[>..] = [];
+    let to_file = extract_json_str(args, "path", path);
+    if to_file && path.len == 0 {
+        mcp_write_text(id_buf, "path must not be empty", true);
+        return;
+    }
     if !session_save(emu, slot) {
         mcp_write_text(id_buf, "failed to allocate save-state buffer", true);
         return;
     }
+    if to_file && !state_write_file(STATE_SLOT, slot, path) {
+        mcp_write_text(id_buf, "the state was saved to the slot, but the file could not be written", true);
+        return;
+    }
     var obj: u8[>..] = [];
     format(obj, "{\"slot\":", slot);
+    if to_file {
+        obj.append(",\"path\":");
+        json_append_quoted(obj, path);
+    }
     append_machine(obj, emu, 0, false, true);
     obj.append("}");
     mcp_write_object(id_buf, obj);
@@ -1266,12 +1281,25 @@ fn mcp_tool_load_state(emu: X68kEmulator&, args: const u8[:], id_buf: const u8[:
         mcp_write_text(id_buf, "slot must be between 0 and 9", true);
         return;
     }
-    if !session_load(emu, slot) {
+    // path があれば、ファイルをスロットへ読み込んでから戻す。
+    var path: u8[>..] = [];
+    let from_file = extract_json_str(args, "path", path);
+    if from_file {
+        let e = session_load_file(emu, slot, path);
+        if e != StateFileError.None {
+            mcp_write_text(id_buf, state_file_error_text(e), true);
+            return;
+        }
+    } else if !session_load(emu, slot) {
         mcp_write_text(id_buf, "save-state slot is empty or incompatible", true);
         return;
     }
     var obj: u8[>..] = [];
     format(obj, "{\"slot\":", slot);
+    if from_file {
+        obj.append(",\"path\":");
+        json_append_quoted(obj, path);
+    }
     append_machine(obj, emu, 0, false, true);
     obj.append("}");
     mcp_write_object(id_buf, obj);
@@ -1462,8 +1490,8 @@ fn mcp_tools_list(id_buf: const u8[:]) {
         "{\"name\":\"arcl_resume\",\"description\":\"Resume continuous emulation\",\"inputSchema\":{\"type\":\"object\",\"properties\":{}}},",
         "{\"name\":\"arcl_status\",\"description\":\"Read machine status\",\"inputSchema\":{\"type\":\"object\",\"properties\":{}}},",
         "{\"name\":\"arcl_reset\",\"description\":\"Reset the X68000 CPU and MMU\",\"inputSchema\":{\"type\":\"object\",\"properties\":{}}},",
-        "{\"name\":\"arcl_save_state\",\"description\":\"Save emulator state in slot\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"slot\":{\"type\":\"integer\"}}}},",
-        "{\"name\":\"arcl_load_state\",\"description\":\"Restore emulator state from slot\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"slot\":{\"type\":\"integer\"}}}}");
+        "{\"name\":\"arcl_save_state\",\"description\":\"Save emulator state in slot; with path, also write a state file\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"slot\":{\"type\":\"integer\"},\"path\":{\"type\":\"string\"}}}},",
+        "{\"name\":\"arcl_load_state\",\"description\":\"Restore emulator state from slot; with path, also read it from a state file\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"slot\":{\"type\":\"integer\"},\"path\":{\"type\":\"string\"}}}}");
     if (g_mcp_layers & MCP_LAYER_L0) != 0 {
         resp.append(",{\"name\":\"arcl_screenshot\",\"description\":\"Capture framebuffer screenshot\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\"}}}}");
         resp.append(",{\"name\":\"arcl_key\",\"description\":\"Press, release, or tap one keyboard key\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"key\":{\"type\":\"string\"},\"action\":{\"type\":\"string\"}}}}");

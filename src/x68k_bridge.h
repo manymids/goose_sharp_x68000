@@ -90,6 +90,9 @@ void c_ram_bind(uint8_t *ram);
 uint8_t *c_ram_base(void);
 void x68k_mem_destroy(void);
 void c_sram_set_persist(int enabled);
+int64_t c_state_export_size(int bank, int idx);
+int64_t c_state_export(int bank, int idx, X68kByteView out);
+int c_state_import(int bank, int idx, X68kByteView in);
 
 uint8_t c_mem_read_tvram(int32_t off);
 

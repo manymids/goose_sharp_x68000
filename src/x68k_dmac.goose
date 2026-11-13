@@ -179,18 +179,18 @@ fn dmac_exec_fdc(dmac: X68kDMAC&, fdc: X68kFDC&, mmu: M68kMMU&) -> bool {
     if (dmac.ch[0].csr & 0x08) == 0 {
         return false;
     }
-    if fdc.buf_len <= 0 {
+    if fdc_exec_len(fdc) <= 0 {
         return false;
     }
 
     // 1 セクタ転送するたびに FDC_NextTrack。MTC が残っていれば次セクタも続ける。
-    while (dmac.ch[0].csr & 0x08) != 0 && fdc.buf_len > 0 {
+    while (dmac.ch[0].csr & 0x08) != 0 && fdc_exec_len(fdc) > 0 {
         // WriteData 実行中はメモリ → FDC。OCR bit7 (デバイス → メモリ) が立っていれば方向が合わない。
-        let to_disk = fdc.writing;
+        let to_disk = fdc_is_writing(fdc);
         if to_disk && (dmac.ch[0].ocr & 0x80) != 0 {
             return false;
         }
-        for i in fdc.buf_len {
+        for i in fdc_exec_len(fdc) {
             let addr = dmac.ch[0].mar & ADDR_MASK;
             let b = fdc.data_buf[i];
             if to_disk {
@@ -210,9 +210,9 @@ fn dmac_exec_fdc(dmac: X68kDMAC&, fdc: X68kFDC&, mmu: M68kMMU&) -> bool {
             }
         }
 
-        // MTC の減算（ワード転送の場合は buf_len / 2、バイト転送の場合は buf_len）
+        // MTC の減算（ワード転送の場合は セクタ長 / 2、バイト転送の場合はセクタ長）
         let size_code = (dmac.ch[0].ocr >> 4) & 3;
-        let units = if size_code == 1 { (fdc.buf_len / 2) as! u16 } else { fdc.buf_len as! u16 };
+        let units = if size_code == 1 { (fdc_exec_len(fdc) / 2) as! u16 } else { fdc_exec_len(fdc) as! u16 };
         if dmac.ch[0].mtc >= units {
             dmac.ch[0].mtc -= units;
         } else {
