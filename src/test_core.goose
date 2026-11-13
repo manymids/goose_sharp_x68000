@@ -7,6 +7,7 @@ import .m68k_types;
 import .m68k_cpu;
 import .m68k_mmu;
 import .m68k_exec;
+import .m68k_disasm;
 import .x68k_ram;
 import .x68k_input;
 import .x68k_fdc;
@@ -464,6 +465,114 @@ fn test_rtc() {
     check("writing the month re-dates the clock", rtc_digit(rtc, 9) == 2 && rtc_digit(rtc, 4) == 1);
 }
 
+// CODE に words を置いて 1 命令を逆アセンブルし、文字列と長さを確かめる。
+fn check_dis(words: u16[:], want: const u8[:], want_len: i32) {
+    fresh();
+    poke(CODE, words);
+    var text: u8[>..] = [];
+    let length = m68k_disasm(g_mmu, CODE, text);
+    g_checks++;
+    if text != want || length != want_len {
+        g_failures++;
+        print("FAIL: disasm: got \"", text, "\" (", length, " bytes), want \"", want, "\" (", want_len, " bytes)");
+    }
+}
+
+fn test_disasm() {
+    check_dis([0x4E71], "NOP", 2);
+    check_dis([0x4E75], "RTS", 2);
+    check_dis([0x4E73], "RTE", 2);
+    check_dis([0x4E72, 0x2000], "STOP #$2000", 4);
+    check_dis([0x4E40], "TRAP #0", 2);
+    check_dis([0x4E4F], "TRAP #15", 2);
+    check_dis([0x4AFC], "ILLEGAL", 2);
+    check_dis([0x70FF], "MOVEQ #-$1,D0", 2);
+    check_dis([0x7C7F], "MOVEQ #$7f,D6", 2);
+    check_dis([0x203C, 0x1234, 0x5678], "MOVE.L #$12345678,D0", 6);
+    check_dis([0x303C, 0x8001], "MOVE.W #$8001,D0", 4);
+    check_dis([0x103C, 0x00FF], "MOVE.B #$ff,D0", 4);
+    check_dis([0x207C, 0x0000, 0x2000], "MOVEA.L #$00002000,A0", 6);
+    check_dis([0x2080], "MOVE.L D0,(A0)", 2);
+    check_dis([0x2210], "MOVE.L (A0),D1", 2);
+    check_dis([0x12D8], "MOVE.B (A0)+,(A1)+", 2);
+    check_dis([0x3F00], "MOVE.W D0,-(A7)", 2);
+    check_dis([0x3028, 0x0010], "MOVE.W $10(A0),D0", 4);
+    check_dis([0x3028, 0xFFFE], "MOVE.W -$2(A0),D0", 4);
+    check_dis([0x3030, 0x0800], "MOVE.W $0(A0,D0.L),D0", 4);
+    check_dis([0x3030, 0x90FC], "MOVE.W -$4(A0,A1.W),D0", 4);
+    check_dis([0x3038, 0x0400], "MOVE.W ($000400).W,D0", 4);
+    check_dis([0x33C0, 0x00E8, 0x0028], "MOVE.W D0,($00e80028).L", 6);
+    check_dis([0x303A, 0x0010], "MOVE.W $001012(PC),D0", 4);
+    check_dis([0x43E8, 0x0010], "LEA $10(A0),A1", 4);
+    check_dis([0x4EB9, 0x0000, 0x3000], "JSR ($00003000).L", 6);
+    check_dis([0x4ED0], "JMP (A0)", 2);
+    check_dis([0x4879, 0x0001, 0x0000], "PEA ($00010000).L", 6);
+    check_dis([0x4E56, 0xFFF8], "LINK A6,#-$8", 4);
+    check_dis([0x4E5E], "UNLK A6", 2);
+    check_dis([0x4E60], "MOVE A0,USP", 2);
+    check_dis([0x46FC, 0x2700], "MOVE #$2700,SR", 4);
+    check_dis([0x40C0], "MOVE SR,D0", 2);
+    check_dis([0x4840], "SWAP D0", 2);
+    check_dis([0x4880], "EXT.W D0", 2);
+    check_dis([0x48C1], "EXT.L D1", 2);
+    check_dis([0x4480], "NEG.L D0", 2);
+    check_dis([0x4600], "NOT.B D0", 2);
+    check_dis([0x4240], "CLR.W D0", 2);
+    check_dis([0x4A80], "TST.L D0", 2);
+    check_dis([0x48E7, 0xFFFE], "MOVEM.L D0-D7/A0-A6,-(A7)", 4);
+    check_dis([0x4CDF, 0x7FFF], "MOVEM.L (A7)+,D0-D7/A0-A6", 4);
+    check_dis([0x48E7, 0xC080], "MOVEM.L D0-D1/A0,-(A7)", 4);
+    check_dis([0xD081], "ADD.L D1,D0", 2);
+    check_dis([0xD001], "ADD.B D1,D0", 2);
+    check_dis([0x9041], "SUB.W D1,D0", 2);
+    check_dis([0xD150], "ADD.W D0,(A0)", 2);
+    check_dis([0xD181], "ADDX.L D1,D0", 2);
+    check_dis([0x9308], "SUBX.B -(A0),-(A1)", 2);
+    check_dis([0xD1C0], "ADDA.L D0,A0", 2);
+    check_dis([0x90FC, 0x0010], "SUBA.W #$0010,A0", 4);
+    check_dis([0xB081], "CMP.L D1,D0", 2);
+    check_dis([0xB1C1], "CMPA.L D1,A0", 2);
+    check_dis([0xB308], "CMPM.B (A0)+,(A1)+", 2);
+    check_dis([0xB380], "EOR.L D1,D0", 2);
+    check_dis([0xC0C1], "MULU D1,D0", 2);
+    check_dis([0xC1C1], "MULS D1,D0", 2);
+    check_dis([0x80C1], "DIVU D1,D0", 2);
+    check_dis([0x81FC, 0x0007], "DIVS #$0007,D0", 4);
+    check_dis([0xC101], "ABCD D1,D0", 2);
+    check_dis([0xC141], "EXG D0,D1", 2);
+    check_dis([0xC189], "EXG D0,A1", 2);
+    check_dis([0xC081], "AND.L D1,D0", 2);
+    check_dis([0x8081], "OR.L D1,D0", 2);
+    check_dis([0x0640, 0x0010], "ADDI.W #$0010,D0", 4);
+    check_dis([0x0C80, 0x0000, 0x0005], "CMPI.L #$00000005,D0", 6);
+    check_dis([0x0200, 0x000F], "ANDI.B #$0f,D0", 4);
+    check_dis([0x007C, 0x0700], "ORI #$0700,SR", 4);
+    check_dis([0x023C, 0x00FE], "ANDI #$fe,CCR", 4);
+    check_dis([0x0800, 0x0007], "BTST #$7,D0", 4);
+    check_dis([0x08D0, 0x0003], "BSET #$3,(A0)", 4);
+    check_dis([0x0300], "BTST D1,D0", 2);
+    check_dis([0x0188, 0x0004], "MOVEP.W D0,$4(A0)", 4);
+    check_dis([0x5281], "ADDQ.L #1,D1", 2);
+    check_dis([0x5148], "SUBQ.W #8,A0", 2);
+    check_dis([0x51C8, 0xFFFC], "DBRA D0,$000ffe", 4);
+    check_dis([0x56C8, 0x0006], "DBNE D0,$001008", 4);
+    check_dis([0x57C0], "SEQ D0", 2);
+    check_dis([0x6702], "BEQ.S $001004", 2);
+    check_dis([0x66FE], "BNE.S $001000", 2);
+    check_dis([0x6000, 0x0100], "BRA.W $001102", 4);
+    check_dis([0x6100, 0xFF00], "BSR.W $000f02", 4);
+    check_dis([0xE388], "LSL.L #1,D0", 2);
+    check_dis([0xE240], "ASR.W #1,D0", 2);
+    check_dis([0xE318], "ROL.B #1,D0", 2);
+    check_dis([0xE0A8], "LSR.L D0,D0", 2);
+    check_dis([0xE1D0], "ASL.W (A0)", 2);
+    check_dis([0xE4D8], "ROXR.W (A0)+", 2);
+    // 68000 に無い形、ライン A / ライン F はデータとして出す
+    check_dis([0xFF09], "DC.W $ff09", 2);
+    check_dis([0xA000], "DC.W $a000", 2);
+    check_dis([0x4E7A, 0x0002], "DC.W $4e7a", 2);
+}
+
 fn main() {
     test_flag_helpers();
     test_conditions();
@@ -476,6 +585,7 @@ fn main() {
     test_peek();
     test_dmac();
     test_rtc();
+    test_disasm();
     print(g_checks - g_failures, " / ", g_checks, " checks passed");
     if g_failures > 0 { exit(1); }
 }

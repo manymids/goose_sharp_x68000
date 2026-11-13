@@ -7,6 +7,7 @@ import .m68k_types;
 import .x68k_types;
 import .m68k_cpu;
 import .m68k_mmu;
+import .m68k_disasm;
 import .x68k_emu;
 import .x68k_rom;
 import .x68k_mfp;
@@ -431,33 +432,6 @@ fn append_palette(out: u8[>..]&, base: i32) {
         format(out, "{\"index\":", i, ",\"r\":", r, ",\"g\":", g, ",\"b\":", b, ",\"intensity\":", inten, "}");
     }
     out.append("]");
-}
-
-// MCP リクエスト処理 (Goose ネイティブエミュレータ直結)
-fn append_mnemonic(op: u16, out: u8[>..]&) {
-    let hi = (op >> 12) & 0x0F;
-    if hi == 0 { out.append("OP0"); }
-    else if hi == 1 { out.append("MOVE.B"); }
-    else if hi == 2 { out.append("MOVE.L"); }
-    else if hi == 3 { out.append("MOVE.W"); }
-    else if hi == 4 {
-        if op == 0x4E71 { out.append("NOP"); }
-        else if op == 0x4E73 { out.append("RTE"); }
-        else if op == 0x4E75 { out.append("RTS"); }
-        else if (op & 0xFFF0) == 0x4E40 { out.append("TRAP"); }
-        else { out.append("MISC"); }
-    }
-    else if hi == 5 { out.append("ADDQ"); }
-    else if hi == 6 { out.append("Bcc"); }
-    else if hi == 7 { out.append("MOVEQ"); }
-    else if hi == 8 { out.append("OR"); }
-    else if hi == 9 { out.append("SUB"); }
-    else if hi == 10 { out.append("LINEA"); }
-    else if hi == 11 { out.append("CMP"); }
-    else if hi == 12 { out.append("AND"); }
-    else if hi == 13 { out.append("ADD"); }
-    else if hi == 14 { out.append("SHIFT"); }
-    else { out.append("LINEF"); }
 }
 
 fn json_append_quoted(out: u8[>..]&, text: const u8[:]) {
@@ -914,8 +888,7 @@ fn mcp_tool_input_state(emu: X68kEmulator&, args: const u8[:], id_buf: const u8[
     obj.append("],\"joypad\":[");
     var jfirst = true;
     for port in 2 {
-        var joy = emu.mmu.joy1;
-        if port == 1 { joy = emu.mmu.joy2; }
+        let joy = if port == 1 { emu.mmu.joy2 } else { emu.mmu.joy1 };
         if (joy & 0x01) == 0 { if !jfirst { obj.append(","); } obj.append("{\"port\":"); format(obj, port, ",\"button\":\"up\"}"); jfirst = false; }
         if (joy & 0x02) == 0 { if !jfirst { obj.append(","); } obj.append("{\"port\":"); format(obj, port, ",\"button\":\"down\"}"); jfirst = false; }
         if (joy & 0x04) == 0 { if !jfirst { obj.append(","); } obj.append("{\"port\":"); format(obj, port, ",\"button\":\"left\"}"); jfirst = false; }
@@ -1511,7 +1484,7 @@ fn mcp_tools_list(id_buf: const u8[:]) {
         resp.append(",{\"name\":\"arcl_registers\",\"description\":\"Read Motorola 68000 CPU registers\",\"inputSchema\":{\"type\":\"object\",\"properties\":{}}}");
         resp.append(",{\"name\":\"arcl_read_mem\",\"description\":\"Read memory bytes\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"address\":{\"type\":\"integer\"},\"length\":{\"type\":\"integer\"}}}}");
         resp.append(",{\"name\":\"arcl_step\",\"description\":\"Execute one instruction\",\"inputSchema\":{\"type\":\"object\",\"properties\":{}}}");
-        resp.append(",{\"name\":\"arcl_disasm\",\"description\":\"Disassemble one instruction\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"address\":{\"type\":\"string\"}}}}");
+        resp.append(",{\"name\":\"arcl_disasm\",\"description\":\"Disassemble 68000 instructions from an address (default: PC)\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"address\":{\"type\":\"string\"},\"count\":{\"type\":\"integer\"}}}}");
         resp.append(",{\"name\":\"arcl_breakpoint\",\"description\":\"Set or clear one execution breakpoint\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"address\":{\"type\":\"string\"},\"action\":{\"type\":\"string\"}}}}");
         resp.append(",{\"name\":\"arcl_write_mem\",\"description\":\"Write hex bytes to memory\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"address\":{},\"data\":{\"type\":\"string\"}},\"required\":[\"address\",\"data\"]}}");
         resp.append(",{\"name\":\"arcl_write_registers\",\"description\":\"Set named CPU registers\",\"inputSchema\":{\"type\":\"object\",\"properties\":{}}}");
@@ -1837,18 +1810,45 @@ fn mcp_tool_read_mem(emu: X68kEmulator&, args: const u8[:], id_buf: const u8[:])
     mcp_write_text(id_buf, body, false);
 }
 
+// address から count 命令 (既定 1、最大 64) を逆アセンブルする。address を省くと現在の PC から。
+// 先頭の命令は address / opcode / text / length にも入れる。
 fn mcp_tool_disasm(emu: X68kEmulator&, args: const u8[:], id_buf: const u8[:]) {
     var addr = emu.cpu.pc & ADDR_MASK;
     if json_key_value(args, 0, "address") >= 0 {
-        addr = extract_json_addr(args, "address", addr);
+        addr = extract_json_addr(args, "address", addr) & ADDR_MASK;
     }
-    let op = mmu_read16(emu.mmu, addr);
-    var addr_str: u8[>..] = []; hex_u32(addr, addr_str);
-    var op_str: u8[>..] = []; hex_u16(op, op_str);
-    var text: u8[>..] = [];
-    append_mnemonic(op, text);
+    let count = extract_json_int(args, "count", 1);
+    if count < 1 || count > 64 {
+        mcp_write_text(id_buf, "count must be between 1 and 64", true);
+        return;
+    }
     var obj: u8[>..] = [];
-    format(obj, "{\"address\":\"", addr_str, "\",\"opcode\":\"", op_str, "\",\"text\":\"", text, "\"");
+    var list: u8[>..] = [];
+    var at = addr;
+    for i in count {
+        var text: u8[>..] = [];
+        let length = m68k_disasm(emu.mmu, at, text);
+        if i == 0 {
+            obj.append("{\"address\":\"");
+            hex_u32(at, obj);
+            obj.append("\",\"opcode\":\"");
+            hex_u16(dis_word(emu.mmu, at), obj);
+            obj.append("\",\"text\":");
+            json_append_quoted(obj, text);
+            format(obj, ",\"length\":", length);
+        } else {
+            list.push(',');
+        }
+        list.append("{\"address\":\"");
+        hex_u32(at, list);
+        list.append("\",\"bytes\":\"");
+        for k in length { format_uint(list, mmu_peek8(emu.mmu, at + (k as u32)), 16, 2, '0'); }
+        list.append("\",\"text\":");
+        json_append_quoted(list, text);
+        list.push('}');
+        at = (at + (length as u32)) & ADDR_MASK;
+    }
+    format(obj, ",\"instructions\":[", list, "]");
     append_machine(obj, emu, 0, false, true);
     obj.append("}");
     mcp_write_object(id_buf, obj);
@@ -2038,9 +2038,8 @@ fn mcp_tool_vram(emu: X68kEmulator&, args: const u8[:], id_buf: const u8[:]) {
         mcp_write_text(id_buf, "missing required string field 'region' (gvram/tvram)", true);
         return;
     }
-    var gv = false;
-    if region == "gvram" { gv = true; }
-    else if region != "tvram" {
+    let gv = region == "gvram";
+    if !gv && region != "tvram" {
         mcp_write_text(id_buf, "region must be gvram or tvram", true);
         return;
     }
