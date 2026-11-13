@@ -438,67 +438,8 @@ fn mmu_wait40(a: u32) -> i32 {
     return 40;
 }
 
-// 8-bit Read
-fn mmu_read8(mmu: M68kMMU&, addr: u32) -> u8 {
-    let a = addr & 0x00FFFFFF;
-    if mmu.cpu_access {
-        if (mmu.fault != 0 || mmu.user_mode || a >= 0xE86000) && mmu_check8(mmu, a, false) { return 0xFF; }
-        mmu.wait40 += mmu_wait40(a);
-    }
-
-    // Reset overlay for vector table (0x000000 - 0x000007)
-    if mmu.reset_overlay && a < 8 {
-        // Return initial vector from IPLROM at 0x10000
-        return x68k_ipl_read((0x10000 + (a as i32)));
-    }
-
-    // 0x000000 - 0xBFFFFF: Main RAM (upto 12MB)
-    if a < 0xC00000 {
-        return x68k_ram_read(a as i32);
-    }
-
-    // 0xC00000 - 0xDFFFFF: GVRAM (up to 2MB plane addressing)
-    if a >= 0xC00000 && a < 0xE00000 {
-        return mmu_gvram_cpu_read(mmu, (a - 0xC00000) as i32, mmu.crtc_regs[0x28]);
-    }
-
-    // 0xE00000 - 0xE7FFFF: TVRAM (512KB)
-    if a >= 0xE00000 && a < 0xE80000 {
-        return mmu.tvram[(a - 0xE00000) as i64];
-    }
-
-    // 0xED0000 - 0xED3FFF: SRAM (16KB)
-    if a >= 0xED0000 && a < 0xED4000 {
-        return x68k_sram_read((a - 0xED0000) as i32);
-    }
-
-    // 0xF00000 - 0xFBFFFF: CGROM (768KB)
-    if a >= 0xF00000 && a < 0xFC0000 {
-        return x68k_cgrom_read((a - 0xF00000) as i32);
-    }
-
-    // 0xFE0000 - 0xFFFFFF: IPLROM (128KB)
-    if a >= 0xFE0000 && a <= 0xFFFFFF {
-        return x68k_ipl_read((a - 0xFE0000) as i32);
-    }
-
-    // $EAFF81-$EAFF89: expansion RAM supervisor area (write-only; XEiJ reads back the value)
-    if a >= 0xEAFF80 && a < 0xEAFF90 {
-        return mmu.xb2_area[(a & 0x0F) as i64];
-    }
-
-    // 0x00E8E000 - 0x00E8E00F: SysPort
-    if (a & 0xFFFFF0) == 0xE8E000 {
-        if (a & 1) != 0 {
-            let reg = ((a & 0x0F) >> 1) as i32;
-            if reg == 0 { return 0xF0 | mmu.sysport_contrast; }
-            if reg == 1 { return 0xF0 | mmu.sysport_monitor; }
-            if reg == 3 { return 0xF0 | mmu.sysport_keyctrl; }
-            if reg == 5 { return 0xF0 | mmu.sysport_cputype; }
-        }
-        return 0xFF;
-    }
-
+// 0xE80000 以上からの 8 bit 読み出し。番地順。応答しない番地は 0。
+fn mmu_io_read8(mmu: M68kMMU&, a: u32) -> u8 {
     // 0x00E80000 - 0x00E804FF: CRTC
     // 0xE80400 未満は下位 6 ビットのミラー。0xE80481 だけが操作ポート。
     if a >= 0xE80000 && a < 0xE80500 {
@@ -518,6 +459,21 @@ fn mmu_read8(mmu: M68kMMU&, addr: u32) -> u8 {
         return 0;
     }
 
+    // 0x00E82000 - 0x00E823FF: Palette RAM (1024 bytes)
+    if a >= 0xE82000 && a < 0xE82400 {
+        return mmu.pal[(a - 0xE82000) as i64];
+    }
+
+    // 0x00E82400 - 0x00E827FF: Video Controller Registers
+    if a >= 0xE82400 && a < 0xE82800 {
+        return mmu.vcreg[(a - 0xE82400) as i64];
+    }
+
+    // 0x00E84000: DMAC
+    if (a & 0xFFFF00) == 0xE84000 {
+        return dmac_read(mmu.dmac, a);
+    }
+
     // 0x00E88000 - 0x00E8803F: MFP (MC68901)
     if (a & 0xFFFFC0) == 0xE88000 {
         if (a & 1) != 0 {
@@ -526,6 +482,23 @@ fn mmu_read8(mmu: M68kMMU&, addr: u32) -> u8 {
             // GPIP0 is the RTC ALARM output.
             if reg == 0 { return (v & 0xFE) | (if rtc_alarm_pin(mmu.rtc) { 1 } else { 0 }); }
             return v;
+        }
+        return 0xFF;
+    }
+
+    // 0x00E8A000 - 0x00E8BFFF: RTC (RP5C15)
+    if (a & 0xFFE000) == 0xE8A000 {
+        return rtc_read(mmu.rtc, (a & 31) as i32);
+    }
+
+    // 0x00E8E000 - 0x00E8E00F: SysPort
+    if (a & 0xFFFFF0) == 0xE8E000 {
+        if (a & 1) != 0 {
+            let reg = ((a & 0x0F) >> 1) as i32;
+            if reg == 0 { return 0xF0 | mmu.sysport_contrast; }
+            if reg == 1 { return 0xF0 | mmu.sysport_monitor; }
+            if reg == 3 { return 0xF0 | mmu.sysport_keyctrl; }
+            if reg == 5 { return 0xF0 | mmu.sysport_cputype; }
         }
         return 0xFF;
     }
@@ -579,24 +552,9 @@ fn mmu_read8(mmu: M68kMMU&, addr: u32) -> u8 {
         return 0xFF;
     }
 
-    // 0x00E8A000 - 0x00E8BFFF: RTC (RP5C15)
-    if (a & 0xFFE000) == 0xE8A000 {
-        return rtc_read(mmu.rtc, (a & 31) as i32);
-    }
-
-    // 0x00E84000: DMAC
-    if (a & 0xFFFF00) == 0xE84000 {
-        return dmac_read(mmu.dmac, a);
-    }
-
-    // 0x00E82000 - 0x00E823FF: Palette RAM (1024 bytes)
-    if a >= 0xE82000 && a < 0xE82400 {
-        return mmu.pal[(a - 0xE82000) as i64];
-    }
-
-    // 0x00E82400 - 0x00E827FF: Video Controller Registers
-    if a >= 0xE82400 && a < 0xE82800 {
-        return mmu.vcreg[(a - 0xE82400) as i64];
+    // $EAFF81-$EAFF89: expansion RAM supervisor area (write-only; XEiJ reads back the value)
+    if a >= 0xEAFF80 && a < 0xEAFF90 {
+        return mmu.xb2_area[(a & 0x0F) as i64];
     }
 
     // 0x00EB0000 - 0x00EB07FF: Sprite Registers
@@ -614,7 +572,55 @@ fn mmu_read8(mmu: M68kMMU&, addr: u32) -> u8 {
         return mmu.bgram[(a - 0xEB8000) as i64];
     }
 
+    // 0xED0000 - 0xED3FFF: SRAM (16KB)
+    if a >= 0xED0000 && a < 0xED4000 {
+        return x68k_sram_read((a - 0xED0000) as i32);
+    }
+
+    // 0xF00000 - 0xFBFFFF: CGROM (768KB)
+    if a >= 0xF00000 && a < 0xFC0000 {
+        return x68k_cgrom_read((a - 0xF00000) as i32);
+    }
+
+    // 0xFE0000 - 0xFFFFFF: IPLROM (128KB)
+    if a >= 0xFE0000 && a <= 0xFFFFFF {
+        return x68k_ipl_read((a - 0xFE0000) as i32);
+    }
+
     return 0;
+}
+
+// 8 bit 読み出し。RAM、GVRAM、TVRAM の順に見て、残りは mmu_io_read8 へ。
+fn mmu_read8(mmu: M68kMMU&, addr: u32) -> u8 {
+    let a = addr & 0x00FFFFFF;
+    if mmu.cpu_access {
+        if (mmu.fault != 0 || mmu.user_mode || a >= 0xE86000) && mmu_check8(mmu, a, false) { return 0xFF; }
+        mmu.wait40 += mmu_wait40(a);
+    }
+
+    // Reset overlay for vector table (0x000000 - 0x000007)
+    if mmu.reset_overlay && a < 8 {
+        // Return initial vector from IPLROM at 0x10000
+        return x68k_ipl_read((0x10000 + (a as i32)));
+    }
+
+    // 0x000000 - 0xBFFFFF: Main RAM (upto 12MB)
+    if a < 0xC00000 {
+        return x68k_ram_read(a as i32);
+    }
+
+    // 0xC00000 - 0xDFFFFF: GVRAM (up to 2MB plane addressing)
+    if a < 0xE00000 {
+        return mmu_gvram_cpu_read(mmu, (a - 0xC00000) as i32, mmu.crtc_regs[0x28]);
+    }
+
+    // 0xE00000 - 0xE7FFFF: TVRAM (512KB)
+    if a < 0xE80000 {
+        return mmu.tvram[(a - 0xE00000) as i64];
+    }
+
+    // 0xE80000 以上: I/O、スプライト / BG、SRAM、ROM
+    return mmu_io_read8(mmu, a);
 }
 
 // デバッガ用の読み出し。読むと状態が変わるレジスタ (MFP の UDR、FDC のデータ、SASI) は
@@ -629,71 +635,8 @@ fn mmu_peek8(mmu: M68kMMU&, addr: u32) -> u8 {
     return mmu_read8(mmu, addr);
 }
 
-// 8-bit Write
-fn mmu_write8(mmu: M68kMMU&, addr: u32, val: u8) {
-    let a = addr & 0x00FFFFFF;
-    if mmu.cpu_access {
-        if (mmu.fault != 0 || mmu.user_mode || a >= 0xE86000) && mmu_check8(mmu, a, true) { return; }
-        mmu.wait40 += mmu_wait40(a);
-    }
-
-    // Reset overlay is disabled on any write to RAM
-    if a < 0xC00000 {
-        mmu.reset_overlay = false;
-        x68k_ram_write(a as i32, val);
-        return;
-    }
-
-    // 0xC00000 - 0xDFFFFF: GVRAM
-    if a >= 0xC00000 && a < 0xE00000 {
-        mmu_gvram_cpu_write(mmu, (a - 0xC00000) as i32, val, mmu.crtc_regs[0x28]);
-        return;
-    }
-
-    // 0xE00000 - 0xE7FFFF: TVRAM (512KB)
-    if a >= 0xE00000 && a < 0xE80000 {
-        let off = (a - 0xE00000) as i32;
-        mmu_write_tvram_access(mmu, off, val, mmu.crtc_regs[0x2A], mmu.crtc_regs[0x2B], mmu.crtc_regs[0x2E], mmu.crtc_regs[0x2F]);
-        return;
-    }
-
-    // 0xED0000 - 0xED3FFF: SRAM (16KB)
-    if a >= 0xED0000 && a < 0xED4000 {
-        x68k_sram_write((a - 0xED0000) as i32, val);
-        return;
-    }
-
-    // $E86001: main RAM below (n + 1) * 8 KB is supervisor-only
-    if a >= 0xE86000 && a < 0xE88000 {
-        if (a & 1) != 0 { mmu.svs_limit = ((val as u32) + 1) << 13; }
-        return;
-    }
-
-    // $EAFF81-$EAFF89 (odd): one bit per 256 KB block, 2 MB per port starting at $200000
-    if a >= 0xEAFF81 && a <= 0xEAFF89 && (a & 1) != 0 {
-        mmu.xb2_area[(a & 0x0F) as i64] = val;
-        let first = (((a & 14) + 2) << 20) >> 18;
-        for m in 8 {
-            mmu.ram_super[(first + (m as u32)) as i64] = (val >> (m as u8)) & 1;
-        }
-        return;
-    }
-
-    // 0x00E8E000 - 0x00E8E00F: SysPort
-    if (a & 0xFFFFF0) == 0xE8E000 {
-        if (a & 1) != 0 {
-            let reg = ((a & 0x0F) >> 1) as i32;
-            if reg == 0 { mmu.sysport_contrast = val & 0x0F; }
-            else if reg == 1 { mmu.sysport_monitor = val & 0x0B; }
-            else if reg == 3 { mmu.sysport_keyctrl = val & 0x0E; }
-            else if reg == 6 {
-                let en: i32 = if val == 0x31 { 1 } else { 0 };
-                x68k_sram_set_write_enable(en);
-            }
-        }
-        return;
-    }
-
+// 0xE80000 以上への 8 bit 書き込み。番地順。応答しない番地は何もしない。
+fn mmu_io_write8(mmu: M68kMMU&, a: u32, val: u8) {
     // 0x00E80000 - 0x00E804FF: CRTC
     if a >= 0xE80000 && a < 0xE80500 {
         if a == 0xE80481 {
@@ -726,6 +669,18 @@ fn mmu_write8(mmu: M68kMMU&, addr: u32, val: u8) {
         return;
     }
 
+    // 0x00E82000 - 0x00E823FF: Palette RAM (1024 bytes)
+    if a >= 0xE82000 && a < 0xE82400 {
+        mmu.pal[(a - 0xE82000) as i64] = val;
+        return;
+    }
+
+    // 0x00E82400 - 0x00E827FF: Video Controller Registers
+    if a >= 0xE82400 && a < 0xE82800 {
+        mmu.vcreg[(a - 0xE82400) as i64] = val;
+        return;
+    }
+
     // 0x00E84000 - 0x00E840FF: DMAC (HD63450)
     if (a & 0xFFFF00) == 0xE84000 {
         dmac_write(mmu.dmac, a, val);
@@ -742,11 +697,38 @@ fn mmu_write8(mmu: M68kMMU&, addr: u32, val: u8) {
         return;
     }
 
+    // $E86001: main RAM below (n + 1) * 8 KB is supervisor-only
+    if a >= 0xE86000 && a < 0xE88000 {
+        if (a & 1) != 0 { mmu.svs_limit = ((val as u32) + 1) << 13; }
+        return;
+    }
+
     // 0x00E88000 - 0x00E8803F: MFP (MC68901)
     if (a & 0xFFFFC0) == 0xE88000 {
         if (a & 1) != 0 {
             let reg = ((a & 0x3F) >> 1) as i32;
             mfp_write(mmu.mfp, reg, val);
+        }
+        return;
+    }
+
+    // 0x00E8A000 - 0x00E8BFFF: RTC (RP5C15)
+    if (a & 0xFFE000) == 0xE8A000 {
+        rtc_write(mmu.rtc, (a & 31) as i32, val);
+        return;
+    }
+
+    // 0x00E8E000 - 0x00E8E00F: SysPort
+    if (a & 0xFFFFF0) == 0xE8E000 {
+        if (a & 1) != 0 {
+            let reg = ((a & 0x0F) >> 1) as i32;
+            if reg == 0 { mmu.sysport_contrast = val & 0x0F; }
+            else if reg == 1 { mmu.sysport_monitor = val & 0x0B; }
+            else if reg == 3 { mmu.sysport_keyctrl = val & 0x0E; }
+            else if reg == 6 {
+                let en: i32 = if val == 0x31 { 1 } else { 0 };
+                x68k_sram_set_write_enable(en);
+            }
         }
         return;
     }
@@ -767,27 +749,6 @@ fn mmu_write8(mmu: M68kMMU&, addr: u32, val: u8) {
         return;
     }
 
-    // 0x00E8A000 - 0x00E8BFFF: RTC (RP5C15)
-    if (a & 0xFFE000) == 0xE8A000 {
-        rtc_write(mmu.rtc, (a & 31) as i32, val);
-        return;
-    }
-
-    // 0x00E9A000 - 0x00E9A007: JoyPort / PIA (8255)
-    if (a & 0xFFFF00) == 0xE9A000 {
-        if a == 0xE9A005 || a == 0xE9A007 {
-            c_pia_write(a as i32, val);
-        }
-        return;
-    }
-
-    // 0x00E96000 - 0x00E97FFF: SASI
-    if (a & 0x00FFE000) == 0x00E96000 {
-        sasi_write(mmu.sasi, a, val);
-        sasi_note(mmu);
-        return;
-    }
-
     // 0x00E94000 - 0x00E94007: FDC (uPD72065)
     if (a & 0xFFFF00) == 0xE94000 {
         let reg = (a & 0x07) as i32;
@@ -805,8 +766,23 @@ fn mmu_write8(mmu: M68kMMU&, addr: u32, val: u8) {
         return;
     }
 
+    // 0x00E96000 - 0x00E97FFF: SASI
+    if (a & 0x00FFE000) == 0x00E96000 {
+        sasi_write(mmu.sasi, a, val);
+        sasi_note(mmu);
+        return;
+    }
+
     // 0x00E98000 - 0x00E98007: SCC (Z85C30)
     if (a & 0xFFFF00) == 0xE98000 {
+        return;
+    }
+
+    // 0x00E9A000 - 0x00E9A007: JoyPort / PIA (8255)
+    if (a & 0xFFFF00) == 0xE9A000 {
+        if a == 0xE9A005 || a == 0xE9A007 {
+            c_pia_write(a as i32, val);
+        }
         return;
     }
 
@@ -822,15 +798,13 @@ fn mmu_write8(mmu: M68kMMU&, addr: u32, val: u8) {
         return;
     }
 
-    // 0x00E82000 - 0x00E823FF: Palette RAM (1024 bytes)
-    if a >= 0xE82000 && a < 0xE82400 {
-        mmu.pal[(a - 0xE82000) as i64] = val;
-        return;
-    }
-
-    // 0x00E82400 - 0x00E827FF: Video Controller Registers
-    if a >= 0xE82400 && a < 0xE82800 {
-        mmu.vcreg[(a - 0xE82400) as i64] = val;
+    // $EAFF81-$EAFF89 (odd): one bit per 256 KB block, 2 MB per port starting at $200000
+    if a >= 0xEAFF81 && a <= 0xEAFF89 && (a & 1) != 0 {
+        mmu.xb2_area[(a & 0x0F) as i64] = val;
+        let first = (((a & 14) + 2) << 20) >> 18;
+        for m in 8 {
+            mmu.ram_super[(first + (m as u32)) as i64] = (val >> (m as u8)) & 1;
+        }
         return;
     }
 
@@ -851,6 +825,44 @@ fn mmu_write8(mmu: M68kMMU&, addr: u32, val: u8) {
         mmu_write_bgram(mmu, (a - 0xEB8000) as i32, val);
         return;
     }
+
+    // 0xED0000 - 0xED3FFF: SRAM (16KB)
+    if a >= 0xED0000 && a < 0xED4000 {
+        x68k_sram_write((a - 0xED0000) as i32, val);
+        return;
+    }
+}
+
+// 8 bit 書き込み。RAM、GVRAM、TVRAM の順に見て、残りは mmu_io_write8 へ。
+fn mmu_write8(mmu: M68kMMU&, addr: u32, val: u8) {
+    let a = addr & 0x00FFFFFF;
+    if mmu.cpu_access {
+        if (mmu.fault != 0 || mmu.user_mode || a >= 0xE86000) && mmu_check8(mmu, a, true) { return; }
+        mmu.wait40 += mmu_wait40(a);
+    }
+
+    // Reset overlay is disabled on any write to RAM
+    if a < 0xC00000 {
+        mmu.reset_overlay = false;
+        x68k_ram_write(a as i32, val);
+        return;
+    }
+
+    // 0xC00000 - 0xDFFFFF: GVRAM
+    if a < 0xE00000 {
+        mmu_gvram_cpu_write(mmu, (a - 0xC00000) as i32, val, mmu.crtc_regs[0x28]);
+        return;
+    }
+
+    // 0xE00000 - 0xE7FFFF: TVRAM (512KB)
+    if a < 0xE80000 {
+        let off = (a - 0xE00000) as i32;
+        mmu_write_tvram_access(mmu, off, val, mmu.crtc_regs[0x2A], mmu.crtc_regs[0x2B], mmu.crtc_regs[0x2E], mmu.crtc_regs[0x2F]);
+        return;
+    }
+
+    // 0xE80000 以上: I/O、スプライト / BG、SRAM、ROM
+    mmu_io_write8(mmu, a, val);
 }
 
 // Both bytes sit in the RAM window (through 0xBFFFFF). The last byte stays on the byte path.
