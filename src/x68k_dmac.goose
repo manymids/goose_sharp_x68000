@@ -10,6 +10,7 @@ import .x68k_fdc;
 import .x68k_ram;
 import .x68k_sasi;
 import .m68k_mmu;
+namespace dmac;
 
 struct X68kDMAChannel {
     csr: u8 = 0,
@@ -31,6 +32,7 @@ struct X68kDMAChannel {
     bfc: u8 = 0,
     gcr: u8 = 0,
 }
+type ::X68kDMAChannel = dmac::X68kDMAChannel;
 
 struct X68kDMAC {
     ch: X68kDMAChannel[4] = [X68kDMAChannel {}; 4],
@@ -38,39 +40,40 @@ struct X68kDMAC {
     int_pending: bool = false,
     last_int: i32 = 0,
 }
+type ::X68kDMAC = dmac::X68kDMAC;
 
-fn dmac_init(dmac: X68kDMAC&) {
+fn init(dmac: X68kDMAC&) {
     dmac = X68kDMAC {};
 }
 
-fn dma_in_ram(addr: u32, nbytes: u32) -> bool {
+fn in_ram(addr: u32, nbytes: u32) -> bool {
     let lim = x68k_ram_limit() as u32;
     if addr >= lim { return false; }
     return addr + nbytes <= lim;
 }
 
-fn dma_readmem24_dword(addr: u32) -> u32 {
+fn readmem24_dword(addr: u32) -> u32 {
     let a = addr & ADDR_MASK;
-    if dma_in_ram(a, 4) {
+    if in_ram(a, 4) {
         return x68k_ram_read32(a as! i32);
     }
     return 0;
 }
 
-fn dma_readmem24_word(addr: u32) -> u16 {
+fn readmem24_word(addr: u32) -> u16 {
     let a = addr & ADDR_MASK;
-    if dma_in_ram(a, 2) {
+    if in_ram(a, 2) {
         return x68k_ram_read16(a as! i32);
     }
     return 0;
 }
 
 // レジスタは 1 チャネル 64 バイト。24 bit アドレスの最上位バイト (0x0C, 0x14, 0x1C) は 0 が読める。
-fn dmac_read(dmac: X68kDMAC&, addr: u32) -> u8 {
+fn read(dmac: X68kDMAC&, addr: u32) -> u8 {
     if addr >= 0x00E84100 { return 0; }
     let ch = ((addr >> 6) & 0x03) as i32;
     // ch3 は C 側 DMA[3] が進めた MTC/CSR を、読む前に Goose へ戻す。
-    if ch == 3 { dmac_sound_pull(dmac); }
+    if ch == 3 { dmac.sound_pull(); }
     let c .= dmac.ch[ch];
     match addr & 0x3F {
         0x00 => c.csr,
@@ -104,7 +107,7 @@ fn dmac_read(dmac: X68kDMAC&, addr: u32) -> u8 {
 }
 
 // CCR ($07): bit7 STR で転送開始、bit4 SAB で動作中の転送を中断する。
-fn dmac_write_ccr(c: X68kDMAChannel&, data: u8) {
+fn write_ccr(c: X68kDMAChannel&, data: u8) {
     let old = c.ccr;
     c.ccr = (data & 0xEF) | (old & 0x80);
     if (data & 0x10) != 0 && (old & 0x80) != 0 {
@@ -121,10 +124,10 @@ fn dmac_write_ccr(c: X68kDMAChannel&, data: u8) {
         c.cer = 0x00;
         if (c.ocr & 8) != 0 {
             // Array/Link Array Chain
-            c.mar = dma_readmem24_dword(c.bar) & ADDR_MASK;
-            c.mtc = dma_readmem24_word(c.bar + 4);
+            c.mar = readmem24_dword(c.bar) & ADDR_MASK;
+            c.mtc = readmem24_word(c.bar + 4);
             if (c.ocr & 4) != 0 {
-                c.bar = dma_readmem24_dword(c.bar + 6) & ADDR_MASK;
+                c.bar = readmem24_dword(c.bar + 6) & ADDR_MASK;
             } else {
                 c.bar += 6;
             }
@@ -132,11 +135,11 @@ fn dmac_write_ccr(c: X68kDMAChannel&, data: u8) {
     }
 }
 
-fn dmac_write(dmac: X68kDMAC&, addr: u32, data: u8) {
+fn write(dmac: X68kDMAC&, addr: u32, data: u8) {
     if addr >= 0x00E84100 { return; }
     let ch = ((addr >> 6) & 0x03) as i32;
     // 1 バイト書きで残りのカウンタを古い Goose 値のまま C へ戻さない。
-    if ch == 3 { dmac_sound_pull(dmac); }
+    if ch == 3 { dmac.sound_pull(); }
     let c .= dmac.ch[ch];
     let d16: u16 = data;
     let d32: u32 = data;
@@ -146,7 +149,7 @@ fn dmac_write(dmac: X68kDMAC&, addr: u32, data: u8) {
         0x04 => { c.dcr = data; },
         0x05 => { c.ocr = data; },
         0x06 => { c.scr = data; },
-        0x07 => { dmac_write_ccr(c, data); },
+        0x07 => { c.write_ccr(data); },
         0x0A => { c.mtc = (c.mtc & 0x00FF) | (d16 << 8); },
         0x0B => { c.mtc = (c.mtc & 0xFF00) | d16; },
         0x0D => { c.mar = (c.mar & 0x0000FFFF) | (d32 << 16); },
@@ -169,39 +172,39 @@ fn dmac_write(dmac: X68kDMAC&, addr: u32, data: u8) {
         0x3F => { if ch == 3 { c.gcr = data; } }, // GCR は ch3 にだけある
         _ => {},
     }
-    if ch == 3 { dmac_sound_push(dmac); }
+    if ch == 3 { dmac.sound_push(); }
 }
 
 // FDC と DMAC Ch 0 の DMA 転送実行。
 // px68k の dma_writemem24 は wm_main 経由なので、GVRAM / TVRAM も CPU と同じ書き込みになる。
-fn dmac_exec_fdc(dmac: X68kDMAC&, fdc: X68kFDC&, mmu: M68kMMU&) -> bool {
+fn exec_fdc(dmac: X68kDMAC&, fdc: X68kFDC&, mmu: M68kMMU&) -> bool {
     // Ch 0 が動作中 (ACT = bit 3) かチェック
     if (dmac.ch[0].csr & 0x08) == 0 {
         return false;
     }
-    if fdc_exec_len(fdc) <= 0 {
+    if fdc.exec_len() <= 0 {
         return false;
     }
 
     // 1 セクタ転送するたびに FDC_NextTrack。MTC が残っていれば次セクタも続ける。
-    while (dmac.ch[0].csr & 0x08) != 0 && fdc_exec_len(fdc) > 0 {
+    while (dmac.ch[0].csr & 0x08) != 0 && fdc.exec_len() > 0 {
         // WriteData 実行中はメモリ → FDC。OCR bit7 (デバイス → メモリ) が立っていれば方向が合わない。
-        let to_disk = fdc_is_writing(fdc);
+        let to_disk = fdc.is_writing();
         if to_disk && (dmac.ch[0].ocr & 0x80) != 0 {
             return false;
         }
-        for i in fdc_exec_len(fdc) {
+        for i in fdc.exec_len() {
             let addr = dmac.ch[0].mar & ADDR_MASK;
             let b = fdc.data_buf[i];
             if to_disk {
-                fdc.data_buf[i] = mmu_read8(mmu, addr);
-            } else if dma_in_ram(addr, 1) {
+                fdc.data_buf[i] = mmu.read8(addr);
+            } else if in_ram(addr, 1) {
                 x68k_ram_write(addr as! i32, b);
             } else if addr >= 0xC00000 && addr < 0xE00000 {
-                mmu_gvram_cpu_write(mmu, (addr - 0xC00000) as! i32, b, mmu.crtc_regs[0x28]);
+                mmu.gvram_cpu_write((addr - 0xC00000) as! i32, b, mmu.crtc_regs[0x28]);
             } else if addr >= 0xE00000 && addr < 0xE80000 {
                 let off = (addr - 0xE00000) as! i32;
-                mmu_write_tvram_access(mmu, off, b, mmu.crtc_regs[0x2A], mmu.crtc_regs[0x2B], mmu.crtc_regs[0x2E], mmu.crtc_regs[0x2F]);
+                mmu.write_tvram_access(off, b, mmu.crtc_regs[0x2A], mmu.crtc_regs[0x2B], mmu.crtc_regs[0x2E], mmu.crtc_regs[0x2F]);
             }
             if (dmac.ch[0].scr & 8) != 0 {
                 dmac.ch[0].mar--;
@@ -212,7 +215,7 @@ fn dmac_exec_fdc(dmac: X68kDMAC&, fdc: X68kFDC&, mmu: M68kMMU&) -> bool {
 
         // MTC の減算（ワード転送の場合は セクタ長 / 2、バイト転送の場合はセクタ長）
         let size_code = (dmac.ch[0].ocr >> 4) & 3;
-        let units = if size_code == 1 { (fdc_exec_len(fdc) / 2) as! u16 } else { fdc_exec_len(fdc) as! u16 };
+        let units = if size_code == 1 { (fdc.exec_len() / 2) as! u16 } else { fdc.exec_len() as! u16 };
         if dmac.ch[0].mtc >= units {
             dmac.ch[0].mtc -= units;
         } else {
@@ -224,16 +227,16 @@ fn dmac_exec_fdc(dmac: X68kDMAC&, fdc: X68kFDC&, mmu: M68kMMU&) -> bool {
                 // Next block in chain
                 if (dmac.ch[0].ocr & 4) != 0 {
                     if dmac.ch[0].bar != 0 {
-                        dmac.ch[0].mar = dma_readmem24_dword(dmac.ch[0].bar) & ADDR_MASK;
-                        dmac.ch[0].mtc = dma_readmem24_word(dmac.ch[0].bar + 4);
-                        dmac.ch[0].bar = dma_readmem24_dword(dmac.ch[0].bar + 6) & ADDR_MASK;
+                        dmac.ch[0].mar = readmem24_dword(dmac.ch[0].bar) & ADDR_MASK;
+                        dmac.ch[0].mtc = readmem24_word(dmac.ch[0].bar + 4);
+                        dmac.ch[0].bar = readmem24_dword(dmac.ch[0].bar + 6) & ADDR_MASK;
                     }
                 } else {
                     if dmac.ch[0].btc > 0 {
                         dmac.ch[0].btc--;
                         if dmac.ch[0].btc != 0 {
-                            dmac.ch[0].mar = dma_readmem24_dword(dmac.ch[0].bar) & ADDR_MASK;
-                            dmac.ch[0].mtc = dma_readmem24_word(dmac.ch[0].bar + 4);
+                            dmac.ch[0].mar = readmem24_dword(dmac.ch[0].bar) & ADDR_MASK;
+                            dmac.ch[0].mtc = readmem24_word(dmac.ch[0].bar + 4);
                             dmac.ch[0].bar += 6;
                         }
                     }
@@ -255,9 +258,9 @@ fn dmac_exec_fdc(dmac: X68kDMAC&, fdc: X68kFDC&, mmu: M68kMMU&) -> bool {
 
         if to_disk {
             // 転送カウンタが尽きたら TC。残っていれば次のセクタを待つ。
-            fdc_write_buffer(fdc, dmac.ch[0].mtc == 0);
+            fdc.write_buffer(dmac.ch[0].mtc == 0);
         } else {
-            fdc_next_track(fdc);
+            fdc.next_track();
         }
     }
 
@@ -265,7 +268,7 @@ fn dmac_exec_fdc(dmac: X68kDMAC&, fdc: X68kFDC&, mmu: M68kMMU&) -> bool {
 }
 
 // 割り込み要求中の ch0–2 のうち、前回受け付けた次から巡回して最初のもの。なければ -1。
-fn dmac_irq_channel(dmac: X68kDMAC&) -> i32 {
+fn irq_channel(dmac: X68kDMAC&) -> i32 {
     if !dmac.int_pending { return -1; }
     let start = if dmac.last_int < 0 || dmac.last_int > 2 { 0 } else { dmac.last_int };
     for n: i32 in 3 {
@@ -276,14 +279,14 @@ fn dmac_irq_channel(dmac: X68kDMAC&) -> i32 {
 }
 
 // ch0–2 の完了ベクタ。ERR (CSR bit4) なら EIV、なければ NIV。消さない。
-fn dmac_peek_irq(dmac: X68kDMAC&) -> i32 {
-    let i = dmac_irq_channel(dmac);
+fn peek_irq(dmac: X68kDMAC&) -> i32 {
+    let i = dmac.irq_channel();
     if i < 0 { return -1; }
     return if (dmac.ch[i].csr & 0x10) != 0 { dmac.ch[i].eiv } else { dmac.ch[i].niv };
 }
 
-fn dmac_ack_irq(dmac: X68kDMAC&) {
-    let i = dmac_irq_channel(dmac);
+fn ack_irq(dmac: X68kDMAC&) {
+    let i = dmac.irq_channel();
     if i < 0 {
         dmac.int_pending = false;
         return;
@@ -297,7 +300,7 @@ fn dmac_ack_irq(dmac: X68kDMAC&) {
 // ch1 (SASI) と ch2 (汎用)。CPU と同じバスを通るので、メモリの読み書きは MMU 経由。
 // ---------------------------------------------------------------
 
-fn dma_bump(addr: u32&, scr: u8, plus_mask: u8, minus_mask: u8, step: u32) {
+fn bump(addr: u32&, scr: u8, plus_mask: u8, minus_mask: u8, step: u32) {
     if (scr & plus_mask) != 0 {
         addr += step;
     } else if (scr & minus_mask) != 0 {
@@ -306,14 +309,14 @@ fn dma_bump(addr: u32&, scr: u8, plus_mask: u8, minus_mask: u8, step: u32) {
 }
 
 // SASI は DMAC ch1。px68k DMA_Exec(1) が 0xE96001 をメモリ空間として読む。
-fn dmac_pump_sasi(mmu: M68kMMU&) {
+fn pump_sasi(mmu: M68kMMU&) {
     if (mmu.dmac.ch[1].csr & 0x08) == 0 { return; }
     if (mmu.dmac.ch[1].ccr & 0x20) != 0 { return; }
     if (mmu.dmac.ch[1].csr & 0x80) != 0 { return; }
     let ocr = mmu.dmac.ch[1].ocr;
     let scr = mmu.dmac.ch[1].scr;
     let kind = ((ocr >> 4) & 3) + ((mmu.dmac.ch[1].dcr >> 1) & 4);
-    while (mmu.dmac.ch[1].csr & 0x08) != 0 && (mmu.dmac.ch[1].csr & 0x80) == 0 && mmu.dmac.ch[1].mtc != 0 && sasi_is_ready(mmu.sasi) {
+    while (mmu.dmac.ch[1].csr & 0x08) != 0 && (mmu.dmac.ch[1].csr & 0x80) == 0 && mmu.dmac.ch[1].mtc != 0 && mmu.sasi.is_ready() {
         let dev_to_mem = (ocr & 0x80) != 0;
         var src = if dev_to_mem { mmu.dmac.ch[1].dar } else { mmu.dmac.ch[1].mar };
         var dst = if dev_to_mem { mmu.dmac.ch[1].mar } else { mmu.dmac.ch[1].dar };
@@ -325,21 +328,21 @@ fn dmac_pump_sasi(mmu: M68kMMU&) {
         if kind == 6 { n = 1; step = 4; }
         for i in n {
             if step == 2 {
-                let w = mmu_read16(mmu, src);
-                mmu_write16(mmu, dst, w);
+                let w = mmu.read16(src);
+                mmu.write16(dst, w);
             } else if step == 4 {
-                let w = mmu_read32(mmu, src);
-                mmu_write32(mmu, dst, w);
+                let w = mmu.read32(src);
+                mmu.write32(dst, w);
             } else {
-                let b = mmu_read8(mmu, src);
-                mmu_write8(mmu, dst, b);
+                let b = mmu.read8(src);
+                mmu.write8(dst, b);
             }
             if dev_to_mem {
-                dma_bump(dst, scr, 4, 8, step as u32);
-                dma_bump(src, scr, 1, 2, if kind == 4 { step as u32 } else { (step * 2) as u32 });
+                bump(dst, scr, 4, 8, step as u32);
+                bump(src, scr, 1, 2, if kind == 4 { step as u32 } else { (step * 2) as u32 });
             } else {
-                dma_bump(src, scr, 4, 8, step as u32);
-                dma_bump(dst, scr, 1, 2, if kind == 4 { step as u32 } else { (step * 2) as u32 });
+                bump(src, scr, 4, 8, step as u32);
+                bump(dst, scr, 1, 2, if kind == 4 { step as u32 } else { (step * 2) as u32 });
             }
             if dev_to_mem {
                 mmu.dmac.ch[1].mar = dst;
@@ -363,7 +366,7 @@ fn dmac_pump_sasi(mmu: M68kMMU&) {
     }
 }
 
-fn dmac_ch2_fail(mmu: M68kMMU&, err: u8) {
+fn ch2_fail(mmu: M68kMMU&, err: u8) {
     mmu.dmac.ch[2].cer = err;
     mmu.dmac.ch[2].csr |= 0x10;
     mmu.dmac.ch[2].csr &= 0xF7;
@@ -374,7 +377,7 @@ fn dmac_ch2_fail(mmu: M68kMMU&, err: u8) {
     }
 }
 
-fn dmac_ch2_raise(mmu: M68kMMU&) {
+fn ch2_raise(mmu: M68kMMU&) {
     if (mmu.dmac.ch[2].ccr & 0x08) != 0 {
         mmu.dmac.int_ch |= 4;
         mmu.dmac.int_pending = true;
@@ -383,7 +386,7 @@ fn dmac_ch2_raise(mmu: M68kMMU&) {
 
 // px68k DMA_Exec(2)。沙羅曼蛇はスプライト 1024 バイトを ch2 のバーストで $EB0000 へ書く。
 // OCR&3==2 は Mercury の Ready 待ちなので、ここでは動かさない。
-fn dmac_ch2_unit(mmu: M68kMMU&) -> i32 {
+fn ch2_unit(mmu: M68kMMU&) -> i32 {
     let ocr = mmu.dmac.ch[2].ocr;
     let scr = mmu.dmac.ch[2].scr;
     let kind = ((ocr >> 4) & 3) + ((mmu.dmac.ch[2].dcr >> 1) & 4);
@@ -429,49 +432,49 @@ fn dmac_ch2_unit(mmu: M68kMMU&) -> i32 {
             } else {
                 err = 0x06;
             }
-            dmac_ch2_fail(mmu, err);
+            ch2_fail(mmu, err);
             return 1;
         }
         if width == 4 {
-            let w = mmu_read32(mmu, src);
-            mmu_write32(mmu, dst, w);
+            let w = mmu.read32(src);
+            mmu.write32(dst, w);
         } else if width == 2 {
-            let w = mmu_read16(mmu, src);
-            mmu_write16(mmu, dst, w);
+            let w = mmu.read16(src);
+            mmu.write16(dst, w);
         } else {
-            let b = mmu_read8(mmu, src);
-            mmu_write8(mmu, dst, b);
+            let b = mmu.read8(src);
+            mmu.write8(dst, b);
         }
-        dma_bump(mmu.dmac.ch[2].mar, scr, 4, 8, mar_step);
-        dma_bump(mmu.dmac.ch[2].dar, scr, 1, 2, dar_step);
+        bump(mmu.dmac.ch[2].mar, scr, 4, 8, mar_step);
+        bump(mmu.dmac.ch[2].dar, scr, 1, 2, dar_step);
     }
     return 0;
 }
 
-fn dmac_ch2_on_zero(mmu: M68kMMU&) {
+fn ch2_on_zero(mmu: M68kMMU&) {
     let ocr = mmu.dmac.ch[2].ocr;
     if (ocr & 8) != 0 {
         if (ocr & 4) != 0 {
             if mmu.dmac.ch[2].bar != 0 {
                 let bar = mmu.dmac.ch[2].bar;
-                mmu.dmac.ch[2].mar = mmu_read32(mmu, bar) & ADDR_MASK;
-                mmu.dmac.ch[2].mtc = mmu_read16(mmu, bar + 4);
-                mmu.dmac.ch[2].bar = mmu_read32(mmu, bar + 6) & ADDR_MASK;
-                if mmu.dmac.ch[2].mtc == 0 { dmac_ch2_fail(mmu, 0x0D); }
+                mmu.dmac.ch[2].mar = mmu.read32(bar) & ADDR_MASK;
+                mmu.dmac.ch[2].mtc = mmu.read16(bar + 4);
+                mmu.dmac.ch[2].bar = mmu.read32(bar + 6) & ADDR_MASK;
+                if mmu.dmac.ch[2].mtc == 0 { ch2_fail(mmu, 0x0D); }
             }
         } else {
             mmu.dmac.ch[2].btc -= 1;
             if mmu.dmac.ch[2].btc != 0 {
                 let bar = mmu.dmac.ch[2].bar;
-                mmu.dmac.ch[2].mar = mmu_read32(mmu, bar) & ADDR_MASK;
-                mmu.dmac.ch[2].mtc = mmu_read16(mmu, bar + 4);
+                mmu.dmac.ch[2].mar = mmu.read32(bar) & ADDR_MASK;
+                mmu.dmac.ch[2].mtc = mmu.read16(bar + 4);
                 mmu.dmac.ch[2].bar = bar + 6;
-                if mmu.dmac.ch[2].mtc == 0 { dmac_ch2_fail(mmu, 0x0D); }
+                if mmu.dmac.ch[2].mtc == 0 { ch2_fail(mmu, 0x0D); }
             }
         }
     } else if (mmu.dmac.ch[2].ccr & 0x40) != 0 {
         mmu.dmac.ch[2].csr |= 0x40;
-        dmac_ch2_raise(mmu);
+        ch2_raise(mmu);
         if mmu.dmac.ch[2].bar != 0 {
             mmu.dmac.ch[2].mar = mmu.dmac.ch[2].bar;
             mmu.dmac.ch[2].mtc = mmu.dmac.ch[2].btc;
@@ -479,27 +482,27 @@ fn dmac_ch2_on_zero(mmu: M68kMMU&) {
             mmu.dmac.ch[2].bar = 0;
             mmu.dmac.ch[2].btc = 0;
             mmu.dmac.ch[2].ccr &= 0xBF;
-            if mmu.dmac.ch[2].mtc == 0 { dmac_ch2_fail(mmu, 0x0D); }
+            if mmu.dmac.ch[2].mtc == 0 { ch2_fail(mmu, 0x0D); }
         }
     }
     if mmu.dmac.ch[2].mtc == 0 && (mmu.dmac.ch[2].csr & 0x10) == 0 {
         mmu.dmac.ch[2].csr |= 0x80;
         mmu.dmac.ch[2].csr &= 0xF7;
-        dmac_ch2_raise(mmu);
+        ch2_raise(mmu);
     }
 }
 
-fn dmac_exec_ch2(mmu: M68kMMU&) {
+fn exec_ch2(mmu: M68kMMU&) {
     if (mmu.dmac.ch[2].ocr & 3) == 2 { return; }
     var left: i32 = 65536;
     while left > 0 && (mmu.dmac.ch[2].csr & 0x08) != 0 && (mmu.dmac.ch[2].ccr & 0x20) == 0 && (mmu.dmac.ch[2].csr & 0x80) == 0 && mmu.dmac.ch[2].mtc != 0 {
         left -= 1;
-        if dmac_ch2_unit(mmu) != 0 { return; }
+        if ch2_unit(mmu) != 0 { return; }
         if mmu.dmac.ch[2].mtc != 0 {
             mmu.dmac.ch[2].mtc -= 1;
         }
         if mmu.dmac.ch[2].mtc == 0 {
-            dmac_ch2_on_zero(mmu);
+            ch2_on_zero(mmu);
         }
         if (mmu.dmac.ch[2].ocr & 3) != 1 { return; }
     }
@@ -509,7 +512,7 @@ fn dmac_exec_ch2(mmu: M68kMMU&) {
 // ch3 (ADPCM)。転送そのものは C 側の音源が行い、レジスタだけを同期する。
 // ---------------------------------------------------------------
 
-fn dmac_sound_push(dmac: X68kDMAC&) {
+fn sound_push(dmac: X68kDMAC&) {
     c_dmac_push_ch3(
         dmac.ch[3].csr, dmac.ch[3].cer, dmac.ch[3].dcr, dmac.ch[3].ocr,
         dmac.ch[3].scr, dmac.ch[3].ccr, dmac.ch[3].mtc, dmac.ch[3].mar,
@@ -517,7 +520,7 @@ fn dmac_sound_push(dmac: X68kDMAC&) {
         dmac.ch[3].eiv);
 }
 
-fn dmac_sound_pull(dmac: X68kDMAC&) {
+fn sound_pull(dmac: X68kDMAC&) {
     c_dmac_pull_ch3(
         dmac.ch[3].csr, dmac.ch[3].cer, dmac.ch[3].ccr, dmac.ch[3].mtc,
         dmac.ch[3].mar, dmac.ch[3].dar, dmac.ch[3].btc, dmac.ch[3].bar);

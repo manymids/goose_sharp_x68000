@@ -52,7 +52,7 @@ let CODE = 0x1000;
 
 fn fresh() {
     g_cpu = M68kCPU {};
-    mmu_init(g_mmu);
+    g_mmu.init();
     g_mmu.reset_overlay = false;
     g_cpu.a[REG_A7] = 0x8000;
     g_cpu.ssp = 0x8000;
@@ -75,60 +75,60 @@ fn run(words: u16[:], steps: i32) {
 fn test_flag_helpers() {
     var cpu = M68kCPU {};
     cpu.sr = 0;
-    cpu_flags_add(cpu, 1, 0x01, 0x7F, 0x80);
+    cpu.flags_add(1, 0x01, 0x7F, 0x80);
     check_eq("add8 0x7F+1 sets N V", cpu.sr & 0x1F, SR_N | SR_V);
-    cpu_flags_add(cpu, 2, 0x0001, 0xFFFF, 0x10000);
+    cpu.flags_add(2, 0x0001, 0xFFFF, 0x10000);
     check_eq("add16 0xFFFF+1 sets X Z C", cpu.sr & 0x1F, SR_X | SR_Z | SR_C);
-    cpu_flags_add(cpu, 4, 0x80000000, 0x80000000, 0);
+    cpu.flags_add(4, 0x80000000, 0x80000000, 0);
     check_eq("add32 overflow sets X Z V C", cpu.sr & 0x1F, SR_X | SR_Z | SR_V | SR_C);
 
     cpu.sr = SR_X;
-    cpu_flags_sub(cpu, 1, 0x01, 0x00, 0xFF, false);
+    cpu.flags_sub(1, 0x01, 0x00, 0xFF, false);
     check_eq("cmp8 0-1 keeps X, sets N C", cpu.sr & 0x1F, SR_X | SR_N | SR_C);
     cpu.sr = SR_X;
-    cpu_flags_sub(cpu, 4, 5, 5, 0, true);
+    cpu.flags_sub(4, 5, 5, 0, true);
     check_eq("sub32 equal clears X, sets Z", cpu.sr & 0x1F, SR_Z);
-    cpu_flags_sub(cpu, 2, 0x0001, 0x8000, 0x7FFF, true);
+    cpu.flags_sub(2, 0x0001, 0x8000, 0x7FFF, true);
     check_eq("sub16 0x8000-1 sets V", cpu.sr & 0x1F, SR_V);
 
     cpu.sr = SR_Z;
-    cpu_flags_addx(cpu, 4, 0, 0, 0);
+    cpu.flags_addx(4, 0, 0, 0);
     check_eq("addx zero result keeps Z", cpu.sr & 0x1F, SR_Z);
-    cpu_flags_addx(cpu, 4, 0, 1, 1);
+    cpu.flags_addx(4, 0, 1, 1);
     check_eq("addx non-zero result clears Z", cpu.sr & 0x1F, 0);
     cpu.sr = 0;
-    cpu_flags_subx(cpu, 1, 1, 0, 0xFF);
+    cpu.flags_subx(1, 1, 0, 0xFF);
     check_eq("subx8 borrow sets X N C", cpu.sr & 0x1F, SR_X | SR_N | SR_C);
 
     cpu.sr = SR_C | SR_X;
-    cpu_set_nz(cpu, 2, 0x8000);
+    cpu.set_nz(2, 0x8000);
     check_eq("set_nz clears C, keeps X", cpu.sr & 0x1F, SR_X | SR_N);
     cpu.sr = SR_C;
-    cpu_set_nz_only(cpu, 1, 0x100);
+    cpu.set_nz_only(1, 0x100);
     check_eq("set_nz_only looks at the low byte, keeps C", cpu.sr & 0x1F, SR_Z | SR_C);
 }
 
 fn test_conditions() {
     var cpu = M68kCPU {};
     cpu.sr = 0;
-    check("HI with C=0 Z=0", cpu_check_condition(cpu, 2));
-    check("GE with N=V=0", cpu_check_condition(cpu, 12));
-    check("GT with N=V=0 Z=0", cpu_check_condition(cpu, 14));
+    check("HI with C=0 Z=0", cpu.check_condition(2));
+    check("GE with N=V=0", cpu.check_condition(12));
+    check("GT with N=V=0 Z=0", cpu.check_condition(14));
     cpu.sr = SR_Z;
-    check("EQ with Z", cpu_check_condition(cpu, 7));
-    check("LS with Z", cpu_check_condition(cpu, 3));
-    check("LE with Z", cpu_check_condition(cpu, 15));
-    check("not GT with Z", !cpu_check_condition(cpu, 14));
+    check("EQ with Z", cpu.check_condition(7));
+    check("LS with Z", cpu.check_condition(3));
+    check("LE with Z", cpu.check_condition(15));
+    check("not GT with Z", !cpu.check_condition(14));
     cpu.sr = SR_N;
-    check("LT with N!=V", cpu_check_condition(cpu, 13));
-    check("MI with N", cpu_check_condition(cpu, 11));
+    check("LT with N!=V", cpu.check_condition(13));
+    check("MI with N", cpu.check_condition(11));
     cpu.sr = SR_N | SR_V;
-    check("GE with N=V=1", cpu_check_condition(cpu, 12));
+    check("GE with N=V=1", cpu.check_condition(12));
     cpu.sr = SR_C;
-    check("CS with C", cpu_check_condition(cpu, 5));
-    check("not HI with C", !cpu_check_condition(cpu, 2));
-    check("T", cpu_check_condition(cpu, 0));
-    check("F", !cpu_check_condition(cpu, 1));
+    check("CS with C", cpu.check_condition(5));
+    check("not HI with C", !cpu.check_condition(2));
+    check("T", cpu.check_condition(0));
+    check("F", !cpu.check_condition(1));
 }
 
 fn test_arithmetic() {
@@ -290,7 +290,7 @@ fn test_exceptions() {
     for i in privileged.len {
         fresh();
         g_cpu.usp = 0x7000;
-        cpu_set_sr(g_cpu, 0x0000);
+        g_cpu.set_sr(0x0000);
         x68k_ram_write32(0x20, 0x6400);
         // ユーザモードは $2000 未満 (スーパーバイザ領域) を読めないので、その上に置く。
         poke(0x4800, [privileged[i], 0x2700]);
@@ -299,7 +299,7 @@ fn test_exceptions() {
         check_eq("privilege violation vector", g_cpu.pc, 0x6400);
         check_eq("privilege violation stacks the instruction address", x68k_ram_read32(0x7FFC), 0x4800);
         check_eq("privilege violation stacks the user SR", x68k_ram_read16(0x7FFA), 0x0000);
-        check("privilege violation enters supervisor mode", cpu_is_supervisor(g_cpu));
+        check("privilege violation enters supervisor mode", g_cpu.is_supervisor());
     }
 
     // トレース: T が立っていると 1 命令ごとにベクタ 9。次の命令のアドレスと T 付きの SR を積む。
@@ -329,7 +329,7 @@ fn test_exceptions() {
     // ユーザモードから割り込みを受けると SSP に切り替わる。
     fresh();
     g_cpu.usp = 0x7000;
-    cpu_set_sr(g_cpu, 0x0000);
+    g_cpu.set_sr(0x0000);
     check_eq("user mode uses USP", g_cpu.a[REG_A7], 0x7000);
     x68k_ram_write32(0x100, 0x6800);
     m68k_interrupt(g_cpu, g_mmu, 6, 0x40);
@@ -377,37 +377,37 @@ fn result_left(fdc: X68kFDC&) -> i32 {
 }
 
 fn test_fdc_tables() {
-    check("ReadData takes 8 parameter bytes", fdc_cmd_prm_len(FDC_READ_DATA) == 8);
-    check("ReadData returns 7 result bytes", fdc_cmd_rsp_len(FDC_READ_DATA) == 7);
-    check("Seek takes 2 parameter bytes", fdc_cmd_prm_len(FDC_SEEK) == 2);
-    check("Seek has no result phase", fdc_cmd_rsp_len(FDC_SEEK) == 0);
-    check("SenseIntStatus takes none", fdc_cmd_prm_len(FDC_SENSE_INT) == 0);
-    check("SenseIntStatus returns 2", fdc_cmd_rsp_len(FDC_SENSE_INT) == 2);
-    check("WriteID takes 5", fdc_cmd_prm_len(FDC_WRITE_ID) == 5);
-    check("invalid command", fdc_cmd_prm_len(0) == 0 && fdc_cmd_rsp_len(0) == 0);
+    check("ReadData takes 8 parameter bytes", fdc::cmd_prm_len(FDC_READ_DATA) == 8);
+    check("ReadData returns 7 result bytes", fdc::cmd_rsp_len(FDC_READ_DATA) == 7);
+    check("Seek takes 2 parameter bytes", fdc::cmd_prm_len(FDC_SEEK) == 2);
+    check("Seek has no result phase", fdc::cmd_rsp_len(FDC_SEEK) == 0);
+    check("SenseIntStatus takes none", fdc::cmd_prm_len(FDC_SENSE_INT) == 0);
+    check("SenseIntStatus returns 2", fdc::cmd_rsp_len(FDC_SENSE_INT) == 2);
+    check("WriteID takes 5", fdc::cmd_prm_len(FDC_WRITE_ID) == 5);
+    check("invalid command", fdc::cmd_prm_len(0) == 0 && fdc::cmd_rsp_len(0) == 0);
 
     // ドライブを選んでいない Seek は「ドライブなし」で終わり、SenseIntStatus で読める。
     var fdc = X68kFDC {};
-    fdc_write(fdc, 7, 0x00);
-    check("idle: ready, not busy", fdc_read(fdc, 1) == 0x80 && fdc.phase == FdcPhase.Idle);
-    fdc_write(fdc, 3, 0x0F);
-    check("command phase: busy, waiting for the CPU", fdc_read(fdc, 1) == 0x90);
-    fdc_write(fdc, 3, 0x00);
-    check("still in the command phase", fdc_read(fdc, 1) == 0x90);
-    fdc_write(fdc, 3, 0x05);
-    check("Seek has no result phase", fdc.phase == FdcPhase.Idle);
+    fdc.write(7, 0x00);
+    check("idle: ready, not busy", fdc.read(1) == 0x80 && fdc.phase == fdc::FdcPhase.Idle);
+    fdc.write(3, 0x0F);
+    check("command phase: busy, waiting for the CPU", fdc.read(1) == 0x90);
+    fdc.write(3, 0x00);
+    check("still in the command phase", fdc.read(1) == 0x90);
+    fdc.write(3, 0x05);
+    check("Seek has no result phase", fdc.phase == fdc::FdcPhase.Idle);
     check("Seek raises the interrupt", fdc.int_pending);
-    fdc_write(fdc, 3, 0x08);
-    check("result phase: data for the CPU", result_left(fdc) == 2 && fdc_read(fdc, 1) == 0xD0);
-    check("peeking the result does not consume it", fdc_peek(fdc, 3) == 0x48 && fdc_peek(fdc, 3) == 0x48);
-    check("SenseIntStatus: ST0 abnormal, not ready", fdc_read(fdc, 3) == 0x48);
-    check("reading moves on to the cylinder byte", fdc_peek(fdc, 3) == 0x00 && result_left(fdc) == 1);
-    fdc_read(fdc, 3);
-    check("the last result byte returns to idle", fdc.phase == FdcPhase.Idle);
+    fdc.write(3, 0x08);
+    check("result phase: data for the CPU", result_left(fdc) == 2 && fdc.read(1) == 0xD0);
+    check("peeking the result does not consume it", fdc.peek(3) == 0x48 && fdc.peek(3) == 0x48);
+    check("SenseIntStatus: ST0 abnormal, not ready", fdc.read(3) == 0x48);
+    check("reading moves on to the cylinder byte", fdc.peek(3) == 0x00 && result_left(fdc) == 1);
+    fdc.read(3);
+    check("the last result byte returns to idle", fdc.phase == fdc::FdcPhase.Idle);
     // 結果を読み残していても、次のコマンドを受け付ける
-    fdc_write(fdc, 3, 0x08);
-    fdc_write(fdc, 3, 0x0F);
-    check("a new command may interrupt the result phase", fdc_read(fdc, 1) == 0x90 && result_left(fdc) == -1);
+    fdc.write(3, 0x08);
+    fdc.write(3, 0x0F);
+    check("a new command may interrupt the result phase", fdc.read(1) == 0x90 && result_left(fdc) == -1);
 }
 
 // デバッガ用の読み出しは、読むと状態が変わるレジスタを進めない。
@@ -415,74 +415,74 @@ fn test_peek() {
     fresh();
     g_mmu.mfp.last_key = 0x41;
     g_mmu.mfp.key_int_flag = true;
-    check("peek of MFP UDR returns the key", mmu_peek8(g_mmu, 0xE8802F) == 0x41);
+    check("peek of MFP UDR returns the key", g_mmu.peek8(0xE8802F) == 0x41);
     check("peek of MFP UDR keeps the receive flag", g_mmu.mfp.key_int_flag);
-    check("read of MFP UDR returns the key", mmu_read8(g_mmu, 0xE8802F) == 0x41);
+    check("read of MFP UDR returns the key", g_mmu.read8(0xE8802F) == 0x41);
     check("read of MFP UDR clears the receive flag", !g_mmu.mfp.key_int_flag);
 
     x68k_ram_write(0x2000, 0x5A);
-    check("peek of RAM is an ordinary read", mmu_peek8(g_mmu, 0x2000) == 0x5A);
+    check("peek of RAM is an ordinary read", g_mmu.peek8(0x2000) == 0x5A);
 }
 
 fn test_dmac() {
     var dmac = X68kDMAC {};
-    dmac_write(dmac, 0xE8400D, 0x12);
-    dmac_write(dmac, 0xE8400E, 0x34);
-    dmac_write(dmac, 0xE8400F, 0x56);
+    dmac.write(0xE8400D, 0x12);
+    dmac.write(0xE8400E, 0x34);
+    dmac.write(0xE8400F, 0x56);
     check_eq("MAR is 24 bits wide", dmac.ch[0].mar, 0x123456);
-    check("MAR reads back", dmac_read(dmac, 0xE8400D) == 0x12 && dmac_read(dmac, 0xE8400F) == 0x56);
-    dmac_write(dmac, 0xE8404A, 0x04);
-    dmac_write(dmac, 0xE8404B, 0x00);
+    check("MAR reads back", dmac.read(0xE8400D) == 0x12 && dmac.read(0xE8400F) == 0x56);
+    dmac.write(0xE8404A, 0x04);
+    dmac.write(0xE8404B, 0x00);
     check_eq("channel 1 MTC", dmac.ch[1].mtc, 0x0400);
     check("channel 0 MTC untouched", dmac.ch[0].mtc == 0);
 
     dmac.ch[2].csr = 0xF8;
-    dmac_write(dmac, 0xE84080, 0xF0);
+    dmac.write(0xE84080, 0xF0);
     check_eq("writing 1s to CSR clears them, ACT stays", dmac.ch[2].csr, 0x08);
 
-    dmac_write(dmac, 0xE84007, 0x80);
+    dmac.write(0xE84007, 0x80);
     check_eq("CCR STR sets ACT", dmac.ch[0].csr & 0x08, 0x08);
-    dmac_write(dmac, 0xE84007, 0x10);
+    dmac.write(0xE84007, 0x10);
     check_eq("software abort sets ERR and clears ACT", dmac.ch[0].csr & 0x18, 0x10);
     check_eq("software abort error code", dmac.ch[0].cer, 0x11);
 
-    check("no interrupt pending", dmac_peek_irq(dmac) == -1);
+    check("no interrupt pending", dmac.peek_irq() == -1);
     dmac.ch[1].niv = 0x6C;
     dmac.ch[1].eiv = 0x6D;
     dmac.ch[1].csr = 0x80;
     dmac.int_ch = 2;
     dmac.int_pending = true;
-    check("normal completion uses NIV", dmac_peek_irq(dmac) == 0x6C);
+    check("normal completion uses NIV", dmac.peek_irq() == 0x6C);
     dmac.ch[1].csr = 0x10;
-    check("an error uses EIV", dmac_peek_irq(dmac) == 0x6D);
-    dmac_ack_irq(dmac);
-    check("acknowledge clears the request", !dmac.int_pending && dmac_peek_irq(dmac) == -1);
+    check("an error uses EIV", dmac.peek_irq() == 0x6D);
+    dmac.ack_irq();
+    check("acknowledge clears the request", !dmac.int_pending && dmac.peek_irq() == -1);
 }
 
 fn test_rtc() {
-    check("1970-01-01 is day 0", rtc_days_from_civil(1970, 1, 1) == 0);
-    check("2026-01-01", rtc_days_from_civil(2026, 1, 1) * 86400 == RTC_EPOCH_2026);
-    check("month 13 rolls into the next year", rtc_days_from_civil(2025, 13, 1) == rtc_days_from_civil(2026, 1, 1));
+    check("1970-01-01 is day 0", rtc::days_from_civil(1970, 1, 1) == 0);
+    check("2026-01-01", rtc::days_from_civil(2026, 1, 1) * 86400 == RTC_EPOCH_2026);
+    check("month 13 rolls into the next year", rtc::days_from_civil(2025, 13, 1) == rtc::days_from_civil(2026, 1, 1));
     var ok = true;
     for day in -800..40000 {
-        let y, m, d = rtc_civil_from_days(day);
-        if rtc_days_from_civil(y, m, d) != day || m < 1 || m > 12 || d < 1 || d > 31 { ok = false; }
+        let y, m, d = rtc::civil_from_days(day);
+        if rtc::days_from_civil(y, m, d) != day || m < 1 || m > 12 || d < 1 || d > 31 { ok = false; }
     }
     check("civil date round trip", ok);
 
     // 既定の時計は 2026-01-01 00:00:00 (木曜)。年は 1980 起点の 2 桁。
     var rtc = X68kRTC {};
-    check("year digits", rtc_digit(rtc, 12) == 4 && rtc_digit(rtc, 11) == 6);
-    check("month digits", rtc_digit(rtc, 10) == 0 && rtc_digit(rtc, 9) == 1);
-    check("day digits", rtc_digit(rtc, 8) == 0 && rtc_digit(rtc, 7) == 1);
-    check("weekday is Thursday", rtc_digit(rtc, 6) == 4);
-    check("leap counter", rtc_read(rtc, 0x1B) == 0x08);
+    check("year digits", rtc.digit(12) == 4 && rtc.digit(11) == 6);
+    check("month digits", rtc.digit(10) == 0 && rtc.digit(9) == 1);
+    check("day digits", rtc.digit(8) == 0 && rtc.digit(7) == 1);
+    check("weekday is Thursday", rtc.digit(6) == 4);
+    check("leap counter", rtc.read(0x1B) == 0x08);
     rtc.now = 3661 * RTC_UNITS_PER_SEC;
-    check("clock runs with emulated time", rtc_digit(rtc, 4) == 1 && rtc_digit(rtc, 2) == 1 && rtc_digit(rtc, 0) == 1);
-    rtc_write(rtc, 0x0D, 0x03);
-    check("writing the weekday changes only the weekday", rtc_digit(rtc, 6) == 3 && rtc_digit(rtc, 7) == 1);
-    rtc_write(rtc, 0x13, 0x02);
-    check("writing the month re-dates the clock", rtc_digit(rtc, 9) == 2 && rtc_digit(rtc, 4) == 1);
+    check("clock runs with emulated time", rtc.digit(4) == 1 && rtc.digit(2) == 1 && rtc.digit(0) == 1);
+    rtc.write(0x0D, 0x03);
+    check("writing the weekday changes only the weekday", rtc.digit(6) == 3 && rtc.digit(7) == 1);
+    rtc.write(0x13, 0x02);
+    check("writing the month re-dates the clock", rtc.digit(9) == 2 && rtc.digit(4) == 1);
 }
 
 // CODE に words を置いて 1 命令を逆アセンブルし、文字列と長さを確かめる。

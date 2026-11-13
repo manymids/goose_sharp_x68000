@@ -533,12 +533,12 @@ fn run_frames_ok(frames: i32) -> bool {
 }
 
 fn live_usp(cpu: M68kCPU&) -> u32 {
-    if cpu_is_supervisor(cpu) { return cpu.usp; }
+    if cpu.is_supervisor() { return cpu.usp; }
     return cpu.a[7];
 }
 
 fn live_ssp(cpu: M68kCPU&) -> u32 {
-    if cpu_is_supervisor(cpu) { return cpu.a[7]; }
+    if cpu.is_supervisor() { return cpu.a[7]; }
     return cpu.ssp;
 }
 
@@ -581,10 +581,10 @@ fn match_ank(glyph: u8[>..]&) -> i32 {
 fn console_decode(emu: X68kEmulator&, text: u8[>..]&) -> i32 {
     var dot_x: i32 = 768;
     var dot_y: i32 = 512;
-    let hstart = crtc_word(emu.mmu, CRTC_HSTART);
-    let hend = crtc_word(emu.mmu, CRTC_HEND);
-    let vstart = crtc_word(emu.mmu, CRTC_VSTART);
-    let vend = crtc_word(emu.mmu, CRTC_VEND);
+    let hstart = emu.mmu.crtc_word(CRTC_HSTART);
+    let hend = emu.mmu.crtc_word(CRTC_HEND);
+    let vstart = emu.mmu.crtc_word(CRTC_VSTART);
+    let vend = emu.mmu.crtc_word(CRTC_VEND);
     if hend > hstart { dot_x = (hend - hstart) * 8; }
     if vend > vstart { dot_y = vend - vstart; }
     var cols: i32 = dot_x / 8;
@@ -595,8 +595,8 @@ fn console_decode(emu: X68kEmulator&, text: u8[>..]&) -> i32 {
     if rows < 1 { rows = 1; }
     g_console_cols = cols;
     g_console_rows = rows;
-    let scroll_x = crtc_word(emu.mmu, CRTC_TEXT_X) & 1023;
-    let scroll_y = crtc_word(emu.mmu, CRTC_TEXT_Y) & 1023;
+    let scroll_x = emu.mmu.crtc_word(CRTC_TEXT_X) & 1023;
+    let scroll_y = emu.mmu.crtc_word(CRTC_TEXT_Y) & 1023;
     for r in rows {
         let line_start = text.len;
         for c in cols {
@@ -642,23 +642,23 @@ fn console_decode(emu: X68kEmulator&, text: u8[>..]&) -> i32 {
 }
 
 fn video_object(emu: X68kEmulator&, obj: u8[>..]&) {
-    let hstart = crtc_word(emu.mmu, CRTC_HSTART);
-    let hend = crtc_word(emu.mmu, CRTC_HEND);
-    let vstart = crtc_word(emu.mmu, CRTC_VSTART);
-    let vend = crtc_word(emu.mmu, CRTC_VEND);
+    let hstart = emu.mmu.crtc_word(CRTC_HSTART);
+    let hend = emu.mmu.crtc_word(CRTC_HEND);
+    let vstart = emu.mmu.crtc_word(CRTC_VSTART);
+    let vend = emu.mmu.crtc_word(CRTC_VEND);
     var dot_x = 768;
     var dot_y = 512;
     if hend > hstart { dot_x = (hend - hstart) * 8; }
     if vend > vstart { dot_y = vend - vstart; }
-    let sx = crtc_word(emu.mmu, CRTC_TEXT_X) & 1023;
-    let sy = crtc_word(emu.mmu, CRTC_TEXT_Y) & 1023;
+    let sx = emu.mmu.crtc_word(CRTC_TEXT_X) & 1023;
+    let sy = emu.mmu.crtc_word(CRTC_TEXT_Y) & 1023;
     format(obj, "{\"text\":{\"dot_x\":", dot_x, ",\"dot_y\":", dot_y, ",\"scroll_x\":", sx, ",\"scroll_y\":", sy, "},\"graphic\":{\"scroll\":[");
     let xhi: i32[4] = [0x18, 0x1c, 0x20, 0x24];
     let yhi: i32[4] = [0x1a, 0x1e, 0x22, 0x26];
     for page in 4 {
         if page != 0 { obj.append(","); }
-        let gx = crtc_word(emu.mmu, xhi[page]);
-        let gy = crtc_word(emu.mmu, yhi[page]);
+        let gx = emu.mmu.crtc_word(xhi[page]);
+        let gy = emu.mmu.crtc_word(yhi[page]);
         format(obj, "{\"page\":", page, ",\"x\":", gx, ",\"y\":", gy, "}");
     }
     obj.append("]},\"crtc\":{\"vstart\":");
@@ -759,7 +759,7 @@ fn mcp_control_call(emu: X68kEmulator&, tool_name: const u8[:], args: const u8[:
 
     if tool_name == "arcl_step" {
         let pc_before = emu.cpu.pc;
-        let cycles = x68k_emu_step(emu);
+        let cycles = emu.step();
         var before_str: u8[>..] = []; hex_u32(pc_before, before_str);
         var after_str: u8[>..] = []; hex_u32(emu.cpu.pc, after_str);
         var sr_str: u8[>..] = []; hex_u16(emu.cpu.sr, sr_str);
@@ -1364,7 +1364,7 @@ fn mcp_tool_rewind(emu: X68kEmulator&, args: const u8[:], id_buf: const u8[:]) {
 }
 
 fn mcp_tool_speed(emu: X68kEmulator&, args: const u8[:], id_buf: const u8[:]) {
-    let nom = x68k_nominal_fps(emu.mmu);
+    let nom = emu::nominal_fps(emu.mmu);
     let fps, pct, running = session_speed(emu, win32_ui_get_ticks_ms());
     let run = if running { "true" } else { "false" };
     var obj: u8[>..] = [];
@@ -1827,7 +1827,7 @@ fn mcp_tool_read_mem(emu: X68kEmulator&, args: const u8[:], id_buf: const u8[:])
     let hex_chars = "0123456789abcdef";
     var data_hex: u8[>..] = [];
     for i in read_len {
-        let b = mmu_peek8(emu.mmu, addr + (i as u32));
+        let b = emu.mmu.peek8(addr + (i as u32));
         data_hex.push(hex_chars[((b >> 4) & 0x0F) as i32]);
         data_hex.push(hex_chars[(b & 0x0F) as i32]);
     }
@@ -1870,7 +1870,7 @@ fn mcp_tool_disasm(emu: X68kEmulator&, args: const u8[:], id_buf: const u8[:]) {
         list.append("{\"address\":\"");
         hex_u32(at, list);
         list.append("\",\"bytes\":\"");
-        for k in length { format_uint(list, mmu_peek8(emu.mmu, at + (k as u32)), 16, 2, '0'); }
+        for k in length { format_uint(list, emu.mmu.peek8(at + (k as u32)), 16, 2, '0'); }
         list.append("\",\"text\":");
         json_append_quoted(list, text);
         list.push('}');
@@ -1933,7 +1933,7 @@ fn mcp_tool_write_mem(emu: X68kEmulator&, args: const u8[:], id_buf: const u8[:]
     for i: i32 in nbytes {
         let hi = hex_nibble(hexdata[i * 2]);
         let lo = hex_nibble(hexdata[i * 2 + 1]);
-        mmu_write8(emu.mmu, addr + (i as u32), ((hi << 4) | lo) as u8);
+        emu.mmu.write8(addr + (i as u32), ((hi << 4) | lo) as u8);
     }
     var addr_hex: u8[>..] = [];
     hex_u32(addr, addr_hex);
@@ -1955,9 +1955,9 @@ fn mcp_tool_write_registers(emu: X68kEmulator&, args: const u8[:], id_buf: const
     if json_key_value(args, 0, "pref_data") >= 0 { mcp_write_text(id_buf, "the 68000 has no 'pref_data' register; nothing was written", true); return; }
     var wrote = false;
     if json_key_value(args, 0, "pc") >= 0 { emu.cpu.pc = extract_json_addr(args, "pc", emu.cpu.pc); wrote = true; }
-    if json_key_value(args, 0, "sr") >= 0 { cpu_set_sr(emu.cpu, extract_json_addr(args, "sr", emu.cpu.sr) as u16); wrote = true; }
+    if json_key_value(args, 0, "sr") >= 0 { emu.cpu.set_sr(extract_json_addr(args, "sr", emu.cpu.sr) as u16); wrote = true; }
     // A7 is the stack pointer of the current mode; USP and SSP name one stack each.
-    let sup = cpu_is_supervisor(emu.cpu);
+    let sup = emu.cpu.is_supervisor();
     if json_key_value(args, 0, "usp") >= 0 {
         let v = extract_json_addr(args, "usp", 0);
         if sup { emu.cpu.usp = v; } else { emu.cpu.a[7] = v; }
@@ -2009,7 +2009,7 @@ fn mcp_tool_stack(emu: X68kEmulator&, args: const u8[:], id_buf: const u8[:]) {
     format(obj, "{\"sp\":\"", sp_hex, "\",\"words\":[");
     for i in count {
         let a = sp + ((i as u32) * 4);
-        let v = mmu_read32(emu.mmu, a);
+        let v = emu.mmu.read32(a);
         if i != 0 { obj.append(","); }
         var ah: u8[>..] = []; hex_u32(a, ah);
         var vh: u8[>..] = []; hex_u32(v, vh);
@@ -2098,11 +2098,11 @@ fn mcp_tool_vram(emu: X68kEmulator&, args: const u8[:], id_buf: const u8[:]) {
 }
 
 fn mcp_tool_irq(emu: X68kEmulator&, args: const u8[:], id_buf: const u8[:]) {
-    let crtc_line = crtc_word(emu.mmu, CRTC_RASTER) & 1023;
+    let crtc_line = emu.mmu.crtc_word(CRTC_RASTER) & 1023;
     var obj: u8[>..] = [];
     obj.append("{\"mfp\":{\"gpip\":");
     // The live input lines as the CPU reads them (V-DISP, H-SYNC, raster, RTC ALARM).
-    push_hex_byte(obj, mmu_read8(emu.mmu, 0xE88001));
+    push_hex_byte(obj, emu.mmu.read8(0xE88001));
     obj.append(",\"aer\":");
     push_hex_byte(obj, emu.mmu.mfp.regs[MFP_AER]);
     obj.append(",\"ddr\":");
@@ -2256,8 +2256,8 @@ fn mcp_tool_palette(emu: X68kEmulator&, args: const u8[:], id_buf: const u8[:]) 
 }
 
 fn mcp_tool_sprites(emu: X68kEmulator&, args: const u8[:], id_buf: const u8[:]) {
-    let hstart = crtc_word(emu.mmu, CRTC_HSTART);
-    let vstart = crtc_word(emu.mmu, CRTC_VSTART);
+    let hstart = emu.mmu.crtc_word(CRTC_HSTART);
+    let vstart = emu.mmu.crtc_word(CRTC_VSTART);
     let b0d: i32 = c_mem_read_bg_reg(0x0D);
     let b0f: i32 = c_mem_read_bg_reg(0x0F);
     let b11: i32 = c_mem_read_bg_reg(0x11);

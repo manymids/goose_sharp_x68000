@@ -2,7 +2,7 @@
 //
 // 表記はモトローラ形式。数値は 16 進で `$` を付ける。相対分岐と PC 相対は飛び先の絶対番地を出す。
 // 68000 に無い命令と、ライン A / ライン F (X68000 では IOCS / DOS コール) は `DC.W` で出す。
-// メモリは mmu_peek8 で読むので、I/O レジスタを逆アセンブルしても機器の状態は変わらない。
+// メモリは mmu::peek8 で読むので、I/O レジスタを逆アセンブルしても機器の状態は変わらない。
 
 import std;
 import .m68k_mmu;
@@ -13,8 +13,8 @@ struct DisCursor {
 }
 
 fn dis_word(mmu: M68kMMU&, at: u32) -> u16 {
-    let hi: u16 = mmu_peek8(mmu, at);
-    let lo: u16 = mmu_peek8(mmu, at + 1);
+    let hi: u16 = mmu.peek8(at);
+    let lo: u16 = mmu.peek8(at + 1);
     return (hi << 8) | lo;
 }
 

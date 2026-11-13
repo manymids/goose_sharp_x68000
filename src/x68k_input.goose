@@ -8,12 +8,12 @@ import .x68k_bridge;
 fn input_key(emu: X68kEmulator&, code: i32, down: bool) {
     if code < 0 || code >= 128 { return; }
     let sc = if down { code as u8 } else { (code as u8) | 0x80 };
-    mfp_send_key(emu.mmu.mfp, sc);
+    emu.mmu.mfp.send_key(sc);
     note_key(emu, code, down);
 }
 
 fn input_host_scancode(emu: X68kEmulator&, sc: u8) {
-    mfp_send_key(emu.mmu.mfp, sc);
+    emu.mmu.mfp.send_key(sc);
     note_key(emu, (sc & 0x7F), (sc & 0x80) == 0);
 }
 
@@ -100,10 +100,10 @@ fn type_set_key(emu: X68kEmulator&, code: i32, down: bool) {
     if code < 0 || code >= 128 { return; }
     let was = emu.session.keys[code];
     if down && !was {
-        mfp_send_key(emu.mmu.mfp, code as u8);
+        emu.mmu.mfp.send_key(code as u8);
         emu.session.keys[code] = true;
     } else if !down && was {
-        mfp_send_key(emu.mmu.mfp, (code as u8) | 0x80);
+        emu.mmu.mfp.send_key((code as u8) | 0x80);
         emu.session.keys[code] = false;
     }
 }
@@ -164,7 +164,7 @@ fn note_key(emu: X68kEmulator&, code: i32, down: bool) {
 fn release_held_keys(emu: X68kEmulator&) {
     for i in 128 {
         if emu.session.keys[i] {
-            mfp_send_key(emu.mmu.mfp, (i as u8) | 0x80);
+            emu.mmu.mfp.send_key((i as u8) | 0x80);
             emu.session.keys[i] = false;
         }
     }

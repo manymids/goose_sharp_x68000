@@ -157,7 +157,7 @@ fn run_gui(emu: X68kEmulator&, screen_w: i32, screen_h: i32, scale: i32, max_fra
         win32_ui_render_fb();
 
         // The frame the CRTC programs (768x512 31 kHz: about 18031 us, 55.46 Hz).
-        let frame_period_us: u64 = (x68k_frame_cycles10(emu.mmu) / 10) as u64;
+        let frame_period_us: u64 = (emu::frame_cycles10(emu.mmu) / 10) as u64;
         target_time_us += frame_period_us;
         let now_us = win32_ui_get_time_us();
         if target_time_us > now_us {
@@ -326,10 +326,10 @@ fn main() {
     // Goose ネイティブ X68000 エミュレータ本体の初期化
     var emu = X68kEmulator {};
     emu.clock_mhz = c_get_cpu_mhz();
-    x68k_emu_init(emu);
+    emu.init();
     // The GUI clock follows the host; ARCL and headless runs start at XEiJ's fixed 2026-01-01
     // so that runs replay identically.
-    if !mcp_mode && !no_window { rtc_init(emu.mmu.rtc, c_host_local_seconds()); }
+    if !mcp_mode && !no_window { emu.mmu.rtc.init(c_host_local_seconds()); }
 
     if mcp_mode {
         run_mcp(emu, !no_window, screen_w, screen_h, scale);

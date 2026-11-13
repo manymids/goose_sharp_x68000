@@ -1,40 +1,42 @@
 // Sharp X68000 MC68901 MFP (Multi-Function Peripheral) in Goose
 
-let MFP_GPIP = 0;
-let MFP_AER = 1;
-let MFP_DDR = 2;
-let MFP_IERA = 3;
-let MFP_IERB = 4;
-let MFP_IPRA = 5;
-let MFP_IPRB = 6;
-let MFP_ISRA = 7;
-let MFP_ISRB = 8;
-let MFP_IMRA = 9;
-let MFP_IMRB = 10;
-let MFP_VR = 11;
-let MFP_TACR = 12;
-let MFP_TBCR = 13;
-let MFP_TCDCR = 14;
-let MFP_TADR = 15;
-let MFP_TBDR = 16;
-let MFP_TCDR = 17;
-let MFP_TDDR = 18;
-let MFP_SCR = 19;
-let MFP_UCR = 20;
-let MFP_RSR = 21;
-let MFP_TSR = 22;
-let MFP_UDR = 23;
+namespace mfp;
 
-// 割り込み要因の番号 (mfp_trigger_int の irq)。0 が最優先で、ベクタは VR の上位 4 bit + (15 - 番号)。
-let MFP_IRQ_HSYNC = 0;    // GPIP7: 水平同期
-let MFP_IRQ_RASTER = 1;   // GPIP6: CRTC のラスタ割り込み
-let MFP_IRQ_TIMER_A = 2;
-let MFP_IRQ_KEY = 3;      // キーボードの受信バッファフル
-let MFP_IRQ_TIMER_B = 7;
-let MFP_IRQ_VDISP = 9;    // GPIP4: 垂直表示期間
-let MFP_IRQ_TIMER_C = 10;
-let MFP_IRQ_TIMER_D = 11;
-let MFP_IRQ_OPM = 12;     // GPIP3: FM 音源
+let ::MFP_GPIP = 0;
+let ::MFP_AER = 1;
+let ::MFP_DDR = 2;
+let ::MFP_IERA = 3;
+let ::MFP_IERB = 4;
+let ::MFP_IPRA = 5;
+let ::MFP_IPRB = 6;
+let ::MFP_ISRA = 7;
+let ::MFP_ISRB = 8;
+let ::MFP_IMRA = 9;
+let ::MFP_IMRB = 10;
+let ::MFP_VR = 11;
+let ::MFP_TACR = 12;
+let ::MFP_TBCR = 13;
+let ::MFP_TCDCR = 14;
+let ::MFP_TADR = 15;
+let ::MFP_TBDR = 16;
+let ::MFP_TCDR = 17;
+let ::MFP_TDDR = 18;
+let ::MFP_SCR = 19;
+let ::MFP_UCR = 20;
+let ::MFP_RSR = 21;
+let ::MFP_TSR = 22;
+let ::MFP_UDR = 23;
+
+// 割り込み要因の番号 (mfp::trigger_int の irq)。0 が最優先で、ベクタは VR の上位 4 bit + (15 - 番号)。
+let ::MFP_IRQ_HSYNC = 0;    // GPIP7: 水平同期
+let ::MFP_IRQ_RASTER = 1;   // GPIP6: CRTC のラスタ割り込み
+let ::MFP_IRQ_TIMER_A = 2;
+let ::MFP_IRQ_KEY = 3;      // キーボードの受信バッファフル
+let ::MFP_IRQ_TIMER_B = 7;
+let ::MFP_IRQ_VDISP = 9;    // GPIP4: 垂直表示期間
+let ::MFP_IRQ_TIMER_C = 10;
+let ::MFP_IRQ_TIMER_D = 11;
+let ::MFP_IRQ_OPM = 12;     // GPIP3: FM 音源
 
 struct X68kMFP {
     regs: u8[24] = [0; 24],
@@ -54,9 +56,10 @@ struct X68kMFP {
     hsync_end: i32 = 450,
     crtc_intline: i32 = 0,
 }
+type ::X68kMFP = mfp::X68kMFP;
 
 // プリスケーラ分周テーブル (4MHz MFP クロック / 10MHz CPU 基準: px68k mfp.c 準拠)
-fn mfp_get_prescaler(mode: i32) -> i32 {
+fn get_prescaler(mode: i32) -> i32 {
     let m = mode & 7;
     if m == 1 { return 10; }  // 1/4分周: 4 / 0.4 = 10 cycles
     if m == 2 { return 25; }  // 1/10分周: 10 / 0.4 = 25 cycles
@@ -68,7 +71,7 @@ fn mfp_get_prescaler(mode: i32) -> i32 {
     return 1;
 }
 
-fn mfp_init(mfp: X68kMFP&) {
+fn init(mfp: X68kMFP&) {
     mfp = X68kMFP {};
     // X68000 実機デフォルト初期値
     mfp.regs[MFP_GPIP] = 0x7B;
@@ -98,7 +101,7 @@ fn mfp_init(mfp: X68kMFP&) {
 }
 
 // MFP レジスタ Read
-fn mfp_read(mfp: X68kMFP&, reg_idx: i32) -> u8 {
+fn read(mfp: X68kMFP&, reg_idx: i32) -> u8 {
     if reg_idx < 0 || reg_idx >= 24 {
         return 0xFF;
     }
@@ -145,7 +148,7 @@ fn mfp_read(mfp: X68kMFP&, reg_idx: i32) -> u8 {
 }
 
 // MFP レジスタ Write
-fn mfp_write(mfp: X68kMFP&, reg_idx: i32, val: u8) {
+fn write(mfp: X68kMFP&, reg_idx: i32, val: u8) {
     if reg_idx < 0 || reg_idx >= 24 {
         return;
     }
@@ -178,7 +181,7 @@ fn mfp_write(mfp: X68kMFP&, reg_idx: i32, val: u8) {
 }
 
 // 割り込み要求を発行 (irq: 0..15)
-fn mfp_trigger_int(mfp: X68kMFP&, irq: i32) {
+fn trigger_int(mfp: X68kMFP&, irq: i32) {
     if irq < 8 {
         let flag = (0x80 as u8) >> (irq as u8);
         if (mfp.regs[MFP_IERA] & flag) != 0 {
@@ -193,7 +196,7 @@ fn mfp_trigger_int(mfp: X68kMFP&, irq: i32) {
 }
 
 // 割り込みベクタの取得と受付処理 (Level 6 割り込み発生時)
-fn mfp_ack_interrupt(mfp: X68kMFP&) -> i32 {
+fn ack_interrupt(mfp: X68kMFP&) -> i32 {
     var flag: u8 = 0x80;
     var vect: i32 = 15;
     while flag != 0 {
@@ -226,14 +229,14 @@ fn mfp_ack_interrupt(mfp: X68kMFP&) -> i32 {
 }
 
 // ペンディング中の割り込みが存在するか判定
-fn mfp_has_pending_int(mfp: X68kMFP&) -> bool {
+fn has_pending_int(mfp: X68kMFP&) -> bool {
     let pend_a = mfp.regs[MFP_IPRA] & mfp.regs[MFP_IMRA] & ~mfp.regs[MFP_ISRA];
     let pend_b = mfp.regs[MFP_IPRB] & mfp.regs[MFP_IMRB] & ~mfp.regs[MFP_ISRB];
     return pend_a != 0 || pend_b != 0;
 }
 
 // タイマ A イベントカウント (走査線ごとに呼び出し: px68k MFP_TimerA 準拠)
-fn mfp_timer_a(mfp: X68kMFP&, vline: i32, vstart: i32, vend: i32, vline_total: i32) {
+fn timer_a(mfp: X68kMFP&, vline: i32, vstart: i32, vend: i32, vline_total: i32) {
     if (mfp.regs[MFP_TACR] & 15) == 8 {
         var dec = false;
         if (mfp.regs[MFP_AER] & 0x10) != 0 {
@@ -249,25 +252,25 @@ fn mfp_timer_a(mfp: X68kMFP&, vline: i32, vstart: i32, vend: i32, vline_total: i
             mfp.regs[MFP_TADR]--;
             if mfp.regs[MFP_TADR] == 0 {
                 mfp.regs[MFP_TADR] = mfp.timer_reload[0];
-                mfp_trigger_int(mfp, MFP_IRQ_TIMER_A);
+                mfp.trigger_int(MFP_IRQ_TIMER_A);
             }
         }
     }
 }
 
 // タイマ B HSYNC イベントカウント (走査線ごとに呼び出し: px68k モード 8 準拠)
-fn mfp_timer_b_hsync(mfp: X68kMFP&) {
+fn timer_b_hsync(mfp: X68kMFP&) {
     if (mfp.regs[MFP_TBCR] & 15) == 8 {
         mfp.regs[MFP_TBDR]--;
         if mfp.regs[MFP_TBDR] == 0 {
             mfp.regs[MFP_TBDR] = mfp.timer_reload[1];
-            mfp_trigger_int(mfp, MFP_IRQ_TIMER_B);
+            mfp.trigger_int(MFP_IRQ_TIMER_B);
         }
     }
 }
 
 // タイマ進行 & 割込トリガー (プリスケーラカウント: px68k MFP_Timer 準拠)
-fn mfp_step_timers(mfp: X68kMFP&, cycles: i32) {
+fn step_timers(mfp: X68kMFP&, cycles: i32) {
     let timer_ints: i32[4] = [MFP_IRQ_TIMER_A, MFP_IRQ_TIMER_B, MFP_IRQ_TIMER_C, MFP_IRQ_TIMER_D];
 
     // タイマ A, B, C, D
@@ -283,7 +286,7 @@ fn mfp_step_timers(mfp: X68kMFP&, cycles: i32) {
         }
 
         if (mode & 7) != 0 {
-            let prescaler = mfp_get_prescaler(mode);
+            let prescaler = get_prescaler(mode);
             mfp.timer_tick[chan] += cycles;
 
             while mfp.timer_tick[chan] >= prescaler {
@@ -291,15 +294,15 @@ fn mfp_step_timers(mfp: X68kMFP&, cycles: i32) {
                 mfp.regs[MFP_TADR + chan]--;
                 if mfp.regs[MFP_TADR + chan] == 0 {
                     mfp.regs[MFP_TADR + chan] = mfp.timer_reload[chan];
-                    mfp_trigger_int(mfp, timer_ints[chan]);
+                    mfp.trigger_int(timer_ints[chan]);
                 }
             }
         }
     }
 }
 
-// スキャンコードをリングへ積むだけ。割り込みは mfp_keyboard_int が出す。深さは px68k の 128。
-fn mfp_send_key(mfp: X68kMFP&, scan_code: u8) {
+// スキャンコードをリングへ積むだけ。割り込みは mfp::keyboard_int が出す。深さは px68k の 128。
+fn send_key(mfp: X68kMFP&, scan_code: u8) {
     let next = (mfp.key_wp + 1) & 127;
     if next == mfp.key_rp { return; }
     mfp.key_buf[mfp.key_wp] = scan_code;
@@ -307,13 +310,13 @@ fn mfp_send_key(mfp: X68kMFP&, scan_code: u8) {
 }
 
 // px68k Keyboard_Int。前回の UDR 読みが済んでいてバッファに残りがあれば 1 バイト出して irq 3。
-fn mfp_keyboard_int(mfp: X68kMFP&) {
+fn keyboard_int(mfp: X68kMFP&) {
     if mfp.key_rp != mfp.key_wp {
         if !mfp.key_int_flag {
             mfp.last_key = mfp.key_buf[mfp.key_rp];
             mfp.key_rp = (mfp.key_rp + 1) & 127;
             mfp.key_int_flag = true;
-            mfp_trigger_int(mfp, MFP_IRQ_KEY);
+            mfp.trigger_int(MFP_IRQ_KEY);
         }
     } else if !mfp.key_int_flag {
         mfp.last_key = 0;
@@ -321,11 +324,11 @@ fn mfp_keyboard_int(mfp: X68kMFP&) {
 }
 
 // 走査線ごとに呼ぶ。px68k は VLINE_TOTAL/4 ごとに Keyboard_Int。
-fn mfp_key_scanline(mfp: X68kMFP&, vline_total: i32) {
+fn key_scanline(mfp: X68kMFP&, vline_total: i32) {
     mfp.key_line_div += 1;
     let period = vline_total / 4;
     if period > 0 && mfp.key_line_div > period {
         mfp.key_line_div = 0;
-        mfp_keyboard_int(mfp);
+        mfp.keyboard_int();
     }
 }

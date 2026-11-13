@@ -2,6 +2,7 @@
 // Sector bytes stay in c_hdd_read_sector / c_hdd_write_sector.
 
 import .x68k_bridge;
+namespace sasi;
 
 // Tags are internal; their order is not the hardware bus status encoding.
 enum SasiPhase { BusFree, Selected, Command, Data, Status, Message, Sense, Specify }
@@ -24,8 +25,9 @@ struct X68kSASI {
     sense_ptr: i32 = 0,
     status_edge: bool = false,
 }
+type ::X68kSASI = sasi::X68kSASI;
 
-fn sasi_reset(sasi: X68kSASI&) {
+fn reset(sasi: X68kSASI&) {
     sasi.phase = SasiPhase.BusFree;
     sasi.sector = 0;
     sasi.blocks = 0;
@@ -40,42 +42,42 @@ fn sasi_reset(sasi: X68kSASI&) {
     sasi.status_edge = false;
 }
 
-fn sasi_clear_buf(sasi: X68kSASI&) {
+fn clear_buf(sasi: X68kSASI&) {
     for i in 256 {
         sasi.buf[i] = 0;
     }
 }
 
-fn sasi_pull_host_reset(sasi: X68kSASI&) {
+fn pull_host_reset(sasi: X68kSASI&) {
     if c_hdd_take_sasi_reset() != 0 {
-        sasi_reset(sasi);
+        sasi.reset();
     }
 }
 
-fn sasi_image_present() -> bool {
+fn image_present() -> bool {
     return c_hdd_unit_ok() != 0;
 }
 
-fn sasi_unit_present(sasi: X68kSASI&) -> bool {
-    return sasi.device == 0 && sasi.unit == 0 && sasi_image_present();
+fn unit_present(sasi: X68kSASI&) -> bool {
+    return sasi.device == 0 && sasi.unit == 0 && image_present();
 }
 
-fn sasi_seek(sasi: X68kSASI&) -> i32 {
-    if !sasi_unit_present(sasi) {
-        sasi_clear_buf(sasi);
+fn seek(sasi: X68kSASI&) -> i32 {
+    if !sasi.unit_present() {
+        sasi.clear_buf();
         return -1;
     }
     return c_hdd_read_sector(sasi.sector, sasi.buf[0]);
 }
 
-fn sasi_flush(sasi: X68kSASI&) -> i32 {
-    if !sasi_unit_present(sasi) {
+fn flush(sasi: X68kSASI&) -> i32 {
+    if !sasi.unit_present() {
         return -1;
     }
     return c_hdd_write_sector(sasi.sector, sasi.buf[0]);
 }
 
-fn sasi_dec_blocks(sasi: X68kSASI&) {
+fn dec_blocks(sasi: X68kSASI&) {
     if sasi.blocks == 0 {
         sasi.blocks = 0xFFFFFFFF;
     } else {
@@ -83,12 +85,12 @@ fn sasi_dec_blocks(sasi: X68kSASI&) {
     }
 }
 
-fn sasi_after_block(sasi: X68kSASI&) {
-    sasi_dec_blocks(sasi);
+fn after_block(sasi: X68kSASI&) {
+    sasi.dec_blocks();
     if sasi.blocks != 0 {
         sasi.sector += 1;
         sasi.buf_ptr = 0;
-        let result = sasi_seek(sasi);
+        let result = sasi.seek();
         if result == 0 {
             sasi.error = 0x0f;
             sasi.phase = SasiPhase.Status;
@@ -98,11 +100,11 @@ fn sasi_after_block(sasi: X68kSASI&) {
     }
 }
 
-fn sasi_check_cmd(sasi: X68kSASI&) {
+fn check_cmd(sasi: X68kSASI&) {
     sasi.unit = ((sasi.cmd[1] >> 5) & 1);
     let op = sasi.cmd[0];
     if op == 0x00 || op == 0x0b {
-        if sasi_unit_present(sasi) {
+        if sasi.unit_present() {
             sasi.stat = 0;
         } else {
             sasi.stat = 0x02;
@@ -110,7 +112,7 @@ fn sasi_check_cmd(sasi: X68kSASI&) {
         }
         sasi.phase = SasiPhase.Status;
     } else if op == 0x01 {
-        if sasi_unit_present(sasi) {
+        if sasi.unit_present() {
             sasi.sector = 0;
             sasi.stat = 0;
         } else {
@@ -141,7 +143,7 @@ fn sasi_check_cmd(sasi: X68kSASI&) {
         sasi.direction = SasiDirection.DiskToHost;
         sasi.buf_ptr = 0;
         sasi.stat = 0;
-        let result = sasi_seek(sasi);
+        let result = sasi.seek();
         if result == 0 || result == -1 {
             sasi.error = 0x0f;
         }
@@ -155,15 +157,15 @@ fn sasi_check_cmd(sasi: X68kSASI&) {
         sasi.direction = SasiDirection.HostToDisk;
         sasi.buf_ptr = 0;
         sasi.stat = 0;
-        sasi_clear_buf(sasi);
-        let result = sasi_seek(sasi);
+        sasi.clear_buf();
+        let result = sasi.seek();
         if result == 0 || result == -1 {
             sasi.error = 0x0f;
         }
     } else if op == 0xc2 {
         sasi.phase = SasiPhase.Specify;
         sasi.sense_ptr = 0;
-        if sasi_unit_present(sasi) {
+        if sasi.unit_present() {
             sasi.stat = 0;
         } else {
             sasi.stat = 0x02;
@@ -174,7 +176,7 @@ fn sasi_check_cmd(sasi: X68kSASI&) {
     }
 }
 
-fn sasi_bus_status(sasi: X68kSASI&) -> u8 {
+fn bus_status(sasi: X68kSASI&) -> u8 {
     match sasi.phase {
         BusFree => 0,
         Selected => 2,
@@ -187,27 +189,27 @@ fn sasi_bus_status(sasi: X68kSASI&) -> u8 {
     }
 }
 
-fn sasi_is_ready(sasi: X68kSASI&) -> bool {
-    sasi_pull_host_reset(sasi);
+fn is_ready(sasi: X68kSASI&) -> bool {
+    sasi.pull_host_reset();
     match sasi.phase {
         Data, Sense => true,
         BusFree, Selected, Command, Status, Message, Specify => false,
     }
 }
 
-fn sasi_consume_status_edge(sasi: X68kSASI&) -> bool {
+fn consume_status_edge(sasi: X68kSASI&) -> bool {
     let e = sasi.status_edge;
     sasi.status_edge = false;
     return e;
 }
 
-fn sasi_note_status(sasi: X68kSASI&) {
+fn note_status(sasi: X68kSASI&) {
     if sasi.phase == SasiPhase.Status { sasi.status_edge = true; }
 }
 
 // デバッガ用。フェーズもバッファ位置も進めずに、次に読めるはずの値を返す。
-fn sasi_peek(sasi: X68kSASI&, adr: u32) -> u8 {
-    if adr == 0xE96003 { return sasi_bus_status(sasi); }
+fn peek(sasi: X68kSASI&, adr: u32) -> u8 {
+    if adr == 0xE96003 { return sasi.bus_status(); }
     if adr != 0xE96001 { return 0; }
     match sasi.phase {
         Data => if sasi.direction == SasiDirection.DiskToHost { sasi.buf[sasi.buf_ptr] } else { 0 },
@@ -217,18 +219,18 @@ fn sasi_peek(sasi: X68kSASI&, adr: u32) -> u8 {
     }
 }
 
-fn sasi_read(sasi: X68kSASI&, adr: u32) -> u8 {
-    sasi_pull_host_reset(sasi);
+fn read(sasi: X68kSASI&, adr: u32) -> u8 {
+    sasi.pull_host_reset();
     var ret: u8 = 0;
     if adr == 0xE96003 {
-        ret = sasi_bus_status(sasi);
+        ret = sasi.bus_status();
     } else if adr == 0xE96001 {
         match sasi.phase {
             Data => {
                 if sasi.direction == SasiDirection.DiskToHost {
                     ret = sasi.buf[sasi.buf_ptr];
                     sasi.buf_ptr += 1;
-                    if sasi.buf_ptr == 256 { sasi_after_block(sasi); }
+                    if sasi.buf_ptr == 256 { sasi.after_block(); }
                 }
             },
             Status => {
@@ -243,13 +245,13 @@ fn sasi_read(sasi: X68kSASI&, adr: u32) -> u8 {
             },
             BusFree, Selected, Command, Specify => {},
         }
-        sasi_note_status(sasi);
+        sasi.note_status();
     }
     return ret;
 }
 
-fn sasi_write(sasi: X68kSASI&, adr: u32, data: u8) {
-    sasi_pull_host_reset(sasi);
+fn write(sasi: X68kSASI&, adr: u32, data: u8) {
+    sasi.pull_host_reset();
     if adr == 0xE96007 && sasi.phase == SasiPhase.BusFree {
         sasi.device = 0x7f;
         if data != 0 {
@@ -261,26 +263,26 @@ fn sasi_write(sasi: X68kSASI&, adr: u32, data: u8) {
                 bit = (bit << 1);
             }
         }
-        if sasi.device == 0 && sasi_image_present() {
+        if sasi.device == 0 && image_present() {
             sasi.phase = SasiPhase.Selected;
             sasi.cmd_ptr = 0;
         } else { sasi.phase = SasiPhase.BusFree; }
     } else if adr == 0xE96003 && sasi.phase == SasiPhase.Selected {
         sasi.phase = SasiPhase.Command;
     } else if adr == 0xE96005 {
-        sasi_reset(sasi);
+        sasi.reset();
     } else if adr == 0xE96001 {
         match sasi.phase {
             Command => {
                 sasi.cmd[sasi.cmd_ptr] = data;
                 sasi.cmd_ptr += 1;
-                if sasi.cmd_ptr == 6 { sasi_check_cmd(sasi); }
+                if sasi.cmd_ptr == 6 { sasi.check_cmd(); }
             },
             Data => {
                 if sasi.direction == SasiDirection.HostToDisk {
                     sasi.buf[sasi.buf_ptr] = data;
                     sasi.buf_ptr += 1;
-                    if sasi.buf_ptr == 256 { sasi_flush(sasi); sasi_after_block(sasi); }
+                    if sasi.buf_ptr == 256 { sasi.flush(); sasi.after_block(); }
                 }
             },
             Specify => {
@@ -289,6 +291,6 @@ fn sasi_write(sasi: X68kSASI&, adr: u32, data: u8) {
             },
             BusFree, Selected, Status, Message, Sense => {},
         }
-        sasi_note_status(sasi);
+        sasi.note_status();
     }
 }

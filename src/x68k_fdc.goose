@@ -2,26 +2,27 @@
 // ※実機 ROM / ディスクコード自走用
 
 import .x68k_bridge;
+namespace fdc;
 
 // uPD72065 のコマンド番号 (コマンドバイトの下位 5 bit)
-let FDC_READ_DIAGNOSTIC = 2;
-let FDC_SPECIFY = 3;
-let FDC_SENSE_DEVICE = 4;
-let FDC_WRITE_DATA = 5;
-let FDC_READ_DATA = 6;
-let FDC_RECALIBRATE = 7;
-let FDC_SENSE_INT = 8;
-let FDC_WRITE_DELETED = 9;
-let FDC_READ_ID = 10;
-let FDC_READ_DELETED = 12;
-let FDC_WRITE_ID = 13;
-let FDC_SEEK = 15;
-let FDC_SCAN_EQUAL = 17;
-let FDC_SCAN_LOW_OR_EQUAL = 25;
-let FDC_SCAN_HIGH_OR_EQUAL = 29;
+let ::FDC_READ_DIAGNOSTIC = 2;
+let ::FDC_SPECIFY = 3;
+let ::FDC_SENSE_DEVICE = 4;
+let ::FDC_WRITE_DATA = 5;
+let ::FDC_READ_DATA = 6;
+let ::FDC_RECALIBRATE = 7;
+let ::FDC_SENSE_INT = 8;
+let ::FDC_WRITE_DELETED = 9;
+let ::FDC_READ_ID = 10;
+let ::FDC_READ_DELETED = 12;
+let ::FDC_WRITE_ID = 13;
+let ::FDC_SEEK = 15;
+let ::FDC_SCAN_EQUAL = 17;
+let ::FDC_SCAN_LOW_OR_EQUAL = 25;
+let ::FDC_SCAN_HIGH_OR_EQUAL = 29;
 
 // コマンドバイトに続くパラメータのバイト数 (px68k CMD_TABLE)。添字はコマンド番号。
-fn fdc_cmd_prm_len(cmd: i32) -> i32 {
+fn cmd_prm_len(cmd: i32) -> i32 {
     let table: u8[32] = [
         0, 0, 8, 2, 1, 8, 8, 1, 0, 8, 1, 0, 8, 5, 0, 2,
         0, 8, 0, 0, 0, 0, 0, 0, 0, 8, 0, 0, 0, 8, 0, 0,
@@ -30,7 +31,7 @@ fn fdc_cmd_prm_len(cmd: i32) -> i32 {
 }
 
 // 結果相のバイト数 (px68k DAT_TABLE)。添字はコマンド番号。
-fn fdc_cmd_rsp_len(cmd: i32) -> i32 {
+fn cmd_rsp_len(cmd: i32) -> i32 {
     let table: u8[32] = [
         0, 0, 7, 0, 1, 7, 7, 0, 2, 7, 7, 0, 7, 7, 0, 0,
         0, 7, 0, 0, 0, 0, 0, 0, 0, 7, 0, 0, 0, 7, 0, 0,
@@ -63,9 +64,10 @@ struct X68kFDC {
     data_buf: u8[8192] = [0; 8192],
     int_pending: bool = false,
 }
+type ::X68kFDC = fdc::X68kFDC;
 
 // 実行相で受け渡すバイト数。実行相でなければ 0。
-fn fdc_exec_len(fdc: X68kFDC&) -> i32 {
+fn exec_len(fdc: X68kFDC&) -> i32 {
     match fdc.phase {
         Exec e => e.len,
         _ => 0,
@@ -73,7 +75,7 @@ fn fdc_exec_len(fdc: X68kFDC&) -> i32 {
 }
 
 // 実行相で、CPU / DMA からデータを受け取っているところか。
-fn fdc_is_writing(fdc: X68kFDC&) -> bool {
+fn is_writing(fdc: X68kFDC&) -> bool {
     match fdc.phase {
         Exec e => e.writing,
         _ => false,
@@ -81,16 +83,16 @@ fn fdc_is_writing(fdc: X68kFDC&) -> bool {
 }
 
 // 実行が済んだあとの相。結果のあるコマンドは結果相、無ければコマンド待ち。
-fn fdc_done_phase(fdc: X68kFDC&) -> FdcPhase {
-    let n = fdc_cmd_rsp_len(fdc.cmd);
+fn done_phase(fdc: X68kFDC&) -> FdcPhase {
+    let n = cmd_rsp_len(fdc.cmd);
     return if n > 0 { FdcPhase.Result { left: n } } else { FdcPhase.Idle };
 }
 
-fn fdc_init(fdc: X68kFDC&) {
+fn init(fdc: X68kFDC&) {
     fdc = X68kFDC {};
 }
 
-fn fdc_ephase_end(fdc: X68kFDC&) {
+fn ephase_end(fdc: X68kFDC&) {
     // レスポンスバッファにステータスとヘッド位置をセット
     fdc.rsp_buf[0] = fdc.st0;
     fdc.rsp_buf[1] = fdc.st1;
@@ -101,7 +103,7 @@ fn fdc_ephase_end(fdc: X68kFDC&) {
     fdc.rsp_buf[5] = fdc.prm_buf[4]; // R
     fdc.rsp_buf[6] = fdc.prm_buf[5]; // N
 
-    fdc.phase = fdc_done_phase(fdc);
+    fdc.phase = fdc.done_phase();
     fdc.read_pos = 0;
     fdc.int_pending = true;
 
@@ -117,7 +119,7 @@ fn fdc_ephase_end(fdc: X68kFDC&) {
     }
 }
 
-fn fdc_exec_cmd(fdc: X68kFDC&) {
+fn exec_cmd(fdc: X68kFDC&) {
     let cmd = fdc.cmd;
 
     match cmd {
@@ -191,7 +193,7 @@ fn fdc_exec_cmd(fdc: X68kFDC&) {
                 if c_fdd_seek(fdc.drv, trk) == 0 {
                     fdc.st0 |= 0x40;
                     fdc.st1 |= 0x04;
-                    fdc_ephase_end(fdc);
+                    fdc.ephase_end();
                 } else {
                     let sec_size = if n > 0 { (128 << n) as i32 } else { 1024 };
                     fdc.phase = FdcPhase.Exec { len: sec_size, writing: true };
@@ -199,7 +201,7 @@ fn fdc_exec_cmd(fdc: X68kFDC&) {
                 }
             } else {
                 fdc.st0 |= 0x48;
-                fdc_ephase_end(fdc);
+                fdc.ephase_end();
             }
         },
         FDC_READ_DATA, FDC_READ_DELETED => {
@@ -221,11 +223,11 @@ fn fdc_exec_cmd(fdc: X68kFDC&) {
                 } else {
                     fdc.st0 |= 0x40; // Abnormal termination
                     fdc.st1 |= 0x04; // No data
-                    fdc_ephase_end(fdc);
+                    fdc.ephase_end();
                 }
             } else {
                 fdc.st0 |= 0x48;
-                fdc_ephase_end(fdc);
+                fdc.ephase_end();
             }
         },
         _ => {
@@ -236,7 +238,7 @@ fn fdc_exec_cmd(fdc: X68kFDC&) {
 }
 
 // px68k FDC_NextTrack。セクタ途中では割り込まず、EOT（と MT の反対面）まで読み切ってから 1 回だけ終了する。
-fn fdc_next_track(fdc: X68kFDC&) {
+fn next_track(fdc: X68kFDC&) {
     let r = fdc.prm_buf[4];
     let eot = fdc.prm_buf[6];
     if r == eot {
@@ -249,17 +251,17 @@ fn fdc_next_track(fdc: X68kFDC&) {
             fdc.prm_buf[3] = 1;
             fdc.prm_buf[4] = 1;
         } else {
-            fdc_ephase_end(fdc);
+            fdc.ephase_end();
             return;
         }
     } else {
         fdc.prm_buf[4] = (r + 1);
     }
-    fdc_exec_cmd(fdc);
+    fdc.exec_cmd();
 }
 
 // FDC レジスタ読み込み (0x00E94001 .. 0x00E94007)
-fn fdc_read(fdc: X68kFDC&, reg: i32) -> u8 {
+fn read(fdc: X68kFDC&, reg: i32) -> u8 {
     if reg == 1 { // 0x00E94001: Main Status Register (MSR)
         // bit7 RQM (常に受け付け可)、bit6 DIO (1 = FDC → CPU)、bit4 CB (コマンド処理中)
         match fdc.phase {
@@ -267,7 +269,7 @@ fn fdc_read(fdc: X68kFDC&, reg: i32) -> u8 {
             Command c => { return 0x90; },
             Exec e => {
                 // 結果のあるコマンドだけが実行相に入る。読み出し中は DIO も立つ。
-                if fdc_cmd_rsp_len(fdc.cmd) == 0 { return 0x80; }
+                if cmd_rsp_len(fdc.cmd) == 0 { return 0x80; }
                 return if e.writing { 0x90 } else { 0xD0 };
             },
             Result r => {
@@ -283,7 +285,7 @@ fn fdc_read(fdc: X68kFDC&, reg: i32) -> u8 {
                 fdc.read_pos++;
                 if fdc.read_pos >= e.len {
                     fdc.read_pos = 0;
-                    fdc_next_track(fdc);
+                    fdc.next_track();
                 }
                 return ret;
             },
@@ -310,8 +312,8 @@ fn fdc_read(fdc: X68kFDC&, reg: i32) -> u8 {
 }
 
 // デバッガ用。データレジスタの次のバイトを、読み位置を進めずに返す。
-fn fdc_peek(fdc: X68kFDC&, reg: i32) -> u8 {
-    if reg != 3 { return fdc_read(fdc, reg); }
+fn peek(fdc: X68kFDC&, reg: i32) -> u8 {
+    if reg != 3 { return fdc.read(reg); }
     match fdc.phase {
         Exec e => fdc.data_buf[fdc.read_pos],
         Result r => fdc.rsp_buf[fdc.read_pos],
@@ -322,7 +324,7 @@ fn fdc_peek(fdc: X68kFDC&, reg: i32) -> u8 {
 
 // data_buf に 1 セクタ分そろったら書き込む。last は DMAC の転送カウンタが尽きたとき (TC)。
 // TC なら EOT を待たずに結果相へ進む。CPU が 1 バイトずつ書く経路は last = false。
-fn fdc_write_buffer(fdc: X68kFDC&, last: bool) {
+fn write_buffer(fdc: X68kFDC&, last: bool) {
     if fdc.cmd == FDC_WRITE_DATA || fdc.cmd == FDC_WRITE_DELETED {
         let hd = (fdc.prm_buf[1] >> 2) & 1;
         let trk = fdc.cyl * 2 + hd;
@@ -334,35 +336,35 @@ fn fdc_write_buffer(fdc: X68kFDC&, last: bool) {
         if ok == 0 {
             fdc.st0 |= 0x40;
             fdc.st1 |= 0x04;
-            fdc_ephase_end(fdc);
+            fdc.ephase_end();
         } else if last {
-            fdc_ephase_end(fdc);
+            fdc.ephase_end();
         } else {
-            fdc_next_track(fdc);
+            fdc.next_track();
         }
     } else {
-        fdc_ephase_end(fdc);
+        fdc.ephase_end();
     }
 }
 
 // FDC レジスタ書き込み (0x00E94001 .. 0x00E94007)
 // パラメータがそろったコマンドを実行する。実行相に入らなければ、結果相かコマンド待ちになる。
-fn fdc_run_command(fdc: X68kFDC&) {
+fn run_command(fdc: X68kFDC&) {
     fdc.write_pos = 0;
     fdc.st1 = 0;
     fdc.st2 = 0;
-    fdc.phase = fdc_done_phase(fdc);
-    fdc_exec_cmd(fdc);
+    fdc.phase = fdc.done_phase();
+    fdc.exec_cmd();
 }
 
-fn fdc_write(fdc: X68kFDC&, reg: i32, val: u8) {
+fn write(fdc: X68kFDC&, reg: i32, val: u8) {
     if reg == 3 { // 0x00E94003: Data Register (FIFO)
         match fdc.phase {
             Exec e => {
                 fdc.data_buf[fdc.write_pos] = val;
                 fdc.write_pos++;
                 if fdc.write_pos >= e.len {
-                    fdc_write_buffer(fdc, false);
+                    fdc.write_buffer(false);
                     fdc.write_pos = 0;
                 }
             },
@@ -372,7 +374,7 @@ fn fdc_write(fdc: X68kFDC&, reg: i32, val: u8) {
                 if c.left > 1 {
                     fdc.phase = FdcPhase.Command { left: c.left - 1 };
                 } else {
-                    fdc_run_command(fdc);
+                    fdc.run_command();
                 }
             },
             // コマンド待ち。結果を読み残していても、次のコマンドを受け付ける。
@@ -381,11 +383,11 @@ fn fdc_write(fdc: X68kFDC&, reg: i32, val: u8) {
                 fdc.read_pos = 0;
                 fdc.prm_buf[0] = val;
                 fdc.write_pos = 1;
-                let n = fdc_cmd_prm_len(fdc.cmd);
+                let n = cmd_prm_len(fdc.cmd);
                 if n > 0 {
                     fdc.phase = FdcPhase.Command { left: n };
                 } else {
-                    fdc_run_command(fdc);
+                    fdc.run_command();
                 }
             },
         }

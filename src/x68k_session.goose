@@ -9,7 +9,7 @@ let SNAPSHOT_FULL = -2;
 let SNAPSHOT_CAPTURE_FAILED = -3;
 
 fn session_run_frame(emu: X68kEmulator&) {
-    x68k_emu_run_frame(emu);
+    emu.run_frame();
     let s .= emu.session;
     if !s.rewind_on || s.rewind_interval < 1 || emu.total_frames <= 0 { return; }
     if (emu.total_frames % (s.rewind_interval)) != 0 { return; }
@@ -37,7 +37,7 @@ fn session_measure(emu: X68kEmulator&, now: u64) -> i32, i32 {
     let elapsed = (now - s.speed_start_ms) as i64;
     let frames = emu.total_frames - s.speed_start_frame;
     let fps = if elapsed > 50 { ((frames * 1000) / elapsed) as i32 } else { 0 };
-    return fps, (fps * 100) / x68k_nominal_fps(emu.mmu);
+    return fps, (fps * 100) / emu::nominal_fps(emu.mmu);
 }
 
 fn session_pause(emu: X68kEmulator&, now: u64) {
@@ -72,7 +72,7 @@ fn session_speed(emu: X68kEmulator&, now: u64) -> i32, i32, bool {
     return 0, 0, false;
 }
 
-fn session_reset(emu: X68kEmulator&) { x68k_emu_reset(emu); }
+fn session_reset(emu: X68kEmulator&) { emu.reset(); }
 
 fn session_save(emu: X68kEmulator&, slot: i32) -> bool {
     if !state_capture(emu, STATE_SLOT, slot) { return false; }

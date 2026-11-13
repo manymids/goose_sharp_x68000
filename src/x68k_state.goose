@@ -64,7 +64,7 @@ fn state_validate(bank: i32, idx: i32) -> bool {
 }
 
 fn state_capture(emu: X68kEmulator&, bank: i32, idx: i32) -> bool {
-    if !x68k_emu_active(emu) { return false; }
+    if !emu.active() { return false; }
     let at = state_index(bank, idx);
     if at < 0 { return false; }
     // The native transaction preserves the old generation on any failure.
@@ -84,7 +84,7 @@ fn state_capture(emu: X68kEmulator&, bank: i32, idx: i32) -> bool {
 }
 
 fn state_restore(emu: X68kEmulator&, bank: i32, idx: i32) -> bool {
-    if !x68k_emu_active(emu) { return false; }
+    if !emu.active() { return false; }
     if !state_validate(bank, idx) { return false; }
     if c_state_restore(bank, idx) == 0 { return false; }
     let slot .= g_checkpoints[state_index(bank, idx)];
