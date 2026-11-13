@@ -71,7 +71,7 @@ fn open_window(screen_w: i32, screen_h: i32, scale: i32) -> bool {
 fn pump_host_keys(emu: X68kEmulator&) {
     var sc = win32_ui_get_key_scancode();
     while sc >= 0 {
-        input_host_scancode(emu, sc as u8);
+        input::host_scancode(emu, sc as u8);
         sc = win32_ui_get_key_scancode();
     }
 }
@@ -99,17 +99,17 @@ fn run_mcp(emu: X68kEmulator&, want_window: bool, screen_w: i32, screen_h: i32, 
         if window_ok && win32_ui_is_open() {
             win32_ui_poll();
             pump_host_keys(emu);
-            if win32_ui_get_command() == UI_COMMAND_RESET { mcp_reset(emu); }
+            if win32_ui_get_command() == UI_COMMAND_RESET { mcp::reset(emu); }
         }
 
         let wait_ms: i32 = if emu.is_paused { 20 } else { 0 };
         let read_len = c_io_poll_line(io_buf[0], 65536, wait_ms);
         if read_len < 0 { break; }
-        if read_len > 0 { mcp_dispatch(emu, io_buf[..read_len], is_running); }
+        if read_len > 0 { mcp::dispatch(emu, io_buf[..read_len], is_running); }
 
         if !emu.is_paused {
             emu.clock_mhz = c_get_cpu_mhz();
-            session_run_frame(emu);
+            session::run_frame(emu);
             if window_ok && win32_ui_is_open() { win32_ui_render_fb(); }
             win32_ui_sleep(1);
         }
@@ -137,15 +137,15 @@ fn run_gui(emu: X68kEmulator&, screen_w: i32, screen_h: i32, scale: i32, max_fra
         emu.mmu.joy1 = c_host_joy_byte() as u8;
 
         if win32_ui_get_command() == UI_COMMAND_RESET {
-            session_reset(emu);
+            session::reset(emu);
             win32_ui_render_fb();
-            session_resume(emu, win32_ui_get_ticks_ms()); // GUI resumes; MCP stays paused.
+            session::resume(emu, win32_ui_get_ticks_ms()); // GUI resumes; MCP stays paused.
             target_time_us = win32_ui_get_time_us();
         }
 
         if !emu.is_paused {
             emu.clock_mhz = c_get_cpu_mhz();
-            session_run_frame(emu);
+            session::run_frame(emu);
         }
 
         if max_frames > 0 && emu.total_frames >= max_frames { break; }
@@ -176,7 +176,7 @@ fn run_gui(emu: X68kEmulator&, screen_w: i32, screen_h: i32, scale: i32, max_fra
 fn run_headless(emu: X68kEmulator&, frames: i64, dump_path: u8[>..]&) {
     for _ in frames {
         emu.clock_mhz = c_get_cpu_mhz();
-        session_run_frame(emu);
+        session::run_frame(emu);
     }
     if dump_path.len > 0 { write_dump(dump_path); }
     write_stderr(str("frames: ", emu.total_frames, "\n"));
@@ -265,11 +265,11 @@ fn main() {
             dump_after = n;
         } else if arg == "--mcp-layers" && arg_idx + 1 < cmd_args.len {
             arg_idx++;
-            let mask = mcp_parse_layers(cmd_args[arg_idx]);
+            let mask = mcp::parse_layers(cmd_args[arg_idx]);
             if mask < 0 {
                 launch_error("--mcp-layers: expected l0,l1,l2,l3,l4 or all\n");
             }
-            mcp_set_layers(mask);
+            mcp::set_layers(mask);
         } else if arg == "--ram" && arg_idx + 1 < cmd_args.len {
             // 互換のために受け取る。RAM は 12 MB 固定なので、違う値には一言出す。
             arg_idx++;

@@ -69,7 +69,7 @@ fn poke(addr: u32, words: u16[:]) {
 fn run(words: u16[:], steps: i32) {
     fresh();
     poke(CODE, words);
-    for _ in steps { m68k_step(g_cpu, g_mmu); }
+    for _ in steps { m68k::step(g_cpu, g_mmu); }
 }
 
 fn test_flag_helpers() {
@@ -234,12 +234,12 @@ fn test_control_and_memory() {
     fresh();
     poke(CODE, [0x4EB9, 0x0000, 0x3000, 0x4E71]);
     poke(0x3000, [0x7607, 0x4E75]);
-    m68k_step(g_cpu, g_mmu);
+    m68k::step(g_cpu, g_mmu);
     check_eq("JSR target", g_cpu.pc, 0x3000);
     check_eq("JSR pushes 4 bytes", g_cpu.a[REG_A7], 0x7FFC);
     check_eq("JSR pushes the return address", x68k_ram_read32(0x7FFC), CODE + 6);
-    m68k_step(g_cpu, g_mmu);
-    m68k_step(g_cpu, g_mmu);
+    m68k::step(g_cpu, g_mmu);
+    m68k::step(g_cpu, g_mmu);
     check_eq("RTS returns", g_cpu.pc, CODE + 6);
     check_eq("RTS restores SP", g_cpu.a[REG_A7], 0x8000);
     check_eq("subroutine ran", g_cpu.d[3], 7);
@@ -250,7 +250,7 @@ fn test_exceptions() {
     fresh();
     x68k_ram_write32(0x80, 0x6000);
     poke(CODE, [0x4E40]);
-    m68k_step(g_cpu, g_mmu);
+    m68k::step(g_cpu, g_mmu);
     check_eq("TRAP #0 vector", g_cpu.pc, 0x6000);
     check_eq("TRAP frame is 6 bytes", g_cpu.a[REG_A7], 0x7FFA);
     check_eq("TRAP stacks the next PC", x68k_ram_read32(0x7FFC), CODE + 2);
@@ -260,7 +260,7 @@ fn test_exceptions() {
     fresh();
     x68k_ram_write32(0x14, 0x4000);
     poke(CODE, [0x7001, 0x7200, 0x80C1]);
-    for _ in 3 { m68k_step(g_cpu, g_mmu); }
+    for _ in 3 { m68k::step(g_cpu, g_mmu); }
     check_eq("divide by zero vector", g_cpu.pc, 0x4000);
 
     // 奇数アドレスのワードアクセスはアドレスエラー (ベクタ 3、14 バイトのフレーム)。
@@ -268,8 +268,8 @@ fn test_exceptions() {
     fresh();
     x68k_ram_write32(0x0C, 0x5000);
     poke(CODE, [0x207C, 0x0000, 0x0001, 0x3010]);
-    m68k_step(g_cpu, g_mmu);
-    m68k_step(g_cpu, g_mmu);
+    m68k::step(g_cpu, g_mmu);
+    m68k::step(g_cpu, g_mmu);
     check_eq("address error vector", g_cpu.pc, 0x5000);
     check_eq("address error frame is 14 bytes", g_cpu.a[REG_A7], 0x8000 - 14);
     check_eq("address error stacks the fault address", x68k_ram_read32(0x8000 - 12), 1);
@@ -280,7 +280,7 @@ fn test_exceptions() {
     fresh();
     x68k_ram_write32(0x10, 0x6200);
     poke(CODE, [0x4AFC]);
-    m68k_step(g_cpu, g_mmu);
+    m68k::step(g_cpu, g_mmu);
     check_eq("illegal instruction vector", g_cpu.pc, 0x6200);
     check_eq("illegal instruction stacks its own address", x68k_ram_read32(0x7FFC), CODE);
 
@@ -295,7 +295,7 @@ fn test_exceptions() {
         // ユーザモードは $2000 未満 (スーパーバイザ領域) を読めないので、その上に置く。
         poke(0x4800, [privileged[i], 0x2700]);
         g_cpu.pc = 0x4800;
-        m68k_step(g_cpu, g_mmu);
+        m68k::step(g_cpu, g_mmu);
         check_eq("privilege violation vector", g_cpu.pc, 0x6400);
         check_eq("privilege violation stacks the instruction address", x68k_ram_read32(0x7FFC), 0x4800);
         check_eq("privilege violation stacks the user SR", x68k_ram_read16(0x7FFA), 0x0000);
@@ -308,7 +308,7 @@ fn test_exceptions() {
     g_cpu.sr = 0xA700;
     x68k_ram_write32(0x24, 0x6600);
     poke(CODE, [0x7001, 0x7202]);
-    m68k_step(g_cpu, g_mmu);
+    m68k::step(g_cpu, g_mmu);
     check_eq("traced instruction still runs", g_cpu.d[0], 1);
     check_eq("trace vector", g_cpu.pc, 0x6600);
     check_eq("trace stacks the next instruction", x68k_ram_read32(0x7FFC), CODE + 2);
@@ -322,7 +322,7 @@ fn test_exceptions() {
     x68k_ram_write32(0x80, 0x6000);
     x68k_ram_write32(0x24, 0x6600);
     poke(CODE, [0x4E40]);
-    m68k_step(g_cpu, g_mmu);
+    m68k::step(g_cpu, g_mmu);
     check_eq("TRAP under trace goes to the TRAP handler", g_cpu.pc, 0x6000);
     check_eq("TRAP under trace builds one frame", g_cpu.a[REG_A7], 0x7FFA);
 
@@ -332,7 +332,7 @@ fn test_exceptions() {
     g_cpu.set_sr(0x0000);
     check_eq("user mode uses USP", g_cpu.a[REG_A7], 0x7000);
     x68k_ram_write32(0x100, 0x6800);
-    m68k_interrupt(g_cpu, g_mmu, 6, 0x40);
+    m68k::interrupt(g_cpu, g_mmu, 6, 0x40);
     check_eq("interrupt vector", g_cpu.pc, 0x6800);
     check_eq("interrupt uses SSP", g_cpu.a[REG_A7], 0x8000 - 6);
     check_eq("interrupt sets S and the level", g_cpu.sr & 0x2700, 0x2600);
@@ -342,30 +342,30 @@ fn test_exceptions() {
 fn test_input() {
     var missing: u8[>..] = [];
     for ch: i32 in 0x20..0x7F {
-        let code, shift, ok = type_scancode(ch as u8);
+        let code, shift, ok = input::type_scancode(ch as u8);
         if !ok || code < 1 || code > 0x7F { missing.push(ch as u8); }
     }
     check("every printable ASCII character has a key", missing.len == 0);
     if missing.len > 0 { print("  no key for: ", missing); }
 
-    let colon, colon_shift, colon_ok = type_scancode(':');
+    let colon, colon_shift, colon_ok = input::type_scancode(':');
     check("':' is key 0x28", colon_ok && colon == 0x28 && !colon_shift);
-    let star, star_shift, star_ok = type_scancode('*');
+    let star, star_shift, star_ok = input::type_scancode('*');
     check("'*' is SHIFT + 0x28", star_ok && star == 0x28 && star_shift);
-    let big, big_shift, big_ok = type_scancode('A');
+    let big, big_shift, big_ok = input::type_scancode('A');
     check("'A' is SHIFT + 'a'", big_ok && big == 0x1E && big_shift);
-    check("control characters have no key", !type_has_key(0x01));
-    check("key name return", key_code("return") == 0x1D);
-    check("key name a", key_code("a") == 0x1E);
-    check("unknown key name", key_code("nosuchkey") == KEY_UNKNOWN);
-    check("function keys", key_code("f1") == 0x63 && key_code("f2") == 0x64 && key_code("f10") == 0x6C);
-    check("F11 does not exist, F12 is blocked", key_code("f11") == KEY_UNKNOWN && key_code("f12") == KEY_BLOCKED);
-    check("XF keys", key_code("xf1") == 0x55 && key_code("xf5") == 0x59 && key_code("xf6") == KEY_UNKNOWN);
-    check("modifier keys", key_code("ctrl") == 0x71 && key_code("opt1") == 0x72 && key_code("opt2") == 0x73);
-    check("editing keys", key_code("del") == 0x37 && key_code("ins") == 0x5E && key_code("undo") == 0x3A);
-    check("a bare 'f' is the letter", key_code("f") == 0x21);
-    check("joypad up", joy_mask("up") == 0x01);
-    check("joypad trg2", joy_mask("b") == 0x40);
+    check("control characters have no key", !input::type_has_key(0x01));
+    check("key name return", input::key_code("return") == 0x1D);
+    check("key name a", input::key_code("a") == 0x1E);
+    check("unknown key name", input::key_code("nosuchkey") == KEY_UNKNOWN);
+    check("function keys", input::key_code("f1") == 0x63 && input::key_code("f2") == 0x64 && input::key_code("f10") == 0x6C);
+    check("F11 does not exist, F12 is blocked", input::key_code("f11") == KEY_UNKNOWN && input::key_code("f12") == KEY_BLOCKED);
+    check("XF keys", input::key_code("xf1") == 0x55 && input::key_code("xf5") == 0x59 && input::key_code("xf6") == KEY_UNKNOWN);
+    check("modifier keys", input::key_code("ctrl") == 0x71 && input::key_code("opt1") == 0x72 && input::key_code("opt2") == 0x73);
+    check("editing keys", input::key_code("del") == 0x37 && input::key_code("ins") == 0x5E && input::key_code("undo") == 0x3A);
+    check("a bare 'f' is the letter", input::key_code("f") == 0x21);
+    check("joypad up", input::joy_mask("up") == 0x01);
+    check("joypad trg2", input::joy_mask("b") == 0x40);
 }
 
 // 結果相で残っているバイト数。結果相でなければ -1。
@@ -596,26 +596,26 @@ fn test_disasm() {
 // ステートファイルの読み込みは、C 側へ渡す前に形式を確かめて弾く。
 fn test_state_file() {
     var empty: u8[>..] = [];
-    check("empty data is not a state file", state_import(STATE_SLOT, 0, empty[..]) == StateFileError.NotAStateFile);
+    check("empty data is not a state file", state::import_image(STATE_SLOT, 0, empty[..]) == state::StateFileError.NotAStateFile);
     var text: u8[>..] = [];
     text.append("this is not a state file");
-    check("text is not a state file", state_import(STATE_SLOT, 0, text[..]) == StateFileError.NotAStateFile);
+    check("text is not a state file", state::import_image(STATE_SLOT, 0, text[..]) == state::StateFileError.NotAStateFile);
 
     // 正しいヘッダだけがあって続きが無いもの
     var header: StateFileHeader[>..] = [];
     header.push(StateFileHeader { magic: STATE_FILE_MAGIC, version: STATE_VERSION });
     var image: u8[>..] = [];
     to_bytes(header, image);
-    check("a header alone is damaged", state_import(STATE_SLOT, 0, image[..]) == StateFileError.Corrupt);
+    check("a header alone is damaged", state::import_image(STATE_SLOT, 0, image[..]) == state::StateFileError.Corrupt);
 
     var old: StateFileHeader[>..] = [];
     old.push(StateFileHeader { magic: STATE_FILE_MAGIC, version: STATE_VERSION - 1 });
     var old_image: u8[>..] = [];
     to_bytes(old, old_image);
-    check("another version is refused", state_import(STATE_SLOT, 0, old_image[..]) == StateFileError.WrongVersion);
-    check("a slot outside the bank is refused", state_import(STATE_SLOT, 99, image[..]) == StateFileError.Rejected);
+    check("another version is refused", state::import_image(STATE_SLOT, 0, old_image[..]) == state::StateFileError.WrongVersion);
+    check("a slot outside the bank is refused", state::import_image(STATE_SLOT, 99, image[..]) == state::StateFileError.Rejected);
 
-    var h: u64 = state_hash(STATE_HASH_SEED, "a");
+    var h: u64 = state::checksum(STATE_HASH_SEED, "a");
     check("FNV-1a of \"a\"", h == 0xAF63DC4C8601EC8C);
 }
 

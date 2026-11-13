@@ -3,21 +3,22 @@ import std;
 import .x68k_emu;
 import .x68k_mfp;
 import .x68k_bridge;
+namespace input;
 
-// Explicit key events emit repeats; text composition uses type_set_key.
-fn input_key(emu: X68kEmulator&, code: i32, down: bool) {
+// Explicit key events emit repeats; text composition uses input::type_set_key.
+fn key(emu: X68kEmulator&, code: i32, down: bool) {
     if code < 0 || code >= 128 { return; }
     let sc = if down { code as u8 } else { (code as u8) | 0x80 };
     emu.mmu.mfp.send_key(sc);
     note_key(emu, code, down);
 }
 
-fn input_host_scancode(emu: X68kEmulator&, sc: u8) {
+fn host_scancode(emu: X68kEmulator&, sc: u8) {
     emu.mmu.mfp.send_key(sc);
     note_key(emu, (sc & 0x7F), (sc & 0x80) == 0);
 }
 
-fn input_joy(emu: X68kEmulator&, port: i32, mask: u8, down: bool) -> bool {
+fn joy(emu: X68kEmulator&, port: i32, mask: u8, down: bool) -> bool {
     if (port != 0 && port != 1) || mask == 0 { return false; }
     if port == 0 {
         if down { emu.mmu.joy1 &= ~mask; } else { emu.mmu.joy1 |= mask; }
@@ -28,7 +29,7 @@ fn input_joy(emu: X68kEmulator&, port: i32, mask: u8, down: bool) -> bool {
 }
 
 // No synthetic releases into a restored MFP queue; joystick bytes stay saved.
-fn input_discard(emu: X68kEmulator&) {
+fn discard(emu: X68kEmulator&) {
     emu.session.keys = [false; 128];
     c_host_input_discard();
 }
@@ -45,9 +46,9 @@ fn digit_code(ch: u8) -> i32 {
     return codes[(ch - '0') as i32];
 }
 
-// key_code がスキャンコードの代わりに返す値
-let KEY_UNKNOWN = -1; // 対応するキーがない
-let KEY_BLOCKED = -2; // エミュレータ側の機能に割り当てているので送らない
+// input::key_code がスキャンコードの代わりに返す値
+let ::KEY_UNKNOWN = -1; // 対応するキーがない
+let ::KEY_BLOCKED = -2; // エミュレータ側の機能に割り当てているので送らない
 
 fn key_code(name: const u8[:]) -> i32 {
     if name == "f12" || name == "scrolllock" { return KEY_BLOCKED; }

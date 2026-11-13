@@ -3,28 +3,29 @@
 import .x68k_emu;
 import .x68k_state;
 import .x68k_input;
+namespace session;
 
-let SNAPSHOT_INVALID = -1;
-let SNAPSHOT_FULL = -2;
-let SNAPSHOT_CAPTURE_FAILED = -3;
+let ::SNAPSHOT_INVALID = -1;
+let ::SNAPSHOT_FULL = -2;
+let ::SNAPSHOT_CAPTURE_FAILED = -3;
 
-fn session_run_frame(emu: X68kEmulator&) {
+fn run_frame(emu: X68kEmulator&) {
     emu.run_frame();
     let s .= emu.session;
     if !s.rewind_on || s.rewind_interval < 1 || emu.total_frames <= 0 { return; }
     if (emu.total_frames % (s.rewind_interval)) != 0 { return; }
-    if !state_capture(emu, STATE_REWIND, s.rewind_next) { return; }
+    if !state::capture(emu, STATE_REWIND, s.rewind_next) { return; }
     s.rewind_next = (s.rewind_next + 1) % REWIND_SLOTS;
     if s.rewind_count < REWIND_SLOTS { s.rewind_count += 1; }
 }
 
-fn session_run(emu: X68kEmulator&, frames: i32) -> i32 {
+fn run(emu: X68kEmulator&, frames: i32) -> i32 {
     if frames < 1 || frames > 36000 { return 0; }
     emu.is_paused = true;
     emu.hit_break = false;
     var used: i32 = 0;
     for _ in frames {
-        session_run_frame(emu);
+        run_frame(emu);
         used += 1;
         if emu.hit_break { break; }
     }
@@ -32,7 +33,7 @@ fn session_run(emu: X68kEmulator&, frames: i32) -> i32 {
 }
 
 // 再開してからの実測 fps と、CRTC が決める公称値に対する百分率。
-fn session_measure(emu: X68kEmulator&, now: u64) -> i32, i32 {
+fn measure(emu: X68kEmulator&, now: u64) -> i32, i32 {
     let s .= emu.session;
     let elapsed = (now - s.speed_start_ms) as i64;
     let frames = emu.total_frames - s.speed_start_frame;
@@ -40,10 +41,10 @@ fn session_measure(emu: X68kEmulator&, now: u64) -> i32, i32 {
     return fps, (fps * 100) / emu::nominal_fps(emu.mmu);
 }
 
-fn session_pause(emu: X68kEmulator&, now: u64) {
+fn pause(emu: X68kEmulator&, now: u64) {
     let s .= emu.session;
     if !emu.is_paused && s.speed_live {
-        let fps, pct = session_measure(emu, now);
+        let fps, pct = measure(emu, now);
         s.speed_fps = fps;
         s.speed_pct = pct;
         s.speed_have = true;
@@ -52,7 +53,7 @@ fn session_pause(emu: X68kEmulator&, now: u64) {
     emu.is_paused = true;
 }
 
-fn session_resume(emu: X68kEmulator&, now: u64) {
+fn resume(emu: X68kEmulator&, now: u64) {
     if emu.is_paused {
         emu.session.speed_live = true;
         emu.session.speed_start_ms = now;
@@ -62,50 +63,50 @@ fn session_resume(emu: X68kEmulator&, now: u64) {
 }
 
 // fps、公称比の百分率、実行中かどうか。停止中は最後に測った値を返す。
-fn session_speed(emu: X68kEmulator&, now: u64) -> i32, i32, bool {
+fn speed(emu: X68kEmulator&, now: u64) -> i32, i32, bool {
     let s .= emu.session;
     if s.speed_live && !emu.is_paused {
-        let fps, pct = session_measure(emu, now);
+        let fps, pct = measure(emu, now);
         return fps, pct, true;
     }
     if s.speed_have { return s.speed_fps, s.speed_pct, false; }
     return 0, 0, false;
 }
 
-fn session_reset(emu: X68kEmulator&) { emu.reset(); }
+fn reset(emu: X68kEmulator&) { emu.reset(); }
 
-fn session_save(emu: X68kEmulator&, slot: i32) -> bool {
-    if !state_capture(emu, STATE_SLOT, slot) { return false; }
+fn save(emu: X68kEmulator&, slot: i32) -> bool {
+    if !state::capture(emu, STATE_SLOT, slot) { return false; }
     emu.is_paused = true;
     return true;
 }
 
-fn session_load(emu: X68kEmulator&, slot: i32) -> bool {
-    return state_restore(emu, STATE_SLOT, slot);
+fn load(emu: X68kEmulator&, slot: i32) -> bool {
+    return state::restore(emu, STATE_SLOT, slot);
 }
 
 // いまの状態をスロットへ取り、同じ内容をファイルにも書く。
-fn session_save_file(emu: X68kEmulator&, slot: i32, path: const u8[:]) -> bool {
-    return session_save(emu, slot) && state_write_file(STATE_SLOT, slot, path);
+fn save_file(emu: X68kEmulator&, slot: i32, path: const u8[:]) -> bool {
+    return save(emu, slot) && state::save_file(STATE_SLOT, slot, path);
 }
 
 // ファイルをスロットへ読み込み、その状態に戻す。
-fn session_load_file(emu: X68kEmulator&, slot: i32, path: const u8[:]) -> StateFileError {
-    let e = state_read_file(STATE_SLOT, slot, path);
-    if e != StateFileError.None { return e; }
-    return if session_load(emu, slot) { StateFileError.None } else { StateFileError.Rejected };
+fn load_file(emu: X68kEmulator&, slot: i32, path: const u8[:]) -> state::StateFileError {
+    let e = state::load_file(STATE_SLOT, slot, path);
+    if e != state::StateFileError.None { return e; }
+    return if load(emu, slot) { state::StateFileError.None } else { state::StateFileError.Rejected };
 }
 
 fn snapshot_find(emu: X68kEmulator&, name: const u8[:]) -> i32 {
     if name.len == 0 || name.len > SNAPSHOT_NAME_MAX { return -1; }
     for idx: i32 in SNAPSHOT_SLOTS {
-        if state_saved(STATE_SNAPSHOT, idx) && emu.session.snapshot_names[idx] == name { return idx; }
+        if state::saved(STATE_SNAPSHOT, idx) && emu.session.snapshot_names[idx] == name { return idx; }
     }
     return -1;
 }
 
 fn snapshot_name(emu: X68kEmulator&, idx: i32, out: u8[>..]&) {
-    if !state_saved(STATE_SNAPSHOT, idx) { return; }
+    if !state::saved(STATE_SNAPSHOT, idx) { return; }
     out.append(emu.session.snapshot_names[idx]);
 }
 
@@ -114,14 +115,14 @@ fn snapshot_create(emu: X68kEmulator&, name: const u8[:]) -> i32 {
     var idx = snapshot_find(emu, name);
     if idx < 0 {
         for i: i32 in SNAPSHOT_SLOTS {
-            if !state_saved(STATE_SNAPSHOT, i) {
+            if !state::saved(STATE_SNAPSHOT, i) {
                 idx = i;
                 break;
             }
         }
     }
     if idx < 0 { return SNAPSHOT_FULL; }
-    if !state_capture(emu, STATE_SNAPSHOT, idx) { return SNAPSHOT_CAPTURE_FAILED; }
+    if !state::capture(emu, STATE_SNAPSHOT, idx) { return SNAPSHOT_CAPTURE_FAILED; }
     // Commit metadata only after capture succeeds, including failed overwrites.
     emu.session.snapshot_names[idx] = name;
     emu.is_paused = true;
@@ -129,13 +130,13 @@ fn snapshot_create(emu: X68kEmulator&, name: const u8[:]) -> i32 {
 }
 
 fn snapshot_restore(emu: X68kEmulator&, name: const u8[:]) -> bool {
-    return state_restore(emu, STATE_SNAPSHOT, snapshot_find(emu, name));
+    return state::restore(emu, STATE_SNAPSHOT, snapshot_find(emu, name));
 }
 
 fn snapshot_delete(emu: X68kEmulator&, name: const u8[:]) -> bool {
     let idx = snapshot_find(emu, name);
     if idx < 0 { return false; }
-    state_drop(STATE_SNAPSHOT, idx);
+    state::drop(STATE_SNAPSHOT, idx);
     emu.session.snapshot_names[idx] = "";
     return true;
 }
@@ -153,7 +154,7 @@ fn rewind_disable(emu: X68kEmulator&) {
     emu.session.rewind_on = false;
     emu.session.rewind_count = 0;
     emu.session.rewind_next = 0;
-    for idx: i32 in REWIND_SLOTS { state_drop(STATE_REWIND, idx); }
+    for idx: i32 in REWIND_SLOTS { state::drop(STATE_REWIND, idx); }
 }
 
 fn rewind_restore(emu: X68kEmulator&, steps: i32) -> bool {
@@ -161,39 +162,39 @@ fn rewind_restore(emu: X68kEmulator&, steps: i32) -> bool {
     if steps < 1 || steps > s.rewind_count { return false; }
     var idx = s.rewind_next - steps;
     while idx < 0 { idx += REWIND_SLOTS; }
-    if !state_restore(emu, STATE_REWIND, idx) { return false; }
+    if !state::restore(emu, STATE_REWIND, idx) { return false; }
     s.rewind_count -= steps;
     s.rewind_next = idx;
     return true;
 }
 
 // Character scheduling is shared by type/exec/macro adapters.
-fn session_type_char(emu: X68kEmulator&, ch: u8, hold: i32) -> i32 {
-    let code, shift, ok = type_scancode(ch);
+fn type_char(emu: X68kEmulator&, ch: u8, hold: i32) -> i32 {
+    let code, shift, ok = input::type_scancode(ch);
     if hold < 1 || hold > 3600 || !ok { return 0; }
     var frames: i32 = 0;
-    if shift { type_set_key(emu, 0x70, true); session_run_frame(emu); frames += 1; }
-    type_set_key(emu, code, true);
-    for _ in hold { session_run_frame(emu); }
+    if shift { input::type_set_key(emu, 0x70, true); run_frame(emu); frames += 1; }
+    input::type_set_key(emu, code, true);
+    for _ in hold { run_frame(emu); }
     frames += hold;
-    type_set_key(emu, code, false);
-    if shift { type_set_key(emu, 0x70, false); }
-    session_run_frame(emu);
+    input::type_set_key(emu, code, false);
+    if shift { input::type_set_key(emu, 0x70, false); }
+    run_frame(emu);
     return frames + 1;
 }
 
-fn session_key_tap(emu: X68kEmulator&, code: i32, frames: i32) -> bool {
+fn key_tap(emu: X68kEmulator&, code: i32, frames: i32) -> bool {
     if code < 0 || code >= 128 || frames < 1 || frames > 3600 { return false; }
-    input_key(emu, code, true);
-    for _ in frames { session_run_frame(emu); }
-    input_key(emu, code, false);
+    input::key(emu, code, true);
+    for _ in frames { run_frame(emu); }
+    input::key(emu, code, false);
     return true;
 }
 
-fn session_joy_tap(emu: X68kEmulator&, port: i32, mask: u8, frames: i32) -> bool {
+fn joy_tap(emu: X68kEmulator&, port: i32, mask: u8, frames: i32) -> bool {
     if frames < 1 || frames > 3600 { return false; }
-    if !input_joy(emu, port, mask, true) { return false; }
-    for _ in frames { session_run_frame(emu); }
-    input_joy(emu, port, mask, false);
+    if !input::joy(emu, port, mask, true) { return false; }
+    for _ in frames { run_frame(emu); }
+    input::joy(emu, port, mask, false);
     return true;
 }

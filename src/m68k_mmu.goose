@@ -50,7 +50,7 @@ struct M68kMMU {
     fault_addr: u32 = 0,
     fault_write: bool = false,
     cur_ir: u16 = 0,
-    // Bus wait of the current instruction in 1/40 cycles (m68k_step adds whole cycles).
+    // Bus wait of the current instruction in 1/40 cycles (m68k::step adds whole cycles).
     wait40: i32 = 0,
     // Main RAM below this is supervisor-only ($E86001, 8 KB units).
     svs_limit: u32 = 0x2000,
@@ -81,44 +81,10 @@ fn crtc_word(mmu: M68kMMU&, hi: i32) -> i32 {
     return ((mmu.crtc_regs[hi & 63] as i32) << 8) | mmu.crtc_regs[(hi + 1) & 63];
 }
 
+// 機械のリセット。電池で保持される RTC だけを残し、VRAM やパレットも含めてほかは既定値に戻す。
 fn init(mmu: M68kMMU&) {
-    mmu.reset_overlay = true;
-    mmu.crtc_mode = 0;
-    mmu.crtc_fast_clr = 0;
-    mmu.joy1 = 0xFF;
-    mmu.joy2 = 0xFF;
-    mmu.sysport_contrast = 0;
-    mmu.sysport_monitor = 0;
-    mmu.sysport_keyctrl = 0;
-    mmu.sysport_cputype = 0xFF; // 68000, 10MHz
-    mmu.cpu_access = false;
-    mmu.user_mode = false;
-    mmu.fault = 0;
-    mmu.fault_addr = 0;
-    mmu.fault_write = false;
-    mmu.cur_ir = 0;
-    mmu.wait40 = 0;
-    mmu.svs_limit = 0x2000;
-    mmu.ram_super = [0; 48];
-    mmu.xb2_area = [0; 16];
-    mmu.inst_pc = 0;
-
-    mmu.crtc_regs = [0; 64];
-    mmu.sasi = X68kSASI {};
-    mmu.mfp.init();
-    mmu.fdc.init();
-    mmu.dmac.init();
-    mmu.sasi.reset();
-    mmu.ioc_int_stat = 0;
-    mmu.ioc_int_vect = 0;
-    mmu.sasi_irq = false;
-}
-
-fn clear_video(mmu: M68kMMU&) {
-    mmu.pal = [0; 1024]; mmu.vcreg = [0; 1024];
-    mmu.sprite = [0; 2048]; mmu.bgreg = [0; 32]; mmu.bgram = [0; BGRAM_BYTES];
-    mmu.bg_chr8 = [0; PCG8_BYTES]; mmu.bg_chr16 = [0; PCG16_BYTES];
-    mmu.tvram = [0; VRAM_BYTES]; mmu.gvram = [0; VRAM_BYTES];
+    mmu = M68kMMU { rtc: mmu.rtc, .. };
+    mmu.mfp.init(); // MFP のレジスタは 0 ではない初期値を持つ
 }
 
 fn gvram_type(r20: u8) -> i32 {

@@ -69,7 +69,6 @@ fn reset(emu: X68kEmulator&) {
     // Machine reset does not allocate resources, reload files or rebind views.
     emu.cpu = M68kCPU {};
     emu.mmu.init();
-    emu.mmu.clear_video();
     x68k_sram_set_write_enable(0);
     c_machine_reset_devices();
     c_set_screen_mode(768, 512);
@@ -108,7 +107,7 @@ fn step(emu: X68kEmulator&) -> i32 {
 fn step_core(emu: X68kEmulator&) -> i32 {
     dmac::pump_sasi(emu.mmu);
     dmac::exec_ch2(emu.mmu);
-    let cycles = m68k_step(emu.cpu, emu.mmu);
+    let cycles = m68k::step(emu.cpu, emu.mmu);
     emu.total_cycles += cycles;
     emu.mmu.mfp.line_cycles += cycles;
 
@@ -127,7 +126,7 @@ fn step_core(emu: X68kEmulator&) -> i32 {
         if emu.cpu.int_mask() < 6 {
             let vect = emu.mmu.mfp.ack_interrupt();
             if vect >= 0 {
-                m68k_interrupt(emu.cpu, emu.mmu, 6, vect);
+                m68k::interrupt(emu.cpu, emu.mmu, 6, vect);
             }
         }
     }
@@ -141,7 +140,7 @@ fn step_core(emu: X68kEmulator&) -> i32 {
     if dma_vec >= 0 {
         if emu.cpu.int_mask() < 3 {
             if goose_dma { emu.mmu.dmac.ack_irq(); } else { c_dmac_ack_irq(); }
-            m68k_interrupt(emu.cpu, emu.mmu, 3, dma_vec);
+            m68k::interrupt(emu.cpu, emu.mmu, 3, dma_vec);
         }
     }
 
@@ -152,7 +151,7 @@ fn step_core(emu: X68kEmulator&) -> i32 {
             let vect: i32 = emu.mmu.ioc_int_vect;
             emu.mmu.ioc_int_stat &= 0x7F;
             if vect > 0 {
-                m68k_interrupt(emu.cpu, emu.mmu, 1, vect);
+                m68k::interrupt(emu.cpu, emu.mmu, 1, vect);
                 took_level1 = true;
             }
         }
@@ -162,7 +161,7 @@ fn step_core(emu: X68kEmulator&) -> i32 {
         if emu.cpu.int_mask() < 1 {
             emu.mmu.sasi_irq = false;
             let vect = (emu.mmu.ioc_int_vect as i32) + 2;
-            m68k_interrupt(emu.cpu, emu.mmu, 1, vect);
+            m68k::interrupt(emu.cpu, emu.mmu, 1, vect);
             took_level1 = true;
         }
     }
@@ -171,7 +170,7 @@ fn step_core(emu: X68kEmulator&) -> i32 {
         if emu.cpu.int_mask() < 1 {
             c_fdd_ack_media_irq();
             let vect = (emu.mmu.ioc_int_vect as i32) + 1;
-            m68k_interrupt(emu.cpu, emu.mmu, 1, vect);
+            m68k::interrupt(emu.cpu, emu.mmu, 1, vect);
         }
     }
 

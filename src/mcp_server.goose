@@ -14,12 +14,13 @@ import .x68k_mfp;
 import .x68k_state;
 import .x68k_input;
 import .x68k_session;
+namespace mcp;
 
-var g_console_cols: i32 = 0;
-var g_console_rows: i32 = 0;
-var g_mcp_layers: i32 = MCP_LAYER_DEFAULT;
-fn mcp_reset(emu: X68kEmulator&) {
-    session_reset(emu);
+var ::g_console_cols: i32 = 0;
+var ::g_console_rows: i32 = 0;
+var ::g_mcp_layers: i32 = MCP_LAYER_DEFAULT;
+fn reset(emu: X68kEmulator&) {
+    session::reset(emu);
     g_console_cols = 0; g_console_rows = 0;
 }
 
@@ -346,38 +347,38 @@ fn extract_json_addr(line: const u8[:], key: const u8[:], default_val: u32) -> u
     return if present && valid { v } else { default_val };
 }
 
-fn mcp_bad_key(args: const u8[:], key: const u8[:], bad: u8[>..]&) -> bool {
+fn bad_key(args: const u8[:], key: const u8[:], bad: u8[>..]&) -> bool {
     let v, present, valid = json_addr_parse(args, key);
     if valid { return false; }
     bad.append(str("invalid numeric or hex value for '", key, "'"));
     return true;
 }
 
-// Every argument read with extract_json_addr. A bad value fails the whole call up front.
-fn mcp_bad_number(args: const u8[:], bad: u8[>..]&) -> bool {
-    return mcp_bad_key(args, "address", bad) ||
-        mcp_bad_key(args, "pc", bad) ||
-        mcp_bad_key(args, "sr", bad) ||
-        mcp_bad_key(args, "usp", bad) ||
-        mcp_bad_key(args, "ssp", bad) ||
-        mcp_bad_key(args, "isp", bad) ||
-        mcp_bad_key(args, "sp", bad) ||
-        mcp_bad_key(args, "d0", bad) ||
-        mcp_bad_key(args, "d1", bad) ||
-        mcp_bad_key(args, "d2", bad) ||
-        mcp_bad_key(args, "d3", bad) ||
-        mcp_bad_key(args, "d4", bad) ||
-        mcp_bad_key(args, "d5", bad) ||
-        mcp_bad_key(args, "d6", bad) ||
-        mcp_bad_key(args, "d7", bad) ||
-        mcp_bad_key(args, "a0", bad) ||
-        mcp_bad_key(args, "a1", bad) ||
-        mcp_bad_key(args, "a2", bad) ||
-        mcp_bad_key(args, "a3", bad) ||
-        mcp_bad_key(args, "a4", bad) ||
-        mcp_bad_key(args, "a5", bad) ||
-        mcp_bad_key(args, "a6", bad) ||
-        mcp_bad_key(args, "a7", bad);
+// Every argument read with mcp::extract_json_addr. A bad value fails the whole call up front.
+fn bad_number(args: const u8[:], bad: u8[>..]&) -> bool {
+    return bad_key(args, "address", bad) ||
+        bad_key(args, "pc", bad) ||
+        bad_key(args, "sr", bad) ||
+        bad_key(args, "usp", bad) ||
+        bad_key(args, "ssp", bad) ||
+        bad_key(args, "isp", bad) ||
+        bad_key(args, "sp", bad) ||
+        bad_key(args, "d0", bad) ||
+        bad_key(args, "d1", bad) ||
+        bad_key(args, "d2", bad) ||
+        bad_key(args, "d3", bad) ||
+        bad_key(args, "d4", bad) ||
+        bad_key(args, "d5", bad) ||
+        bad_key(args, "d6", bad) ||
+        bad_key(args, "d7", bad) ||
+        bad_key(args, "a0", bad) ||
+        bad_key(args, "a1", bad) ||
+        bad_key(args, "a2", bad) ||
+        bad_key(args, "a3", bad) ||
+        bad_key(args, "a4", bad) ||
+        bad_key(args, "a5", bad) ||
+        bad_key(args, "a6", bad) ||
+        bad_key(args, "a7", bad);
 }
 
 // "0x" 付きの 16 進文字列を追記する。
@@ -404,7 +405,7 @@ fn push_hex_byte(out: u8[>..]&, v: i32) {
     out.push('"');
 }
 
-fn mcp_write_error_object(id: const u8[:], err: const u8[:], obj: const u8[:]) {
+fn write_error_object(id: const u8[:], err: const u8[:], obj: const u8[:]) {
     var qerr: u8[>..] = [];
     json_append_quoted(qerr, err);
     var qobj: u8[>..] = [];
@@ -438,7 +439,7 @@ fn json_append_quoted(out: u8[>..]&, text: const u8[:]) {
     json::format_string(out, text);
 }
 
-fn mcp_format_text(id: const u8[:], text: const u8[:], is_error: bool, resp: u8[>..]&) {
+fn format_text(id: const u8[:], text: const u8[:], is_error: bool, resp: u8[>..]&) {
     var quoted: u8[>..] = [];
     json_append_quoted(quoted, text);
     if is_error {
@@ -448,13 +449,13 @@ fn mcp_format_text(id: const u8[:], text: const u8[:], is_error: bool, resp: u8[
     }
 }
 
-fn mcp_write_text(id: const u8[:], text: const u8[:], is_error: bool) {
+fn write_text(id: const u8[:], text: const u8[:], is_error: bool) {
     var resp: u8[>..] = [];
-    mcp_format_text(id, text, is_error, resp);
+    format_text(id, text, is_error, resp);
     c_io_write_line(resp[0], resp.len as i32);
 }
 
-fn mcp_write_object(id: const u8[:], obj: const u8[:]) {
+fn write_object(id: const u8[:], obj: const u8[:]) {
     var quoted: u8[>..] = [];
     json_append_quoted(quoted, obj);
     var resp: u8[>..] = [];
@@ -472,11 +473,11 @@ fn append_machine(out: u8[>..]&, emu: X68kEmulator&, frames_used: i32, with_fram
     }
 }
 
-fn mcp_set_layers(mask: i32) {
+fn set_layers(mask: i32) {
     g_mcp_layers = mask;
 }
 
-fn mcp_parse_layers(text: const u8[:]) -> i32 {
+fn parse_layers(text: const u8[:]) -> i32 {
     if text.len == 0 { return MCP_LAYER_DEFAULT; }
     if text == "all" { return MCP_LAYER_ALL; }
     var layers: i32 = 0;
@@ -511,14 +512,14 @@ fn tool_layer(name: const u8[:]) -> i32 {
     return 0;
 }
 
-fn mcp_layer_allows(name: const u8[:]) -> bool {
+fn layer_allows(name: const u8[:]) -> bool {
     let layer = tool_layer(name);
     if layer == 0 { return true; }
     return (g_mcp_layers & layer) != 0;
 }
 
 fn append_named_key(emu: X68kEmulator&, out: u8[>..]&, name: const u8[:], first: bool&) {
-    let code = key_code(name);
+    let code = input::key_code(name);
     if code < 0 || code >= 128 { return; }
     if !emu.session.keys[code] { return; }
     if !first { out.append(","); }
@@ -703,14 +704,14 @@ fn command_line(emu: X68kEmulator&, out: u8[>..]&) {
     }
 }
 
-fn mcp_control_call(emu: X68kEmulator&, tool_name: const u8[:], args: const u8[:], id_buf: const u8[:]) -> bool {
+fn control_call(emu: X68kEmulator&, tool_name: const u8[:], args: const u8[:], id_buf: const u8[:]) -> bool {
     if tool_name == "arcl_run" {
         let frames = extract_json_int(args, "frames", 1);
         if !run_frames_ok(frames) {
-            mcp_write_text(id_buf, "frames must be between 1 and 36000", true);
+            write_text(id_buf, "frames must be between 1 and 36000", true);
             return true;
         }
-        let used = session_run(emu, frames);
+        let used = session::run(emu, frames);
         let reason = if emu.hit_break { "breakpoint" } else { "frames" };
         var obj: u8[>..] = [];
         obj.append("{\"stop_reason\":\"");
@@ -718,12 +719,12 @@ fn mcp_control_call(emu: X68kEmulator&, tool_name: const u8[:], args: const u8[:
         obj.append("\"");
         append_machine(obj, emu, used, true, true);
         obj.append("}");
-        mcp_write_object(id_buf, obj);
+        write_object(id_buf, obj);
         return true;
     }
 
     if tool_name == "arcl_pause" {
-        session_pause(emu, win32_ui_get_ticks_ms());
+        session::pause(emu, win32_ui_get_ticks_ms());
         var resp: u8[>..] = [];
         format(resp, "{\"jsonrpc\":\"2.0\",\"id\":", id_buf, ",\"result\":{\"content\":[{\"type\":\"text\",\"text\":\"{\\\"status\\\":\\\"paused\\\"}\"}]}}");
         c_io_write_line(resp[0], resp.len as i32);
@@ -731,7 +732,7 @@ fn mcp_control_call(emu: X68kEmulator&, tool_name: const u8[:], args: const u8[:
     }
 
     if tool_name == "arcl_resume" {
-        session_resume(emu, win32_ui_get_ticks_ms());
+        session::resume(emu, win32_ui_get_ticks_ms());
         var resp: u8[>..] = [];
         format(resp, "{\"jsonrpc\":\"2.0\",\"id\":", id_buf, ",\"result\":{\"content\":[{\"type\":\"text\",\"text\":\"{\\\"status\\\":\\\"running\\\"}\"}]}}");
         c_io_write_line(resp[0], resp.len as i32);
@@ -743,17 +744,17 @@ fn mcp_control_call(emu: X68kEmulator&, tool_name: const u8[:], args: const u8[:
         obj.append("{");
         append_machine(obj, emu, 0, false, false);
         obj.append("}");
-        mcp_write_object(id_buf, obj);
+        write_object(id_buf, obj);
         return true;
     }
 
     if tool_name == "arcl_reset" {
-        mcp_reset(emu);
+        reset(emu);
         var obj: u8[>..] = [];
         obj.append("{");
         append_machine(obj, emu, 0, false, false);
         obj.append("}");
-        mcp_write_object(id_buf, obj);
+        write_object(id_buf, obj);
         return true;
     }
 
@@ -768,74 +769,74 @@ fn mcp_control_call(emu: X68kEmulator&, tool_name: const u8[:], args: const u8[:
         format(obj, "{\"pc_before\":\"", before_str, "\",\"pc\":\"", after_str, "\",\"sr\":\"", sr_str, "\",\"cycles\":", cycles);
         append_machine(obj, emu, 0, false, true);
         obj.append("}");
-        mcp_write_object(id_buf, obj);
+        write_object(id_buf, obj);
         return true;
     }
 
     return false;
 }
 
-fn mcp_tool_key(emu: X68kEmulator&, args: const u8[:], id_buf: const u8[:]) {
+fn tool_key(emu: X68kEmulator&, args: const u8[:], id_buf: const u8[:]) {
     var key_name: u8[>..] = [];
     if !extract_json_str(args, "key", key_name) {
-        mcp_write_text(id_buf, "missing required string field 'key'", true);
+        write_text(id_buf, "missing required string field 'key'", true);
         return;
     }
     var act_buf: u8[>..] = [];
     if !extract_json_str(args, "action", act_buf) {
-        mcp_write_text(id_buf, "missing required string field 'action' (press/release/tap)", true);
+        write_text(id_buf, "missing required string field 'action' (press/release/tap)", true);
         return;
     }
-    let code = key_code(key_name);
+    let code = input::key_code(key_name);
     if code == KEY_BLOCKED {
-        mcp_write_text(id_buf, "this key is blocked from arcl_key: it triggers a core-internal side effect (F12 opens the built-in menu, ScrollLock toggles MIDI); see x68k_mcp.md 6.1", true);
+        write_text(id_buf, "this key is blocked from arcl_key: it triggers a core-internal side effect (F12 opens the built-in menu, ScrollLock toggles MIDI); see x68k_mcp.md 6.1", true);
         return;
     }
     if code < 0 {
-        mcp_write_text(id_buf, "unmapped key name; see x68k_mcp.md for the supported key set", true);
+        write_text(id_buf, "unmapped key name; see x68k_mcp.md for the supported key set", true);
         return;
     }
     if act_buf == "press" {
-        input_key(emu, code, true);
+        input::key(emu, code, true);
     } else if act_buf == "release" {
-        input_key(emu, code, false);
+        input::key(emu, code, false);
     } else if act_buf == "tap" {
         let frames = extract_json_int(args, "frames", 1);
         if frames < 1 || frames > 3600 {
-            mcp_write_text(id_buf, "frames must be between 1 and 3600", true);
+            write_text(id_buf, "frames must be between 1 and 3600", true);
             return;
         }
-        session_key_tap(emu, code, frames);
+        session::key_tap(emu, code, frames);
         var obj: u8[>..] = [];
         format(obj, "{\"key\":\"", key_name, "\",\"action\":\"tap\"");
         append_machine(obj, emu, frames, true, true);
         obj.append("}");
-        mcp_write_object(id_buf, obj);
+        write_object(id_buf, obj);
         return;
     } else {
-        mcp_write_text(id_buf, "action must be press, release, or tap", true);
+        write_text(id_buf, "action must be press, release, or tap", true);
         return;
     }
     var obj: u8[>..] = [];
     format(obj, "{\"key\":\"", key_name, "\",\"action\":\"", act_buf, "\"");
     append_machine(obj, emu, 0, false, true);
     obj.append("}");
-    mcp_write_object(id_buf, obj);
+    write_object(id_buf, obj);
 }
 
-fn mcp_tool_type(emu: X68kEmulator&, args: const u8[:], id_buf: const u8[:]) {
+fn tool_type(emu: X68kEmulator&, args: const u8[:], id_buf: const u8[:]) {
     var text: u8[>..] = [];
     if !extract_json_str(args, "text", text) || text.len > 256 {
-        mcp_write_text(id_buf, "missing required string field 'text'", true);
+        write_text(id_buf, "missing required string field 'text'", true);
         return;
     }
     let hold = extract_json_int(args, "frames", 2);
     if hold < 1 || hold > 3600 {
-        mcp_write_text(id_buf, "frames must be between 1 and 3600", true);
+        write_text(id_buf, "frames must be between 1 and 3600", true);
         return;
     }
     for i in text.len {
-        if !type_has_key(text[i]) {
+        if !input::type_has_key(text[i]) {
             let hex = "0123456789abcdef";
             var shown = text[i];
             if shown < 0x20 || shown >= 0x7f { shown = '?'; }
@@ -846,31 +847,31 @@ fn mcp_tool_type(emu: X68kEmulator&, args: const u8[:], id_buf: const u8[:]) {
             msg.push(hex[((text[i] >> 4) & 0x0F) as i32]);
             msg.push(hex[(text[i] & 0x0F) as i32]);
             format(msg, ") at position ", i, " has no mapped key on this keyboard model");
-            mcp_write_text(id_buf, msg, true);
+            write_text(id_buf, msg, true);
             return;
         }
     }
     var frames_used: i32 = 0;
     for i in text.len {
-        frames_used += session_type_char(emu, text[i], hold);
+        frames_used += session::type_char(emu, text[i], hold);
     }
     var obj: u8[>..] = [];
     format(obj, "{\"chars_typed\":", text.len);
     append_machine(obj, emu, frames_used, true, true);
     obj.append("}");
-    mcp_write_object(id_buf, obj);
+    write_object(id_buf, obj);
 }
 
-fn mcp_tool_clear_input(emu: X68kEmulator&, args: const u8[:], id_buf: const u8[:]) {
-    release_held_keys(emu);
+fn tool_clear_input(emu: X68kEmulator&, args: const u8[:], id_buf: const u8[:]) {
+    input::release_held_keys(emu);
     var obj: u8[>..] = [];
     obj.append("{\"cleared\":true");
     append_machine(obj, emu, 0, false, true);
     obj.append("}");
-    mcp_write_object(id_buf, obj);
+    write_object(id_buf, obj);
 }
 
-fn mcp_tool_input_state(emu: X68kEmulator&, args: const u8[:], id_buf: const u8[:]) {
+fn tool_input_state(emu: X68kEmulator&, args: const u8[:], id_buf: const u8[:]) {
     var obj: u8[>..] = [];
     obj.append("{\"keys\":[");
     var first = true;
@@ -899,28 +900,28 @@ fn mcp_tool_input_state(emu: X68kEmulator&, args: const u8[:], id_buf: const u8[
     obj.append("],\"mouse\":{\"left\":false,\"right\":false,\"pending_dx\":0,\"pending_dy\":0}");
     append_machine(obj, emu, 0, false, true);
     obj.append("}");
-    mcp_write_object(id_buf, obj);
+    write_object(id_buf, obj);
 }
 
-fn mcp_tool_joypad(emu: X68kEmulator&, args: const u8[:], id_buf: const u8[:]) {
+fn tool_joypad(emu: X68kEmulator&, args: const u8[:], id_buf: const u8[:]) {
     var btn_buf: u8[>..] = [];
     if !extract_json_str(args, "button", btn_buf) {
-        mcp_write_text(id_buf, "missing required string field 'button'", true);
+        write_text(id_buf, "missing required string field 'button'", true);
         return;
     }
     var act_buf: u8[>..] = [];
     if !extract_json_str(args, "action", act_buf) {
-        mcp_write_text(id_buf, "missing required string field 'action' (press/release/tap)", true);
+        write_text(id_buf, "missing required string field 'action' (press/release/tap)", true);
         return;
     }
     let port = extract_json_int(args, "port", 0);
     if port != 0 && port != 1 {
-        mcp_write_text(id_buf, "port must be 0 or 1", true);
+        write_text(id_buf, "port must be 0 or 1", true);
         return;
     }
-    let mask = joy_mask(btn_buf);
+    let mask = input::joy_mask(btn_buf);
     if mask == 0 {
-        mcp_write_text(id_buf, "unmapped joypad button name; see x68k_mcp.md for the supported set", true);
+        write_text(id_buf, "unmapped joypad button name; see x68k_mcp.md for the supported set", true);
         return;
     }
     var frames_used: i32 = 0;
@@ -928,42 +929,42 @@ fn mcp_tool_joypad(emu: X68kEmulator&, args: const u8[:], id_buf: const u8[:]) {
         if act_buf == "tap" {
             let frames = extract_json_int(args, "frames", 1);
             if frames < 1 || frames > 3600 {
-                mcp_write_text(id_buf, "frames must be between 1 and 3600", true);
+                write_text(id_buf, "frames must be between 1 and 3600", true);
                 return;
             }
             frames_used = frames;
         }
         let pressed = act_buf == "press" || act_buf == "tap";
         if act_buf == "tap" {
-            session_joy_tap(emu, port, mask, frames_used);
-        } else { input_joy(emu, port, mask, pressed); }
+            session::joy_tap(emu, port, mask, frames_used);
+        } else { input::joy(emu, port, mask, pressed); }
     } else {
-        mcp_write_text(id_buf, "action must be press, release, or tap", true);
+        write_text(id_buf, "action must be press, release, or tap", true);
         return;
     }
     var obj: u8[>..] = [];
     format(obj, "{\"port\":", port, ",\"button\":\"", btn_buf, "\",\"action\":\"", act_buf, "\"");
     append_machine(obj, emu, frames_used, act_buf == "tap", true);
     obj.append("}");
-    mcp_write_object(id_buf, obj);
+    write_object(id_buf, obj);
 }
 
-fn mcp_tool_command(emu: X68kEmulator&, args: const u8[:], id_buf: const u8[:]) {
+fn tool_command(emu: X68kEmulator&, args: const u8[:], id_buf: const u8[:]) {
     var command: u8[>..] = [];
     if !extract_json_str(args, "command", command) || command.len > 180 {
-        mcp_write_text(id_buf, "missing required string field 'command'", true);
+        write_text(id_buf, "missing required string field 'command'", true);
         return;
     }
     for i in command.len {
-        if !type_has_key(command[i]) {
-            mcp_write_text(id_buf, "arcl_type failed while echoing the command", true);
+        if !input::type_has_key(command[i]) {
+            write_text(id_buf, "arcl_type failed while echoing the command", true);
             return;
         }
     }
     var frames_used: i32 = 0;
     let hold: i32 = 2;
     for i in command.len {
-        frames_used += session_type_char(emu, command[i], hold);
+        frames_used += session::type_char(emu, command[i], hold);
     }
     var after: u8[>..] = [];
     command_line(emu, after);
@@ -983,10 +984,10 @@ fn mcp_tool_command(emu: X68kEmulator&, args: const u8[:], id_buf: const u8[:]) 
         command_line(emu, before);
         prompt.append(before);
     }
-    frames_used += session_type_char(emu, '\n', 2);
+    frames_used += session::type_char(emu, '\n', 2);
     var matched = false;
     while frames_used < 6000 {
-        for _ in 30 { session_run_frame(emu); }
+        for _ in 30 { session::run_frame(emu); }
         frames_used += 30;
         var lineb: u8[>..] = [];
         command_line(emu, lineb);
@@ -1000,24 +1001,24 @@ fn mcp_tool_command(emu: X68kEmulator&, args: const u8[:], id_buf: const u8[:]) 
         }
     }
     if !matched {
-        mcp_write_text(id_buf, "timed out waiting for the prompt to return (6000 frames)", true);
+        write_text(id_buf, "timed out waiting for the prompt to return (6000 frames)", true);
         return;
     }
     var obj: u8[>..] = [];
     obj.append("{\"action\":\"command\"");
     append_machine(obj, emu, frames_used, true, true);
     obj.append("}");
-    mcp_write_object(id_buf, obj);
+    write_object(id_buf, obj);
 }
 
-fn mcp_tool_input_macro(emu: X68kEmulator&, args: const u8[:], id_buf: const u8[:]) {
+fn tool_input_macro(emu: X68kEmulator&, args: const u8[:], id_buf: const u8[:]) {
     let at = json_key_value(args, 0, "steps");
     if at < 0 {
-        mcp_write_text(id_buf, "missing required array field 'steps'", true);
+        write_text(id_buf, "missing required array field 'steps'", true);
         return;
     }
     if at >= args.len || args[at] != '[' {
-        mcp_write_text(id_buf, "'steps' must be an array", true);
+        write_text(id_buf, "'steps' must be an array", true);
         return;
     }
     var cursor = at + 1;
@@ -1030,11 +1031,11 @@ fn mcp_tool_input_macro(emu: X68kEmulator&, args: const u8[:], id_buf: const u8[
         while cursor < args.len && (args[cursor] == ' ' || args[cursor] == ',' || args[cursor] == '\n' || args[cursor] == '\t' || args[cursor] == '\r') { cursor = cursor + 1; }
         if cursor >= args.len || args[cursor] == ']' { break; }
         if args[cursor] != '{' {
-            mcp_write_text(id_buf, "each step must be a JSON object", true);
+            write_text(id_buf, "each step must be a JSON object", true);
             return;
         }
         if completed >= 16 {
-            mcp_write_text(id_buf, "too many steps; max is 16 per arcl_input_macro call", true);
+            write_text(id_buf, "too many steps; max is 16 per arcl_input_macro call", true);
             return;
         }
         var depth = 0;
@@ -1061,12 +1062,12 @@ fn mcp_tool_input_macro(emu: X68kEmulator&, args: const u8[:], id_buf: const u8[
         while k < end { step.push(args[k]); k = k + 1; }
         var op: u8[>..] = [];
         if !extract_json_str(step, "op", op) {
-            mcp_write_text(id_buf, "each step needs a string 'op' field", true);
+            write_text(id_buf, "each step needs a string 'op' field", true);
             return;
         }
         var step_ok = true;
         if op == "clear_input" {
-            release_held_keys(emu);
+            input::release_held_keys(emu);
         } else if op == "mouse" {
             step_ok = false;
             err.append("mouse is not available until SCC");
@@ -1080,21 +1081,21 @@ fn mcp_tool_input_macro(emu: X68kEmulator&, args: const u8[:], id_buf: const u8[
                 step_ok = false;
                 err.append("missing required string field 'action' (press/release/tap)");
             } else {
-                let code = key_code(key_name);
+                let code = input::key_code(key_name);
                 if code < 0 {
                     step_ok = false;
                     err.append("unmapped key name; see x68k_mcp.md for the supported key set");
                 } else if act_buf == "press" {
-                    input_key(emu, code, true);
+                    input::key(emu, code, true);
                 } else if act_buf == "release" {
-                    input_key(emu, code, false);
+                    input::key(emu, code, false);
                 } else if act_buf == "tap" {
                     let frames = extract_json_int(step, "frames", 1);
                     if frames < 1 || frames > 3600 || frames_used + frames > 10000 {
                         step_ok = false;
                         err.append("frames must be between 1 and 3600");
                     } else {
-                        session_key_tap(emu, code, frames);
+                        session::key_tap(emu, code, frames);
                         frames_used += frames;
                     }
                 } else {
@@ -1114,14 +1115,14 @@ fn mcp_tool_input_macro(emu: X68kEmulator&, args: const u8[:], id_buf: const u8[
                     err.append("frames must be between 1 and 3600");
                 } else {
                     for i in text.len {
-                        if !type_has_key(text[i]) {
+                        if !input::type_has_key(text[i]) {
                             step_ok = false;
                             err.append("arcl_type failed while echoing the command");
                         }
                     }
                     if step_ok {
                         for i in text.len {
-                            frames_used += session_type_char(emu, text[i], hold);
+                            frames_used += session::type_char(emu, text[i], hold);
                         }
                     }
                 }
@@ -1133,21 +1134,21 @@ fn mcp_tool_input_macro(emu: X68kEmulator&, args: const u8[:], id_buf: const u8[
                 step_ok = false;
                 err.append("missing required string field 'button'");
             } else {
-                let mask = joy_mask(btn);
+                let mask = input::joy_mask(btn);
                 let port = extract_json_int(step, "port", 0);
                 if mask == 0 || (port != 0 && port != 1) {
                     step_ok = false;
                     err.append("unmapped joypad button name; see x68k_mcp.md for the supported set");
                 } else if act_buf == "press" || act_buf == "release" || act_buf == "tap" {
                     let pressed = act_buf == "press" || act_buf == "tap";
-                    input_joy(emu, port, mask, pressed);
+                    input::joy(emu, port, mask, pressed);
                     if act_buf == "tap" {
                         let frames = extract_json_int(step, "frames", 1);
                         if frames < 1 || frames > 3600 || frames_used + frames > 10000 {
                             step_ok = false;
                             err.append("frames must be between 1 and 3600");
                         } else {
-                            session_joy_tap(emu, port, mask, frames);
+                            session::joy_tap(emu, port, mask, frames);
                             frames_used += frames;
                         }
                     }
@@ -1186,7 +1187,7 @@ fn mcp_tool_input_macro(emu: X68kEmulator&, args: const u8[:], id_buf: const u8[
                 step_ok = false;
                 err.append("macro would exceed the 10000 total-frame budget");
             } else {
-                for _ in frames { session_run_frame(emu); }
+                for _ in frames { session::run_frame(emu); }
                 frames_used += frames;
             }
         } else {
@@ -1204,64 +1205,64 @@ fn mcp_tool_input_macro(emu: X68kEmulator&, args: const u8[:], id_buf: const u8[
     append_machine(results, emu, 0, false, true);
     results.append("}");
     if err.len != 0 {
-        mcp_write_error_object(id_buf, err, results);
+        write_error_object(id_buf, err, results);
         return;
     }
-    mcp_write_object(id_buf, results);
+    write_object(id_buf, results);
 }
 
 // 入力系のツール (L0 / L1)。1 ツール 1 関数。
-fn mcp_input_call(emu: X68kEmulator&, tool_name: const u8[:], args: const u8[:], id_buf: const u8[:]) -> bool {
+fn input_call(emu: X68kEmulator&, tool_name: const u8[:], args: const u8[:], id_buf: const u8[:]) -> bool {
     if tool_name == "arcl_key" {
-        mcp_tool_key(emu, args, id_buf);
+        tool_key(emu, args, id_buf);
         return true;
     }
     if tool_name == "arcl_type" {
-        mcp_tool_type(emu, args, id_buf);
+        tool_type(emu, args, id_buf);
         return true;
     }
     if tool_name == "arcl_clear_input" {
-        mcp_tool_clear_input(emu, args, id_buf);
+        tool_clear_input(emu, args, id_buf);
         return true;
     }
     if tool_name == "arcl_input_state" {
-        mcp_tool_input_state(emu, args, id_buf);
+        tool_input_state(emu, args, id_buf);
         return true;
     }
     if tool_name == "arcl_joypad" {
-        mcp_tool_joypad(emu, args, id_buf);
+        tool_joypad(emu, args, id_buf);
         return true;
     }
     if tool_name == "arcl_command" {
-        mcp_tool_command(emu, args, id_buf);
+        tool_command(emu, args, id_buf);
         return true;
     }
     if tool_name == "arcl_input_macro" {
-        mcp_tool_input_macro(emu, args, id_buf);
+        tool_input_macro(emu, args, id_buf);
         return true;
     }
     return false;
 }
 
-fn mcp_tool_save_state(emu: X68kEmulator&, args: const u8[:], id_buf: const u8[:]) {
+fn tool_save_state(emu: X68kEmulator&, args: const u8[:], id_buf: const u8[:]) {
     let slot = extract_json_int(args, "slot", 0);
     if slot < 0 || slot > 9 {
-        mcp_write_text(id_buf, "slot must be between 0 and 9", true);
+        write_text(id_buf, "slot must be between 0 and 9", true);
         return;
     }
     // path があれば、スロットに加えてファイルにも保存する。
     var path: u8[>..] = [];
     let to_file = extract_json_str(args, "path", path);
     if to_file && path.len == 0 {
-        mcp_write_text(id_buf, "path must not be empty", true);
+        write_text(id_buf, "path must not be empty", true);
         return;
     }
-    if !session_save(emu, slot) {
-        mcp_write_text(id_buf, "failed to allocate save-state buffer", true);
+    if !session::save(emu, slot) {
+        write_text(id_buf, "failed to allocate save-state buffer", true);
         return;
     }
-    if to_file && !state_write_file(STATE_SLOT, slot, path) {
-        mcp_write_text(id_buf, "the state was saved to the slot, but the file could not be written", true);
+    if to_file && !state::save_file(STATE_SLOT, slot, path) {
+        write_text(id_buf, "the state was saved to the slot, but the file could not be written", true);
         return;
     }
     var obj: u8[>..] = [];
@@ -1272,26 +1273,26 @@ fn mcp_tool_save_state(emu: X68kEmulator&, args: const u8[:], id_buf: const u8[:
     }
     append_machine(obj, emu, 0, false, true);
     obj.append("}");
-    mcp_write_object(id_buf, obj);
+    write_object(id_buf, obj);
 }
 
-fn mcp_tool_load_state(emu: X68kEmulator&, args: const u8[:], id_buf: const u8[:]) {
+fn tool_load_state(emu: X68kEmulator&, args: const u8[:], id_buf: const u8[:]) {
     let slot = extract_json_int(args, "slot", 0);
     if slot < 0 || slot > 9 {
-        mcp_write_text(id_buf, "slot must be between 0 and 9", true);
+        write_text(id_buf, "slot must be between 0 and 9", true);
         return;
     }
     // path があれば、ファイルをスロットへ読み込んでから戻す。
     var path: u8[>..] = [];
     let from_file = extract_json_str(args, "path", path);
     if from_file {
-        let e = session_load_file(emu, slot, path);
-        if e != StateFileError.None {
-            mcp_write_text(id_buf, state_file_error_text(e), true);
+        let e = session::load_file(emu, slot, path);
+        if e != state::StateFileError.None {
+            write_text(id_buf, state::file_error_text(e), true);
             return;
         }
-    } else if !session_load(emu, slot) {
-        mcp_write_text(id_buf, "save-state slot is empty or incompatible", true);
+    } else if !session::load(emu, slot) {
+        write_text(id_buf, "save-state slot is empty or incompatible", true);
         return;
     }
     var obj: u8[>..] = [];
@@ -1302,82 +1303,82 @@ fn mcp_tool_load_state(emu: X68kEmulator&, args: const u8[:], id_buf: const u8[:
     }
     append_machine(obj, emu, 0, false, true);
     obj.append("}");
-    mcp_write_object(id_buf, obj);
+    write_object(id_buf, obj);
 }
 
-fn mcp_tool_rewind(emu: X68kEmulator&, args: const u8[:], id_buf: const u8[:]) {
+fn tool_rewind(emu: X68kEmulator&, args: const u8[:], id_buf: const u8[:]) {
     var act: u8[>..] = [];
     if !extract_json_str(args, "action", act) {
-        mcp_write_text(id_buf, "missing required string field 'action' (enable/disable/status/rewind)", true);
+        write_text(id_buf, "missing required string field 'action' (enable/disable/status/rewind)", true);
         return;
     }
     if act == "enable" {
         let interval = extract_json_int(args, "interval", 60);
         if interval < 10 || interval > 36000 {
-            mcp_write_text(id_buf, "interval must be between 10 and 36000", true);
+            write_text(id_buf, "interval must be between 10 and 36000", true);
             return;
         }
-        rewind_enable(emu, interval);
+        session::rewind_enable(emu, interval);
         var obj: u8[>..] = [];
         format(obj, "{\"action\":\"enable\",\"interval\":", interval, ",\"depth\":8");
         append_machine(obj, emu, 0, false, true);
         obj.append("}");
-        mcp_write_object(id_buf, obj);
+        write_object(id_buf, obj);
         return;
     }
     if act == "disable" {
-        rewind_disable(emu);
+        session::rewind_disable(emu);
         var obj: u8[>..] = [];
         obj.append("{\"action\":\"disable\"");
         append_machine(obj, emu, 0, false, true);
         obj.append("}");
-        mcp_write_object(id_buf, obj);
+        write_object(id_buf, obj);
         return;
     }
     if act == "status" {
         let on = if emu.session.rewind_on { "true" } else { "false" };
         var obj: u8[>..] = [];
-        format(obj, "{\"action\":\"status\",\"enabled\":", on, ",\"interval\":", emu.session.rewind_interval, ",\"depth\":8,\"entries\":", emu.session.rewind_count, ",\"total_bytes\":", state_total(STATE_REWIND));
+        format(obj, "{\"action\":\"status\",\"enabled\":", on, ",\"interval\":", emu.session.rewind_interval, ",\"depth\":8,\"entries\":", emu.session.rewind_count, ",\"total_bytes\":", state::total(STATE_REWIND));
         append_machine(obj, emu, 0, false, true);
         obj.append("}");
-        mcp_write_object(id_buf, obj);
+        write_object(id_buf, obj);
         return;
     }
     if act == "rewind" {
         let steps = extract_json_int(args, "steps", 1);
         if steps < 1 || steps > emu.session.rewind_count {
-            mcp_write_text(id_buf, "not enough rewind history for that many steps", true);
+            write_text(id_buf, "not enough rewind history for that many steps", true);
             return;
         }
-        if !rewind_restore(emu, steps) {
-            mcp_write_text(id_buf, "core failed to restore rewind snapshot", true);
+        if !session::rewind_restore(emu, steps) {
+            write_text(id_buf, "core failed to restore rewind snapshot", true);
             return;
         }
         var obj: u8[>..] = [];
         format(obj, "{\"action\":\"rewind\",\"steps\":", steps);
         append_machine(obj, emu, 0, false, true);
         obj.append("}");
-        mcp_write_object(id_buf, obj);
+        write_object(id_buf, obj);
         return;
     }
-    mcp_write_text(id_buf, "action must be enable, disable, status, or rewind", true);
+    write_text(id_buf, "action must be enable, disable, status, or rewind", true);
 }
 
-fn mcp_tool_speed(emu: X68kEmulator&, args: const u8[:], id_buf: const u8[:]) {
+fn tool_speed(emu: X68kEmulator&, args: const u8[:], id_buf: const u8[:]) {
     let nom = emu::nominal_fps(emu.mmu);
-    let fps, pct, running = session_speed(emu, win32_ui_get_ticks_ms());
+    let fps, pct, running = session::speed(emu, win32_ui_get_ticks_ms());
     let run = if running { "true" } else { "false" };
     var obj: u8[>..] = [];
     format(obj, "{\"running\":", run, ",\"fps\":", fps, ",\"nominal_fps\":", nom, ",\"speed_percent\":", pct);
     append_machine(obj, emu, 0, false, true);
     obj.append("}");
-    mcp_write_object(id_buf, obj);
+    write_object(id_buf, obj);
 }
 
-fn mcp_tool_snapshot(emu: X68kEmulator&, args: const u8[:], id_buf: const u8[:]) {
+fn tool_snapshot(emu: X68kEmulator&, args: const u8[:], id_buf: const u8[:]) {
     var act: u8[>..] = [];
     if !extract_json_str(args, "action", act) {
-        mcp_write_text(id_buf, "missing required string field 'action' (create/restore/delete/list)", true);
+        write_text(id_buf, "missing required string field 'action' (create/restore/delete/list)", true);
         return;
     }
     if act == "list" {
@@ -1385,54 +1386,54 @@ fn mcp_tool_snapshot(emu: X68kEmulator&, args: const u8[:], id_buf: const u8[:])
         obj.append("{\"action\":\"list\",\"snapshots\":[");
         var first = true;
         for i: i32 in 32 {
-            if state_saved(STATE_SNAPSHOT, i) {
+            if state::saved(STATE_SNAPSHOT, i) {
                 if !first { obj.append(","); }
                 first = false;
                 var name: u8[>..] = [];
-                snapshot_name(emu, i, name);
+                session::snapshot_name(emu, i, name);
                 var quoted: u8[>..] = [];
                 json_append_quoted(quoted, name);
-                format(obj, "{\"name\":", quoted, ",\"frame\":", state_frame(STATE_SNAPSHOT, i), ",\"bytes\":", state_bytes(STATE_SNAPSHOT, i), "}");
+                format(obj, "{\"name\":", quoted, ",\"frame\":", state::frame(STATE_SNAPSHOT, i), ",\"bytes\":", state::bytes(STATE_SNAPSHOT, i), "}");
             }
         }
-        format(obj, "],\"total_bytes\":", state_total(STATE_SNAPSHOT));
+        format(obj, "],\"total_bytes\":", state::total(STATE_SNAPSHOT));
         append_machine(obj, emu, 0, false, true);
         obj.append("}");
-        mcp_write_object(id_buf, obj);
+        write_object(id_buf, obj);
         return;
     }
     var name: u8[>..] = [];
     if !extract_json_str(args, "snapshot_name", name) || name.len == 0 || name.len > 63 {
-        mcp_write_text(id_buf, "missing required string field 'snapshot_name'", true);
+        write_text(id_buf, "missing required string field 'snapshot_name'", true);
         return;
     }
     if act == "create" {
-        let idx = snapshot_create(emu, name);
+        let idx = session::snapshot_create(emu, name);
         if idx == SNAPSHOT_FULL {
-            mcp_write_text(id_buf, "snapshot table is full (max 32) - delete one first", true);
+            write_text(id_buf, "snapshot table is full (max 32) - delete one first", true);
             return;
         }
         if idx < 0 {
-            mcp_write_text(id_buf, "failed to allocate snapshot buffer", true);
+            write_text(id_buf, "failed to allocate snapshot buffer", true);
             return;
         }
         var quoted: u8[>..] = [];
         json_append_quoted(quoted, name);
         var obj: u8[>..] = [];
-        format(obj, "{\"action\":\"create\",\"name\":", quoted, ",\"bytes\":", state_bytes(STATE_SNAPSHOT, idx), ",\"total_bytes\":", state_total(STATE_SNAPSHOT));
+        format(obj, "{\"action\":\"create\",\"name\":", quoted, ",\"bytes\":", state::bytes(STATE_SNAPSHOT, idx), ",\"total_bytes\":", state::total(STATE_SNAPSHOT));
         append_machine(obj, emu, 0, false, true);
         obj.append("}");
-        mcp_write_object(id_buf, obj);
+        write_object(id_buf, obj);
         return;
     }
-    let idx = snapshot_find(emu, name);
+    let idx = session::snapshot_find(emu, name);
     if idx < 0 {
-        mcp_write_text(id_buf, "no snapshot with that name", true);
+        write_text(id_buf, "no snapshot with that name", true);
         return;
     }
     if act == "restore" {
-        if !snapshot_restore(emu, name) {
-            mcp_write_text(id_buf, "core failed to restore state (incompatible snapshot?)", true);
+        if !session::snapshot_restore(emu, name) {
+            write_text(id_buf, "core failed to restore state (incompatible snapshot?)", true);
             return;
         }
         var quoted: u8[>..] = [];
@@ -1441,48 +1442,48 @@ fn mcp_tool_snapshot(emu: X68kEmulator&, args: const u8[:], id_buf: const u8[:])
         format(obj, "{\"action\":\"restore\",\"name\":", quoted);
         append_machine(obj, emu, 0, false, true);
         obj.append("}");
-        mcp_write_object(id_buf, obj);
+        write_object(id_buf, obj);
         return;
     }
     if act == "delete" {
-        snapshot_delete(emu, name);
+        session::snapshot_delete(emu, name);
         var quoted: u8[>..] = [];
         json_append_quoted(quoted, name);
         var obj: u8[>..] = [];
-        format(obj, "{\"action\":\"delete\",\"name\":", quoted, ",\"total_bytes\":", state_total(STATE_SNAPSHOT));
+        format(obj, "{\"action\":\"delete\",\"name\":", quoted, ",\"total_bytes\":", state::total(STATE_SNAPSHOT));
         append_machine(obj, emu, 0, false, true);
         obj.append("}");
-        mcp_write_object(id_buf, obj);
+        write_object(id_buf, obj);
         return;
     }
-    mcp_write_text(id_buf, "action must be create, restore, delete, or list", true);
+    write_text(id_buf, "action must be create, restore, delete, or list", true);
 }
 
-fn mcp_checkpoint_call(emu: X68kEmulator&, tool_name: const u8[:], args: const u8[:], id_buf: const u8[:]) -> bool {
+fn checkpoint_call(emu: X68kEmulator&, tool_name: const u8[:], args: const u8[:], id_buf: const u8[:]) -> bool {
     if tool_name == "arcl_save_state" {
-        mcp_tool_save_state(emu, args, id_buf);
+        tool_save_state(emu, args, id_buf);
         return true;
     }
     if tool_name == "arcl_load_state" {
-        mcp_tool_load_state(emu, args, id_buf);
+        tool_load_state(emu, args, id_buf);
         return true;
     }
     if tool_name == "arcl_rewind" {
-        mcp_tool_rewind(emu, args, id_buf);
+        tool_rewind(emu, args, id_buf);
         return true;
     }
     if tool_name == "arcl_speed" {
-        mcp_tool_speed(emu, args, id_buf);
+        tool_speed(emu, args, id_buf);
         return true;
     }
     if tool_name == "arcl_snapshot" {
-        mcp_tool_snapshot(emu, args, id_buf);
+        tool_snapshot(emu, args, id_buf);
         return true;
     }
     return false;
 }
 
-fn mcp_tools_list(id_buf: const u8[:]) {
+fn tools_list(id_buf: const u8[:]) {
     var resp: u8[>..] = [];
     format(resp, "{\"jsonrpc\":\"2.0\",\"id\":", id_buf, ",\"result\":{\"tools\":[",
         "{\"name\":\"arcl_run\",\"description\":\"Advance emulation by specified frames\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"frames\":{\"type\":\"integer\"}}}},",
@@ -1536,9 +1537,9 @@ fn mcp_tools_list(id_buf: const u8[:]) {
     c_io_write_line(resp[0], resp.len as i32);
 }
 
-fn mcp_tool_screenshot(emu: X68kEmulator&, args: const u8[:], id_buf: const u8[:]) {
+fn tool_screenshot(emu: X68kEmulator&, args: const u8[:], id_buf: const u8[:]) {
     if c_frame_ready() == 0 {
-        mcp_write_text(id_buf, "no frame available yet; call arcl_run first", true);
+        write_text(id_buf, "no frame available yet; call arcl_run first", true);
         return;
     }
     let have_x = json_key_value(args, 0, "x") >= 0;
@@ -1546,7 +1547,7 @@ fn mcp_tool_screenshot(emu: X68kEmulator&, args: const u8[:], id_buf: const u8[:
     let have_w = json_key_value(args, 0, "w") >= 0;
     let have_h = json_key_value(args, 0, "h") >= 0;
     if (have_x || have_y || have_w || have_h) && !(have_x && have_y && have_w && have_h) {
-        mcp_write_text(id_buf, "specify all of x,y,w,h together, or none for the full frame", true);
+        write_text(id_buf, "specify all of x,y,w,h together, or none for the full frame", true);
         return;
     }
     let sw = c_get_screen_width();
@@ -1562,29 +1563,29 @@ fn mcp_tool_screenshot(emu: X68kEmulator&, args: const u8[:], id_buf: const u8[:
         h = extract_json_int(args, "h", 0);
     }
     if x < 0 || y < 0 || w <= 0 || h <= 0 || x + w > sw || y + h > sh {
-        mcp_write_text(id_buf, "crop rectangle out of bounds of the current frame", true);
+        write_text(id_buf, "crop rectangle out of bounds of the current frame", true);
         return;
     }
     let scale = extract_json_int(args, "scale", 1);
     if scale < 1 || scale > 16 {
-        mcp_write_text(id_buf, "scale must be between 1 and 16", true);
+        write_text(id_buf, "scale must be between 1 and 16", true);
         return;
     }
     let grid = extract_json_int(args, "grid", 0);
     if grid > 0 && scale < 2 {
-        mcp_write_text(id_buf, "grid requires scale >= 2", true);
+        write_text(id_buf, "grid requires scale >= 2", true);
         return;
     }
     if (w * scale) * (h * scale) > 480000 {
-        mcp_write_text(id_buf, "scaled output too large; crop with x/y/w/h or reduce scale", true);
+        write_text(id_buf, "scaled output too large; crop with x/y/w/h or reduce scale", true);
         return;
     }
     if json_key_value(args, 0, "inline") >= 0 {
-        mcp_write_text(id_buf, "inline PNG is not available in this build", true);
+        write_text(id_buf, "inline PNG is not available in this build", true);
         return;
     }
     if scale != 1 || grid != 0 || x != 0 || y != 0 || w != sw || h != sh {
-        mcp_write_text(id_buf, "scaled or cropped PNG output is not available in this build", true);
+        write_text(id_buf, "scaled or cropped PNG output is not available in this build", true);
         return;
     }
     var path_buf: u8[>..] = [];
@@ -1595,16 +1596,16 @@ fn mcp_tool_screenshot(emu: X68kEmulator&, args: const u8[:], id_buf: const u8[:
     path_null.append(path_buf);
     path_null.push('\0');
     if c_save_fb_bmp(path_null[0], path_null.len as i32) == 0 {
-        mcp_write_text(id_buf, "failed to write screenshot", true);
+        write_text(id_buf, "failed to write screenshot", true);
         return;
     }
     var msg: u8[>..] = [];
     msg.append("Screenshot saved to ");
     msg.append(path_buf);
-    mcp_write_text(id_buf, msg, false);
+    write_text(id_buf, msg, false);
 }
 
-fn mcp_tool_console_read(emu: X68kEmulator&, args: const u8[:], id_buf: const u8[:]) {
+fn tool_console_read(emu: X68kEmulator&, args: const u8[:], id_buf: const u8[:]) {
     var txt: u8[>..] = [];
     console_decode(emu, txt);
     var obj: u8[>..] = [];
@@ -1613,26 +1614,26 @@ fn mcp_tool_console_read(emu: X68kEmulator&, args: const u8[:], id_buf: const u8
     format(obj, "{\"cols\":", g_console_cols, ",\"rows\":", g_console_rows, ",\"text\":", quoted);
     append_machine(obj, emu, 0, false, true);
     obj.append("}");
-    mcp_write_object(id_buf, obj);
+    write_object(id_buf, obj);
 }
 
-fn mcp_tool_mount(emu: X68kEmulator&, args: const u8[:], id_buf: const u8[:]) {
+fn tool_mount(emu: X68kEmulator&, args: const u8[:], id_buf: const u8[:]) {
     var act_buf: u8[>..] = [];
     if !extract_json_str(args, "action", act_buf) {
-        mcp_write_text(id_buf, "missing required string field 'action' (insert/eject)", true);
+        write_text(id_buf, "missing required string field 'action' (insert/eject)", true);
         return;
     }
     if act_buf == "insert" {
         var path_buf: u8[>..] = [];
         if !extract_json_str(args, "path", path_buf) {
-            mcp_write_text(id_buf, "insert requires a string field 'path'", true);
+            write_text(id_buf, "insert requires a string field 'path'", true);
             return;
         }
         var path_null: u8[>..] = [];
         path_null.append(path_buf);
         path_null.push('\0');
         if c_fdd_load_file(1, path_null[0], path_null.len as i32) == 0 {
-            mcp_write_text(id_buf, "the core rejected the disk image (bad path or unsupported format)", true);
+            write_text(id_buf, "the core rejected the disk image (bad path or unsupported format)", true);
             return;
         }
         var quoted: u8[>..] = [];
@@ -1641,7 +1642,7 @@ fn mcp_tool_mount(emu: X68kEmulator&, args: const u8[:], id_buf: const u8[:]) {
         format(obj, "{\"action\":\"insert\",\"path\":", quoted);
         append_machine(obj, emu, 0, false, true);
         obj.append("}");
-        mcp_write_object(id_buf, obj);
+        write_object(id_buf, obj);
         return;
     }
     if act_buf == "eject" {
@@ -1650,16 +1651,16 @@ fn mcp_tool_mount(emu: X68kEmulator&, args: const u8[:], id_buf: const u8[:]) {
         obj.append("{\"action\":\"eject\"");
         append_machine(obj, emu, 0, false, true);
         obj.append("}");
-        mcp_write_object(id_buf, obj);
+        write_object(id_buf, obj);
         return;
     }
-    mcp_write_text(id_buf, "action must be insert or eject", true);
+    write_text(id_buf, "action must be insert or eject", true);
 }
 
-fn mcp_tool_host_dir(emu: X68kEmulator&, args: const u8[:], id_buf: const u8[:]) {
+fn tool_host_dir(emu: X68kEmulator&, args: const u8[:], id_buf: const u8[:]) {
     var path_buf: u8[>..] = [];
     if !extract_json_str(args, "path", path_buf) {
-        mcp_write_text(id_buf, "missing required string field 'path'", true);
+        write_text(id_buf, "missing required string field 'path'", true);
         return;
     }
     var bad = false;
@@ -1669,7 +1670,7 @@ fn mcp_tool_host_dir(emu: X68kEmulator&, args: const u8[:], id_buf: const u8[:])
         pi += 1;
     }
     if bad {
-        mcp_write_text(id_buf, "path must not contain '..'", true);
+        write_text(id_buf, "path must not contain '..'", true);
         return;
     }
     var path_z: u8[>..] = [];
@@ -1677,7 +1678,7 @@ fn mcp_tool_host_dir(emu: X68kEmulator&, args: const u8[:], id_buf: const u8[:])
     path_z.push(0);
     var listed: u8[8192] = [0; 8192];
     if c_host_list_dir(path_z[0], path_z.len as i32, listed[0], 8192) != 1 {
-        mcp_write_text(id_buf, "failed to open directory (does it exist?)", true);
+        write_text(id_buf, "failed to open directory (does it exist?)", true);
         return;
     }
     var body: u8[>..] = [];
@@ -1692,13 +1693,13 @@ fn mcp_tool_host_dir(emu: X68kEmulator&, args: const u8[:], id_buf: const u8[:])
     format(obj, "{\"entries\":", body, ",\"path\":", quoted);
     append_machine(obj, emu, 0, false, true);
     obj.append("}");
-    mcp_write_object(id_buf, obj);
+    write_object(id_buf, obj);
 }
 
-fn mcp_tool_audio_record(emu: X68kEmulator&, args: const u8[:], id_buf: const u8[:]) {
+fn tool_audio_record(emu: X68kEmulator&, args: const u8[:], id_buf: const u8[:]) {
     var act: u8[>..] = [];
     if !extract_json_str(args, "action", act) {
-        mcp_write_text(id_buf, "missing required string field 'action' (start/stop/status)", true);
+        write_text(id_buf, "missing required string field 'action' (start/stop/status)", true);
         return;
     }
     if act == "start" {
@@ -1707,7 +1708,7 @@ fn mcp_tool_audio_record(emu: X68kEmulator&, args: const u8[:], id_buf: const u8
         obj.append("{\"action\":\"start\",\"sample_rate\":44100,\"cap_seconds\":60");
         append_machine(obj, emu, 0, false, true);
         obj.append("}");
-        mcp_write_object(id_buf, obj);
+        write_object(id_buf, obj);
         return;
     }
     if act == "status" {
@@ -1721,7 +1722,7 @@ fn mcp_tool_audio_record(emu: X68kEmulator&, args: const u8[:], id_buf: const u8
         format(obj, "{\"action\":\"status\",\"active\":", on, ",\"frames\":", frames, ",\"truncated\":", tr);
         append_machine(obj, emu, 0, false, true);
         obj.append("}");
-        mcp_write_object(id_buf, obj);
+        write_object(id_buf, obj);
         return;
     }
     if act == "stop" {
@@ -1729,7 +1730,7 @@ fn mcp_tool_audio_record(emu: X68kEmulator&, args: const u8[:], id_buf: const u8
         var z: u8[512] = [0; 512];
         if extract_json_str(args, "path", path_buf) && path_buf.len > 0 {
             if path_buf.len >= 511 {
-                mcp_write_text(id_buf, "failed to write WAV to path", true);
+                write_text(id_buf, "failed to write WAV to path", true);
                 return;
             }
             for pi in path_buf.len {
@@ -1741,7 +1742,7 @@ fn mcp_tool_audio_record(emu: X68kEmulator&, args: const u8[:], id_buf: const u8
         var peak: i32 = 0;
         var silent: i32 = 0;
         if c_audio_capture_stop(z[0], z.len as i32, frames, trunc, peak, silent) == 0 {
-            mcp_write_text(id_buf, "failed to write WAV to path", true);
+            write_text(id_buf, "failed to write WAV to path", true);
             return;
         }
         let tr = if trunc != 0 { "true" } else { "false" };
@@ -1750,38 +1751,38 @@ fn mcp_tool_audio_record(emu: X68kEmulator&, args: const u8[:], id_buf: const u8
         format(obj, "{\"action\":\"stop\",\"frames\":", frames, ",\"truncated\":", tr, ",\"peak\":", peak, ",\"silent\":", sil);
         append_machine(obj, emu, 0, false, true);
         obj.append("}");
-        mcp_write_object(id_buf, obj);
+        write_object(id_buf, obj);
         return;
     }
-    mcp_write_text(id_buf, "action must be start, stop, or status", true);
+    write_text(id_buf, "action must be start, stop, or status", true);
 }
 
 // 画面・コンソール・媒体・ホスト側のファイル (L0 / L1)
-fn mcp_host_call(emu: X68kEmulator&, tool_name: const u8[:], args: const u8[:], id_buf: const u8[:]) -> bool {
+fn host_call(emu: X68kEmulator&, tool_name: const u8[:], args: const u8[:], id_buf: const u8[:]) -> bool {
     if tool_name == "arcl_screenshot" {
-        mcp_tool_screenshot(emu, args, id_buf);
+        tool_screenshot(emu, args, id_buf);
         return true;
     }
     if tool_name == "arcl_console_read" {
-        mcp_tool_console_read(emu, args, id_buf);
+        tool_console_read(emu, args, id_buf);
         return true;
     }
     if tool_name == "arcl_mount" {
-        mcp_tool_mount(emu, args, id_buf);
+        tool_mount(emu, args, id_buf);
         return true;
     }
     if tool_name == "arcl_host_dir" {
-        mcp_tool_host_dir(emu, args, id_buf);
+        tool_host_dir(emu, args, id_buf);
         return true;
     }
     if tool_name == "arcl_audio_record" {
-        mcp_tool_audio_record(emu, args, id_buf);
+        tool_audio_record(emu, args, id_buf);
         return true;
     }
     return false;
 }
 
-fn mcp_tool_registers(emu: X68kEmulator&, args: const u8[:], id_buf: const u8[:]) {
+fn tool_registers(emu: X68kEmulator&, args: const u8[:], id_buf: const u8[:]) {
     var d0_str: u8[>..] = []; hex_u32(emu.cpu.d[0], d0_str);
     var d1_str: u8[>..] = []; hex_u32(emu.cpu.d[1], d1_str);
     var d2_str: u8[>..] = []; hex_u32(emu.cpu.d[2], d2_str);
@@ -1817,10 +1818,10 @@ fn mcp_tool_registers(emu: X68kEmulator&, args: const u8[:], id_buf: const u8[:]
         "\",\"sp\":\"", sp_str, "\",\"usp\":\"", usp_str, "\",\"ssp\":\"", ssp_str, "\"");
     append_machine(obj, emu, 0, false, true);
     obj.append("}");
-    mcp_write_object(id_buf, obj);
+    write_object(id_buf, obj);
 }
 
-fn mcp_tool_read_mem(emu: X68kEmulator&, args: const u8[:], id_buf: const u8[:]) {
+fn tool_read_mem(emu: X68kEmulator&, args: const u8[:], id_buf: const u8[:]) {
     let addr = extract_json_addr(args, "address", 0);
     let len = extract_json_int(args, "length", 16);
     let read_len = if len <= 0 { 1 } else if len > 65536 { 65536 } else { len };
@@ -1835,19 +1836,19 @@ fn mcp_tool_read_mem(emu: X68kEmulator&, args: const u8[:], id_buf: const u8[:])
     hex_u32(addr, addr_hex);
     var body: u8[>..] = [];
     format(body, "{\"address\":\"", addr_hex, "\",\"length\":", read_len, ",\"data\":\"", data_hex, "\"}");
-    mcp_write_text(id_buf, body, false);
+    write_text(id_buf, body, false);
 }
 
 // address から count 命令 (既定 1、最大 64) を逆アセンブルする。address を省くと現在の PC から。
 // 先頭の命令は address / opcode / text / length にも入れる。
-fn mcp_tool_disasm(emu: X68kEmulator&, args: const u8[:], id_buf: const u8[:]) {
+fn tool_disasm(emu: X68kEmulator&, args: const u8[:], id_buf: const u8[:]) {
     var addr = emu.cpu.pc & ADDR_MASK;
     if json_key_value(args, 0, "address") >= 0 {
         addr = extract_json_addr(args, "address", addr) & ADDR_MASK;
     }
     let count = extract_json_int(args, "count", 1);
     if count < 1 || count > 64 {
-        mcp_write_text(id_buf, "count must be between 1 and 64", true);
+        write_text(id_buf, "count must be between 1 and 64", true);
         return;
     }
     var obj: u8[>..] = [];
@@ -1879,10 +1880,10 @@ fn mcp_tool_disasm(emu: X68kEmulator&, args: const u8[:], id_buf: const u8[:]) {
     format(obj, ",\"instructions\":[", list, "]");
     append_machine(obj, emu, 0, false, true);
     obj.append("}");
-    mcp_write_object(id_buf, obj);
+    write_object(id_buf, obj);
 }
 
-fn mcp_tool_breakpoint(emu: X68kEmulator&, args: const u8[:], id_buf: const u8[:]) {
+fn tool_breakpoint(emu: X68kEmulator&, args: const u8[:], id_buf: const u8[:]) {
     var action: u8[>..] = [];
     extract_json_str(args, "action", action);
     if action == "clear" {
@@ -1900,22 +1901,22 @@ fn mcp_tool_breakpoint(emu: X68kEmulator&, args: const u8[:], id_buf: const u8[:
     format(obj, "{\"armed\":", armed, ",\"address\":\"", pc_str, "\"");
     append_machine(obj, emu, 0, false, true);
     obj.append("}");
-    mcp_write_object(id_buf, obj);
+    write_object(id_buf, obj);
 }
 
-fn mcp_tool_write_mem(emu: X68kEmulator&, args: const u8[:], id_buf: const u8[:]) {
+fn tool_write_mem(emu: X68kEmulator&, args: const u8[:], id_buf: const u8[:]) {
     if json_key_value(args, 0, "address") < 0 {
-        mcp_write_text(id_buf, "missing required field 'address' (integer or hex string)", true);
+        write_text(id_buf, "missing required field 'address' (integer or hex string)", true);
         return;
     }
     let addr = extract_json_addr(args, "address", 0);
     var hexdata: u8[>..] = [];
     if !extract_json_str(args, "data", hexdata) {
-        mcp_write_text(id_buf, "missing required string field 'data' (hex bytes, e.g. \"deadbeef\")", true);
+        write_text(id_buf, "missing required string field 'data' (hex bytes, e.g. \"deadbeef\")", true);
         return;
     }
     if hexdata.len == 0 || (hexdata.len % 2) != 0 || hexdata.len > 16384 {
-        mcp_write_text(id_buf, "'data' must be a non-empty even-length hex string", true);
+        write_text(id_buf, "'data' must be a non-empty even-length hex string", true);
         return;
     }
     var nbytes: i32 = 0;
@@ -1927,7 +1928,7 @@ fn mcp_tool_write_mem(emu: X68kEmulator&, args: const u8[:], id_buf: const u8[:]
         nbytes += 1;
     }
     if !ok {
-        mcp_write_text(id_buf, "'data' contains a non-hex-digit character", true);
+        write_text(id_buf, "'data' contains a non-hex-digit character", true);
         return;
     }
     for i: i32 in nbytes {
@@ -1941,18 +1942,18 @@ fn mcp_tool_write_mem(emu: X68kEmulator&, args: const u8[:], id_buf: const u8[:]
     format(obj, "{\"address\":\"", addr_hex, "\",\"length\":", nbytes);
     append_machine(obj, emu, 0, false, true);
     obj.append("}");
-    mcp_write_object(id_buf, obj);
+    write_object(id_buf, obj);
 }
 
-fn mcp_tool_write_registers(emu: X68kEmulator&, args: const u8[:], id_buf: const u8[:]) {
-    if json_key_value(args, 0, "msp") >= 0 { mcp_write_text(id_buf, "the 68000 has no 'msp' register; nothing was written", true); return; }
-    if json_key_value(args, 0, "vbr") >= 0 { mcp_write_text(id_buf, "the 68000 has no 'vbr' register; nothing was written", true); return; }
-    if json_key_value(args, 0, "sfc") >= 0 { mcp_write_text(id_buf, "the 68000 has no 'sfc' register; nothing was written", true); return; }
-    if json_key_value(args, 0, "dfc") >= 0 { mcp_write_text(id_buf, "the 68000 has no 'dfc' register; nothing was written", true); return; }
-    if json_key_value(args, 0, "cacr") >= 0 { mcp_write_text(id_buf, "the 68000 has no 'cacr' register; nothing was written", true); return; }
-    if json_key_value(args, 0, "caar") >= 0 { mcp_write_text(id_buf, "the 68000 has no 'caar' register; nothing was written", true); return; }
-    if json_key_value(args, 0, "pref_addr") >= 0 { mcp_write_text(id_buf, "the 68000 has no 'pref_addr' register; nothing was written", true); return; }
-    if json_key_value(args, 0, "pref_data") >= 0 { mcp_write_text(id_buf, "the 68000 has no 'pref_data' register; nothing was written", true); return; }
+fn tool_write_registers(emu: X68kEmulator&, args: const u8[:], id_buf: const u8[:]) {
+    if json_key_value(args, 0, "msp") >= 0 { write_text(id_buf, "the 68000 has no 'msp' register; nothing was written", true); return; }
+    if json_key_value(args, 0, "vbr") >= 0 { write_text(id_buf, "the 68000 has no 'vbr' register; nothing was written", true); return; }
+    if json_key_value(args, 0, "sfc") >= 0 { write_text(id_buf, "the 68000 has no 'sfc' register; nothing was written", true); return; }
+    if json_key_value(args, 0, "dfc") >= 0 { write_text(id_buf, "the 68000 has no 'dfc' register; nothing was written", true); return; }
+    if json_key_value(args, 0, "cacr") >= 0 { write_text(id_buf, "the 68000 has no 'cacr' register; nothing was written", true); return; }
+    if json_key_value(args, 0, "caar") >= 0 { write_text(id_buf, "the 68000 has no 'caar' register; nothing was written", true); return; }
+    if json_key_value(args, 0, "pref_addr") >= 0 { write_text(id_buf, "the 68000 has no 'pref_addr' register; nothing was written", true); return; }
+    if json_key_value(args, 0, "pref_data") >= 0 { write_text(id_buf, "the 68000 has no 'pref_data' register; nothing was written", true); return; }
     var wrote = false;
     if json_key_value(args, 0, "pc") >= 0 { emu.cpu.pc = extract_json_addr(args, "pc", emu.cpu.pc); wrote = true; }
     if json_key_value(args, 0, "sr") >= 0 { emu.cpu.set_sr(extract_json_addr(args, "sr", emu.cpu.sr) as u16); wrote = true; }
@@ -1986,20 +1987,20 @@ fn mcp_tool_write_registers(emu: X68kEmulator&, args: const u8[:], id_buf: const
     if json_key_value(args, 0, "a5") >= 0 { emu.cpu.a[5] = extract_json_addr(args, "a5", emu.cpu.a[5]); wrote = true; }
     if json_key_value(args, 0, "a6") >= 0 { emu.cpu.a[6] = extract_json_addr(args, "a6", emu.cpu.a[6]); wrote = true; }
     if !wrote {
-        mcp_write_text(id_buf, "no recognized register fields in request (e.g. \"pc\", \"d0\", \"a7\")", true);
+        write_text(id_buf, "no recognized register fields in request (e.g. \"pc\", \"d0\", \"a7\")", true);
         return;
     }
     var obj: u8[>..] = [];
     obj.append("{\"wrote\":true");
     append_machine(obj, emu, 0, false, true);
     obj.append("}");
-    mcp_write_object(id_buf, obj);
+    write_object(id_buf, obj);
 }
 
-fn mcp_tool_stack(emu: X68kEmulator&, args: const u8[:], id_buf: const u8[:]) {
+fn tool_stack(emu: X68kEmulator&, args: const u8[:], id_buf: const u8[:]) {
     let count = extract_json_int(args, "count", 16);
     if count < 1 || count > 256 {
-        mcp_write_text(id_buf, "count must be between 1 and 256", true);
+        write_text(id_buf, "count must be between 1 and 256", true);
         return;
     }
     let sp = emu.cpu.a[7];
@@ -2018,67 +2019,67 @@ fn mcp_tool_stack(emu: X68kEmulator&, args: const u8[:], id_buf: const u8[:]) {
     obj.append("]");
     append_machine(obj, emu, 0, false, true);
     obj.append("}");
-    mcp_write_object(id_buf, obj);
+    write_object(id_buf, obj);
 }
 
 // CPU とメモリのデバッグ (L2)
-fn mcp_debug_call(emu: X68kEmulator&, tool_name: const u8[:], args: const u8[:], id_buf: const u8[:]) -> bool {
+fn debug_call(emu: X68kEmulator&, tool_name: const u8[:], args: const u8[:], id_buf: const u8[:]) -> bool {
     if tool_name == "arcl_registers" {
-        mcp_tool_registers(emu, args, id_buf);
+        tool_registers(emu, args, id_buf);
         return true;
     }
     if tool_name == "arcl_read_mem" {
-        mcp_tool_read_mem(emu, args, id_buf);
+        tool_read_mem(emu, args, id_buf);
         return true;
     }
     if tool_name == "arcl_disasm" {
-        mcp_tool_disasm(emu, args, id_buf);
+        tool_disasm(emu, args, id_buf);
         return true;
     }
     if tool_name == "arcl_breakpoint" {
-        mcp_tool_breakpoint(emu, args, id_buf);
+        tool_breakpoint(emu, args, id_buf);
         return true;
     }
     if tool_name == "arcl_write_mem" {
-        mcp_tool_write_mem(emu, args, id_buf);
+        tool_write_mem(emu, args, id_buf);
         return true;
     }
     if tool_name == "arcl_write_registers" {
-        mcp_tool_write_registers(emu, args, id_buf);
+        tool_write_registers(emu, args, id_buf);
         return true;
     }
     if tool_name == "arcl_stack" {
-        mcp_tool_stack(emu, args, id_buf);
+        tool_stack(emu, args, id_buf);
         return true;
     }
     return false;
 }
 
-fn mcp_tool_video(emu: X68kEmulator&, args: const u8[:], id_buf: const u8[:]) {
+fn tool_video(emu: X68kEmulator&, args: const u8[:], id_buf: const u8[:]) {
     var obj: u8[>..] = [];
     video_object(emu, obj);
-    mcp_write_object(id_buf, obj);
+    write_object(id_buf, obj);
 }
 
-fn mcp_tool_vram(emu: X68kEmulator&, args: const u8[:], id_buf: const u8[:]) {
+fn tool_vram(emu: X68kEmulator&, args: const u8[:], id_buf: const u8[:]) {
     var region: u8[>..] = [];
     if !extract_json_str(args, "region", region) {
-        mcp_write_text(id_buf, "missing required string field 'region' (gvram/tvram)", true);
+        write_text(id_buf, "missing required string field 'region' (gvram/tvram)", true);
         return;
     }
     let gv = region == "gvram";
     if !gv && region != "tvram" {
-        mcp_write_text(id_buf, "region must be gvram or tvram", true);
+        write_text(id_buf, "region must be gvram or tvram", true);
         return;
     }
     let address = extract_json_addr(args, "address", 0);
     let length = extract_json_int(args, "length", 256);
     if length < 1 || length > 65536 {
-        mcp_write_text(id_buf, "length must be between 1 and 65536", true);
+        write_text(id_buf, "length must be between 1 and 65536", true);
         return;
     }
     if address >= 0x80000 || (address + (length as u32)) > 0x80000 {
-        mcp_write_text(id_buf, "address/length out of range for this region (0x80000 bytes each)", true);
+        write_text(id_buf, "address/length out of range for this region (0x80000 bytes each)", true);
         return;
     }
     let hex = "0123456789abcdef";
@@ -2094,10 +2095,10 @@ fn mcp_tool_vram(emu: X68kEmulator&, args: const u8[:], id_buf: const u8[:]) {
     format(obj, "{\"region\":\"", region, "\",\"address\":\"", ah, "\",\"length\":", length, ",\"data\":\"", data_hex, "\"");
     append_machine(obj, emu, 0, false, true);
     obj.append("}");
-    mcp_write_object(id_buf, obj);
+    write_object(id_buf, obj);
 }
 
-fn mcp_tool_irq(emu: X68kEmulator&, args: const u8[:], id_buf: const u8[:]) {
+fn tool_irq(emu: X68kEmulator&, args: const u8[:], id_buf: const u8[:]) {
     let crtc_line = emu.mmu.crtc_word(CRTC_RASTER) & 1023;
     var obj: u8[>..] = [];
     obj.append("{\"mfp\":{\"gpip\":");
@@ -2156,10 +2157,10 @@ fn mcp_tool_irq(emu: X68kEmulator&, args: const u8[:], id_buf: const u8[:]) {
     format(obj, "},\"crtc_int_line\":", crtc_line);
     append_machine(obj, emu, 0, false, true);
     obj.append("}");
-    mcp_write_object(id_buf, obj);
+    write_object(id_buf, obj);
 }
 
-fn mcp_tool_dma(emu: X68kEmulator&, args: const u8[:], id_buf: const u8[:]) {
+fn tool_dma(emu: X68kEmulator&, args: const u8[:], id_buf: const u8[:]) {
     var c3_csr: u8 = 0;
     var c3_cer: u8 = 0;
     var c3_ccr: u8 = 0;
@@ -2228,10 +2229,10 @@ fn mcp_tool_dma(emu: X68kEmulator&, args: const u8[:], id_buf: const u8[:]) {
     obj.append("]");
     append_machine(obj, emu, 0, false, true);
     obj.append("}");
-    mcp_write_object(id_buf, obj);
+    write_object(id_buf, obj);
 }
 
-fn mcp_tool_opm(emu: X68kEmulator&, args: const u8[:], id_buf: const u8[:]) {
+fn tool_opm(emu: X68kEmulator&, args: const u8[:], id_buf: const u8[:]) {
     var obj: u8[>..] = [];
     format(obj, "{\"lfo\":{\"freq\":", c_opm_shadow_byte(0x18), "},\"channels\":[");
     for ch in 8 {
@@ -2241,10 +2242,10 @@ fn mcp_tool_opm(emu: X68kEmulator&, args: const u8[:], id_buf: const u8[:]) {
     obj.append("]");
     append_machine(obj, emu, 0, false, true);
     obj.append("}");
-    mcp_write_object(id_buf, obj);
+    write_object(id_buf, obj);
 }
 
-fn mcp_tool_palette(emu: X68kEmulator&, args: const u8[:], id_buf: const u8[:]) {
+fn tool_palette(emu: X68kEmulator&, args: const u8[:], id_buf: const u8[:]) {
     var obj: u8[>..] = [];
     obj.append("{\"graphic\":");
     append_palette(obj, 0);
@@ -2252,10 +2253,10 @@ fn mcp_tool_palette(emu: X68kEmulator&, args: const u8[:], id_buf: const u8[:]) 
     append_palette(obj, 0x200);
     append_machine(obj, emu, 0, false, true);
     obj.append("}");
-    mcp_write_object(id_buf, obj);
+    write_object(id_buf, obj);
 }
 
-fn mcp_tool_sprites(emu: X68kEmulator&, args: const u8[:], id_buf: const u8[:]) {
+fn tool_sprites(emu: X68kEmulator&, args: const u8[:], id_buf: const u8[:]) {
     let hstart = emu.mmu.crtc_word(CRTC_HSTART);
     let vstart = emu.mmu.crtc_word(CRTC_VSTART);
     let b0d: i32 = c_mem_read_bg_reg(0x0D);
@@ -2287,43 +2288,43 @@ fn mcp_tool_sprites(emu: X68kEmulator&, args: const u8[:], id_buf: const u8[:]) 
     obj.append("\"");
     append_machine(obj, emu, 0, false, true);
     obj.append("}");
-    mcp_write_object(id_buf, obj);
+    write_object(id_buf, obj);
 }
 
 // ビデオ・割り込み・DMA・音源の状態読み出し (L3)
-fn mcp_inspect_call(emu: X68kEmulator&, tool_name: const u8[:], args: const u8[:], id_buf: const u8[:]) -> bool {
+fn inspect_call(emu: X68kEmulator&, tool_name: const u8[:], args: const u8[:], id_buf: const u8[:]) -> bool {
     if tool_name == "arcl_video" {
-        mcp_tool_video(emu, args, id_buf);
+        tool_video(emu, args, id_buf);
         return true;
     }
     if tool_name == "arcl_vram" {
-        mcp_tool_vram(emu, args, id_buf);
+        tool_vram(emu, args, id_buf);
         return true;
     }
     if tool_name == "arcl_irq" {
-        mcp_tool_irq(emu, args, id_buf);
+        tool_irq(emu, args, id_buf);
         return true;
     }
     if tool_name == "arcl_dma" {
-        mcp_tool_dma(emu, args, id_buf);
+        tool_dma(emu, args, id_buf);
         return true;
     }
     if tool_name == "x68k_opm" {
-        mcp_tool_opm(emu, args, id_buf);
+        tool_opm(emu, args, id_buf);
         return true;
     }
     if tool_name == "arcl_palette" {
-        mcp_tool_palette(emu, args, id_buf);
+        tool_palette(emu, args, id_buf);
         return true;
     }
     if tool_name == "arcl_sprites" {
-        mcp_tool_sprites(emu, args, id_buf);
+        tool_sprites(emu, args, id_buf);
         return true;
     }
     return false;
 }
 
-fn mcp_dispatch(emu: X68kEmulator&, line: const u8[:], is_running: bool&) {
+fn dispatch(emu: X68kEmulator&, line: const u8[:], is_running: bool&) {
     if line.len == 0 { return; }
 
     var id_buf: u8[>..] = [];
@@ -2360,7 +2361,7 @@ fn mcp_dispatch(emu: X68kEmulator&, line: const u8[:], is_running: bool&) {
 
     // 3. tools/list
     if method == "tools/list" {
-        mcp_tools_list(id_buf);
+        tools_list(id_buf);
         return;
     }
 
@@ -2372,8 +2373,8 @@ fn mcp_dispatch(emu: X68kEmulator&, line: const u8[:], is_running: bool&) {
         }
         var tool_name: u8[>..] = [];
         json_any_string(line, "name", tool_name);
-        if tool_name.len > 0 && !mcp_layer_allows(tool_name) {
-            mcp_write_text(id_buf, "this tool's layer was not enabled via --mcp-layers for this session (see tools/list for what's available)", true);
+        if tool_name.len > 0 && !layer_allows(tool_name) {
+            write_text(id_buf, "this tool's layer was not enabled via --mcp-layers for this session (see tools/list for what's available)", true);
             return;
         }
         // XEiJ takes the registers as {"registers": {...}}; accept that as well as flat keys.
@@ -2383,17 +2384,17 @@ fn mcp_dispatch(emu: X68kEmulator&, line: const u8[:], is_running: bool&) {
             args.append(inner);
         }
         var bad: u8[>..] = [];
-        if mcp_bad_number(args, bad) {
-            mcp_write_text(id_buf, bad, true);
+        if bad_number(args, bad) {
+            write_text(id_buf, bad, true);
             return;
         }
 
-        if mcp_control_call(emu, tool_name, args, id_buf) { return; }
-        if mcp_input_call(emu, tool_name, args, id_buf) { return; }
-        if mcp_checkpoint_call(emu, tool_name, args, id_buf) { return; }
-        if mcp_host_call(emu, tool_name, args, id_buf) { return; }
-        if mcp_debug_call(emu, tool_name, args, id_buf) { return; }
-        if mcp_inspect_call(emu, tool_name, args, id_buf) { return; }
+        if control_call(emu, tool_name, args, id_buf) { return; }
+        if input_call(emu, tool_name, args, id_buf) { return; }
+        if checkpoint_call(emu, tool_name, args, id_buf) { return; }
+        if host_call(emu, tool_name, args, id_buf) { return; }
+        if debug_call(emu, tool_name, args, id_buf) { return; }
+        if inspect_call(emu, tool_name, args, id_buf) { return; }
 
         // 未知ツール
         var resp: u8[>..] = [];

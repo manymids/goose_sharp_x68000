@@ -19,9 +19,10 @@ goose_sharp_x68000/
   src/
     main.goose           Entry point for startup, GUI, and ARCL
     main.build            C/C++ source and Win32 library specification
-    m68k_*.goose          CPU, MMU
+    m68k_*.goose          CPU, MMU, disassembler
     mcp_server.goose      ARCL MCP
     x68k_*.goose          Devices, rendering, save state, shared services
+    test_core.goose/.build Unit tests of the core
     x68k_bridge.c/.h      Win32, file I/O, audio output
     x68k_config.c/.h      Loading/saving GUI settings
     sound/                FMGEN, ADPCM, sound source wiring
@@ -163,6 +164,42 @@ The layers exposed by default are L0 and L1. To use debugging, device observatio
 
 A state file is about 16 MB plus the size of the inserted FD/HDD images (about 56 MB with a 40 MB HDD). It contains the media, so loading one needs no disk image. It can be read only by the build that wrote it. A damaged file, or one from another version, is refused with a reason and leaves the machine untouched.
 
+### Key names for `arcl_key`
+
+| Kind | Names |
+|---|---|
+| Alphanumeric | `a`-`z`, `0`-`9` |
+| Basic | `space`, `return` (`enter`), `tab`, `backspace`, `escape` |
+| Cursor | `up`, `down`, `left`, `right` |
+| Modifiers | `shift` (`lshift`), `ctrl`, `opt1`, `opt2` |
+| Function | `f1`-`f10`, `xf1`-`xf5` |
+| Editing | `home`, `del` (`delete`), `ins` (`insert`), `rollup`, `rolldown`, `undo`, `clr` |
+| Mode | `caps`, `kana`, `romaji`, `code`, `hiragana`, `zenkaku` |
+| Other | `help`, `break`, `copy` |
+
+`f12` and `scrolllock` are bound to emulator functions, so they are refused with an error instead of being sent. Symbols can be entered as characters with `arcl_type`, which covers every printable ASCII character.
+
+### `arcl_disasm`
+
+Disassembles 68000 instructions in Motorola syntax.
+
+| Argument | Meaning |
+|---|---|
+| `address` | Start address. Defaults to the current PC |
+| `count` | Number of instructions (1-64, default 1) |
+
+In the response, `address` / `opcode` / `text` / `length` describe the first instruction, and `instructions` lists the address, bytes and text of each one.
+
+```json
+{"address":"0x00ff0010","opcode":"0x46fc","text":"MOVE #$2700,SR","length":4,
+ "instructions":[{"address":"0x00ff0010","bytes":"46fc2700","text":"MOVE #$2700,SR"},
+                 {"address":"0x00ff0014","bytes":"4ff900002000","text":"LEA ($00002000).L,A7"}]}
+```
+
+- Relative branches and PC-relative operands show the absolute target address.
+- Forms the 68000 does not have, and line A / line F words (IOCS / DOS calls), are shown as `DC.W $ff09`. Call names are not decoded.
+- Reading has no side effects: disassembling an I/O register address does not disturb the device. The same holds for `arcl_read_mem`.
+
 Check the exact set of exposed tools and their arguments via `tools/list` on the connection. Regular save states use 10 slots numbered 0–9, named snapshots allow up to 32 entries, and rewind holds 8 entries. These are all in-memory saves and do not support resuming from a file after the process has exited.
 
 A successful restore pauses execution and invalidates stale host input, pending audio playback, and any derived screen output. The saved MFP queue and joypad values are restored as part of the machine state. If you need a fresh screen, execute the next frame. Full mid-frame resumption from something like a PC breakpoint is not guaranteed.
@@ -252,6 +289,8 @@ It prints `276 / 276 checks passed` when everything passes, and reports each fai
 - If no audio device is available, the emulator warns and runs silently.
 - The current file dialog and path handling have Win32 character-encoding and `MAX_PATH` constraints. If you run into path issues, try testing with a short, alphanumeric folder name.
 - The emulator assumes a single registered machine instance. Core sharing across multiple instances, a mouse, and full compatibility with every VRAM mode/piece of software are unsupported or unverified.
+- CPU tracing (the T bit in SR) takes a trace exception after each instruction. When the instruction itself enters an exception, such as TRAP, no trace exception follows, unlike the real CPU.
+- BIOS files and disk images given as an absolute path containing non-ASCII characters may fail to open. Run from the project folder and use relative paths.
 
 When reporting a bug, please include the build type, Windows environment, launch arguments, image format, reproduction steps, and logs or screenshots. There's no need to attach the BIOS or the game itself.
 
