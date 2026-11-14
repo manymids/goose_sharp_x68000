@@ -21,6 +21,7 @@ goose_sharp_x68000/
     main.build            C/C++ source and Win32 library specification
     m68k_*.goose          CPU, MMU, disassembler
     mcp_server.goose      ARCL MCP
+    mcp_args.goose        Reading MCP tool arguments
     x68k_*.goose          Devices, rendering, save state, shared services
     test_core.goose/.build Unit tests of the core
     x68k_bridge.c/.h      Win32, file I/O, audio output
@@ -267,7 +268,7 @@ This public-distribution layout does not include `tools/architecture/build.ps1` 
 | [src/x68k_emu.goose](src/x68k_emu.goose) | Frame progression and shared reset logic |
 | [src/x68k_state.goose](src/x68k_state.goose) | Shared save logic for regular saves, snapshots, and rewind, including the copies of RAM and the disk images |
 | [src/x68k_session.goose](src/x68k_session.goose) / [src/x68k_input.goose](src/x68k_input.goose) | Shared execution control and input handling across frontends |
-| [src/mcp_server.goose](src/mcp_server.goose) | JSON-RPC parsing, exposed tools, responses |
+| [src/mcp_server.goose](src/mcp_server.goose) / [src/mcp_args.goose](src/mcp_args.goose) | JSON-RPC parsing, exposed tools, responses / reading tool arguments |
 | [src/x68k_config.c](src/x68k_config.c) | GUI INI handling. Independent of machine save states |
 | `src/x68k_bridge.c` / `src/sound/` | Win32, opening files, audio device and mixing |
 
@@ -282,7 +283,7 @@ goose build .\src\test_core.goose -o .\test_core.exe
 .\test_core.exe
 ```
 
-It prints `330 / 330 checks passed` when everything passes, and reports each failure and exits with status 1 otherwise. Building with `--debug` also enables the overflow and range checks.
+It prints `361 / 361 checks passed` when everything passes, and reports each failure and exits with status 1 otherwise. Building with `--debug` also enables the overflow and range checks.
 
 ## Troubleshooting and known limitations
 

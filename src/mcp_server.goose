@@ -2,6 +2,7 @@
 
 import std;
 import json;
+import .mcp_args;
 import .x68k_bridge;
 import .m68k_types;
 import .x68k_types;
@@ -22,329 +23,6 @@ var ::g_mcp_layers: i32 = MCP_LAYER_DEFAULT;
 fn reset(emu: X68kEmulator&) {
     session::reset(emu);
     g_console_cols = 0; g_console_rows = 0;
-}
-
-// px68k windows/mcp_json.c. Keys are matched as JSON keys, not raw substrings.
-
-fn json_skip_ws(s: const u8[:], i: i32) -> i32 {
-    var p = i;
-    while p >= 0 && p < s.len {
-        let c = s[p];
-        if c != ' ' && c != '\t' && c != '\n' && c != '\r' { break; }
-        p += 1;
-    }
-    return p;
-}
-
-fn json_skip_string(s: const u8[:], i: i32) -> i32 {
-    if i < 0 || i >= s.len || s[i] != '"' { return -1; }
-    var p = i + 1;
-    while p < s.len {
-        if s[p] == '\\' {
-            if p + 1 >= s.len { return -1; }
-            p += 2;
-        } else if s[p] == '"' {
-            return p + 1;
-        } else {
-            p += 1;
-        }
-    }
-    return -1;
-}
-
-fn json_value_end(s: const u8[:], i: i32) -> i32 {
-    if i < 0 || i >= s.len { return -1; }
-    if s[i] == '"' { return json_skip_string(s, i); }
-    if s[i] == '{' || s[i] == '[' {
-        var depth = 0;
-        var p = i;
-        while p < s.len {
-            if s[p] == '"' {
-                p = json_skip_string(s, p);
-                if p < 0 { return -1; }
-            } else {
-                if s[p] == '{' || s[p] == '[' { depth = depth + 1; }
-                else if s[p] == '}' || s[p] == ']' {
-                    depth -= 1;
-                    if depth == 0 { return p + 1; }
-                }
-                p += 1;
-            }
-        }
-        return -1;
-    }
-    var p = i;
-    while p < s.len {
-        let c = s[p];
-        if c == ',' || c == '}' || c == ']' || c == ' ' || c == '\t' || c == '\n' || c == '\r' { break; }
-        p += 1;
-    }
-    return p;
-}
-
-fn json_key_eq(s: const u8[:], start: i32, end: i32, key: const u8[:]) -> bool {
-    if start < 0 || end < start + 2 || end > s.len { return false; }
-    if s[start] != '"' || s[end - 1] != '"' { return false; }
-    let inner = end - start - 2;
-    if inner != key.len { return false; }
-    for j in 0..key.len {
-        if s[start + 1 + (j as i32)] != key[j] { return false; }
-    }
-    return true;
-}
-
-fn json_key_value(s: const u8[:], from: i32, key: const u8[:]) -> i32 {
-    var p = json_skip_ws(s, from);
-    if p >= s.len || s[p] != '{' { return -1; }
-    p += 1;
-    while p < s.len {
-        p = json_skip_ws(s, p);
-        if p >= s.len { return -1; }
-        if s[p] == '}' { return -1; }
-        let key_end = json_skip_string(s, p);
-        if key_end < 0 { return -1; }
-        let matched = json_key_eq(s, p, key_end, key);
-        p = json_skip_ws(s, key_end);
-        if p >= s.len || s[p] != ':' { return -1; }
-        p = json_skip_ws(s, p + 1);
-        if matched { return p; }
-        p = json_value_end(s, p);
-        if p < 0 { return -1; }
-        p = json_skip_ws(s, p);
-        if p < s.len && s[p] == ',' { p = p + 1; }
-        else { return -1; }
-    }
-    return -1;
-}
-
-fn json_find_any_value(s: const u8[:], key: const u8[:]) -> i32 {
-    var p: i32 = 0;
-    while p < s.len {
-        if s[p] != '"' {
-            p += 1;
-        } else {
-            let key_end = json_skip_string(s, p);
-            if key_end < 0 { return -1; }
-            let matched = json_key_eq(s, p, key_end, key);
-            let value = json_skip_ws(s, key_end);
-            if matched && value < s.len && s[value] == ':' {
-                return json_skip_ws(s, value + 1);
-            }
-            p = key_end;
-        }
-    }
-    return -1;
-}
-
-fn json_hex4(s: const u8[:], i: i32) -> i32 {
-    if i < 0 || i + 4 > s.len { return -1; }
-    var v: i32 = 0;
-    for k in 4 {
-        let c = s[i + k];
-        v = v * 16;
-        if c >= '0' && c <= '9' { v = v + ((c - '0')); }
-        else if c >= 'a' && c <= 'f' { v = v + ((c - 'a' + 10)); }
-        else if c >= 'A' && c <= 'F' { v = v + ((c - 'A' + 10)); }
-        else { return -1; }
-    }
-    return v;
-}
-
-fn json_read_string(s: const u8[:], i: i32, out: u8[>..]&) -> bool {
-    if i < 0 || i >= s.len || s[i] != '"' { return false; }
-    var p = i + 1;
-    while p < s.len && s[p] != '"' {
-        if s[p] == '\\' {
-            if p + 1 >= s.len { return false; }
-            let e = s[p + 1];
-            if e == '"' || e == '\\' || e == '/' {
-                out.push(e);
-                p += 2;
-            } else if e == 'b' {
-                out.push(8);
-                p += 2;
-            } else if e == 'f' {
-                out.push(12);
-                p += 2;
-            } else if e == 'n' {
-                out.push(10);
-                p += 2;
-            } else if e == 'r' {
-                out.push(13);
-                p += 2;
-            } else if e == 't' {
-                out.push(9);
-                p += 2;
-            } else if e == 'u' {
-                let cp = json_hex4(s, p + 2);
-                if cp < 0 { return false; }
-                p += 6;
-                var code = cp;
-                if cp >= 0xD800 && cp <= 0xDBFF {
-                    if p + 6 > s.len || s[p] != '\\' || s[p + 1] != 'u' { return false; }
-                    let lo = json_hex4(s, p + 2);
-                    if lo < 0xDC00 || lo > 0xDFFF { return false; }
-                    code = 0x10000 + ((cp - 0xD800) << 10) + (lo - 0xDC00);
-                    p += 6;
-                } else if cp >= 0xDC00 && cp <= 0xDFFF {
-                    return false;
-                }
-                push_utf8(out, code);
-            } else {
-                return false;
-            }
-        } else {
-            out.push(s[p]);
-            p += 1;
-        }
-    }
-    if p >= s.len || s[p] != '"' { return false; }
-    return true;
-}
-
-fn json_read_long(s: const u8[:], i: i32) -> i32 {
-    if i < 0 || i >= s.len { return 0; }
-    var p = i;
-    var neg = false;
-    if s[p] == '-' {
-        neg = true;
-        p += 1;
-    }
-    if p >= s.len || s[p] < '0' || s[p] > '9' { return 0; }
-    var n: i32 = 0;
-    var saw = false;
-    while p < s.len && s[p] >= '0' && s[p] <= '9' {
-        n = n * 10 + ((s[p] - '0'));
-        saw = true;
-        p += 1;
-    }
-    if !saw { return 0; }
-    if neg { return 0 - n; }
-    return n;
-}
-
-fn json_read_long_ok(s: const u8[:], i: i32) -> bool {
-    if i < 0 || i >= s.len { return false; }
-    var p = i;
-    if s[p] == '-' { p = p + 1; }
-    if p >= s.len || s[p] < '0' || s[p] > '9' { return false; }
-    return true;
-}
-
-fn json_top_string(s: const u8[:], key: const u8[:], out: u8[>..]&) -> bool {
-    let at = json_key_value(s, 0, key);
-    if at < 0 { return false; }
-    return json_read_string(s, at, out);
-}
-
-fn json_any_string(s: const u8[:], key: const u8[:], out: u8[>..]&) -> bool {
-    let at = json_find_any_value(s, key);
-    if at < 0 { return false; }
-    return json_read_string(s, at, out);
-}
-
-fn json_extract_object(s: const u8[:], key: const u8[:], out: u8[>..]&) -> bool {
-    let start = json_find_any_value(s, key);
-    if start < 0 || start >= s.len || s[start] != '{' { return false; }
-    let end = json_value_end(s, start);
-    if end < 0 || end < start { return false; }
-    out.append(s[start..end]);
-    return true;
-}
-
-fn json_top_id(s: const u8[:], out: u8[>..]&) -> bool {
-    let start = json_key_value(s, 0, "id");
-    if start < 0 || start >= s.len { return false; }
-    var end = start;
-    if s[start] == '"' {
-        end = json_skip_string(s, start);
-    } else {
-        while end < s.len {
-            let c = s[end];
-            if c == ',' || c == '}' || c == ' ' || c == '\t' || c == '\n' || c == '\r' { break; }
-            end += 1;
-        }
-    }
-    if end < 0 || end == start { return false; }
-    out.append(s[start..end]);
-    return true;
-}
-
-fn extract_json_str(line: const u8[:], key: const u8[:], out: u8[>..]&) -> bool {
-    let at = json_key_value(line, 0, key);
-    if at < 0 { return false; }
-    return json_read_string(line, at, out);
-}
-
-fn extract_json_int(line: const u8[:], key: const u8[:], default_val: i32) -> i32 {
-    let at = json_key_value(line, 0, key);
-    if at < 0 || !json_read_long_ok(line, at) { return default_val; }
-    return json_read_long(line, at);
-}
-
-// Number or address argument, read as XEiJ does: a JSON number, or a string that is hex
-// Results: the value, whether the key is present, and whether it is a valid 32-bit value.
-fn json_addr_parse(line: const u8[:], key: const u8[:]) -> u32, bool, bool {
-    let at = json_key_value(line, 0, key);
-    if at < 0 || at >= line.len { return 0, false, true; }
-    var text: u8[>..] = [];
-    if json_read_long_ok(line, at) {
-        var p = at;
-        while p < line.len && (line[p] == '-' || (line[p] >= '0' && line[p] <= '9')) {
-            text.push(line[p]);
-            p += 1;
-        }
-    } else if !json_read_string(line, at, text) {
-        return 0, true, false;
-    }
-    var lo: i32 = 0;
-    var hi: i32 = text.len as i32;
-    while lo < hi && (text[lo] == ' ' || text[lo] == 9) { lo += 1; }
-    while hi > lo && (text[hi - 1] == ' ' || text[hi - 1] == 9) { hi -= 1; }
-    var hex = false;
-    if hi - lo >= 2 && text[lo] == '0' && (text[lo + 1] == 'x' || text[lo + 1] == 'X') {
-        hex = true;
-        lo += 2;
-    } else if hi - lo >= 1 && text[lo] == '$' {
-        hex = true;
-        lo += 1;
-    } else if hi - lo >= 1 && (text[hi - 1] == 'h' || text[hi - 1] == 'H') {
-        hex = true;
-        hi -= 1;
-    } else {
-        var i = lo;
-        while i < hi {
-            let c = text[i];
-            if (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F') { hex = true; }
-            i += 1;
-        }
-    }
-    var neg = false;
-    if !hex && lo < hi && text[lo] == '-' {
-        neg = true;
-        lo += 1;
-    }
-    if lo >= hi { return 0, true, false; }
-    let base: u64 = if hex { 16 } else { 10 };
-    var n: u64 = 0;
-    while lo < hi {
-        let c = text[lo];
-        var digit: i32 = -1;
-        if c >= '0' && c <= '9' { digit = (c - '0'); }
-        else if hex && c >= 'a' && c <= 'f' { digit = (c - 'a' + 10); }
-        else if hex && c >= 'A' && c <= 'F' { digit = (c - 'A' + 10); }
-        if digit < 0 { return 0, true, false; }
-        n = n * base + (digit as u64);
-        if n > 0xFFFFFFFF { return 0, true, false; }
-        lo += 1;
-    }
-    let value: u32 = if neg { (0x100000000 - n) as! u32 } else { n as u32 };
-    return value, true, true;
-}
-
-fn extract_json_addr(line: const u8[:], key: const u8[:], default_val: u32) -> u32 {
-    let v, present, valid = json_addr_parse(line, key);
-    return if present && valid { v } else { default_val };
 }
 
 fn bad_key(args: const u8[:], key: const u8[:], bad: u8[>..]&) -> bool {
@@ -1011,26 +689,155 @@ fn tool_command(emu: X68kEmulator&, args: const u8[:], id_buf: const u8[:]) {
     write_object(id_buf, obj);
 }
 
+// マクロの 1 ステップを実行する。失敗したら理由を err に書いて false。
+fn macro_step(emu: X68kEmulator&, op: const u8[:], step: const u8[:], frames_used: i32&, err: u8[>..]&) -> bool {
+    var step_ok = true;
+    if op == "clear_input" {
+        input::release_held_keys(emu);
+    } else if op == "mouse" {
+        step_ok = false;
+        err.append("mouse is not available until SCC");
+    } else if op == "key" {
+        var key_name: u8[>..] = [];
+        var act_buf: u8[>..] = [];
+        if !extract_json_str(step, "key", key_name) {
+            step_ok = false;
+            err.append("missing required string field 'key'");
+        } else if !extract_json_str(step, "action", act_buf) {
+            step_ok = false;
+            err.append("missing required string field 'action' (press/release/tap)");
+        } else {
+            let code = input::key_code(key_name);
+            if code < 0 {
+                step_ok = false;
+                err.append("unmapped key name; see x68k_mcp.md for the supported key set");
+            } else if act_buf == "press" {
+                input::key(emu, code, true);
+            } else if act_buf == "release" {
+                input::key(emu, code, false);
+            } else if act_buf == "tap" {
+                let frames = extract_json_int(step, "frames", 1);
+                if frames < 1 || frames > 3600 || frames_used + frames > 10000 {
+                    step_ok = false;
+                    err.append("frames must be between 1 and 3600");
+                } else {
+                    session::key_tap(emu, code, frames);
+                    frames_used += frames;
+                }
+            } else {
+                step_ok = false;
+                err.append("action must be press, release, or tap");
+            }
+        }
+    } else if op == "type" {
+        var text: u8[>..] = [];
+        if !extract_json_str(step, "text", text) || text.len > 256 {
+            step_ok = false;
+            err.append("missing required string field 'text'");
+        } else {
+            let hold = extract_json_int(step, "frames", 2);
+            if hold < 1 || hold > 3600 {
+                step_ok = false;
+                err.append("frames must be between 1 and 3600");
+            } else {
+                for i in text.len {
+                    if !input::type_has_key(text[i]) {
+                        step_ok = false;
+                        err.append("arcl_type failed while echoing the command");
+                    }
+                }
+                if step_ok {
+                    for i in text.len {
+                        frames_used += session::type_char(emu, text[i], hold);
+                    }
+                }
+            }
+        }
+    } else if op == "joypad" {
+        var btn: u8[>..] = [];
+        var act_buf: u8[>..] = [];
+        if !extract_json_str(step, "button", btn) || !extract_json_str(step, "action", act_buf) {
+            step_ok = false;
+            err.append("missing required string field 'button'");
+        } else {
+            let mask = input::joy_mask(btn);
+            let port = extract_json_int(step, "port", 0);
+            if mask == 0 || (port != 0 && port != 1) {
+                step_ok = false;
+                err.append("unmapped joypad button name; see x68k_mcp.md for the supported set");
+            } else if act_buf == "press" || act_buf == "release" || act_buf == "tap" {
+                let pressed = act_buf == "press" || act_buf == "tap";
+                input::joy(emu, port, mask, pressed);
+                if act_buf == "tap" {
+                    let frames = extract_json_int(step, "frames", 1);
+                    if frames < 1 || frames > 3600 || frames_used + frames > 10000 {
+                        step_ok = false;
+                        err.append("frames must be between 1 and 3600");
+                    } else {
+                        session::joy_tap(emu, port, mask, frames);
+                        frames_used += frames;
+                    }
+                }
+            } else {
+                step_ok = false;
+                err.append("action must be press, release, or tap");
+            }
+        }
+    } else if op == "screenshot" {
+        if c_frame_ready() == 0 {
+            step_ok = false;
+            err.append("no frame available yet; call arcl_run first");
+        } else if json_has(step, "inline") {
+            step_ok = false;
+            err.append("inline PNG is not available in this build");
+        } else if extract_json_int(step, "scale", 1) != 1 || extract_json_int(step, "grid", 0) != 0 {
+            step_ok = false;
+            err.append("scaled or cropped PNG output is not available in this build");
+        } else {
+            var path_buf: u8[>..] = [];
+            if !extract_json_str(step, "path", path_buf) { path_buf.append("x68k_screenshot.bmp"); }
+            if c_save_fb_bmp(path_buf[..]) == 0 {
+                step_ok = false;
+                err.append("failed to write screenshot");
+            }
+        }
+    } else if op == "run" {
+        let frames = extract_json_int(step, "frames", 1);
+        if frames < 1 || frames > 10000 {
+            step_ok = false;
+            err.append("frames must be between 1 and 10000");
+        } else if frames_used + frames > 10000 {
+            step_ok = false;
+            err.append("macro would exceed the 10000 total-frame budget");
+        } else {
+            for _ in frames { session::run_frame(emu); }
+            frames_used += frames;
+        }
+    } else {
+        step_ok = false;
+        err.append("unknown macro step op");
+    }
+    return step_ok;
+}
+
 fn tool_input_macro(emu: X68kEmulator&, args: const u8[:], id_buf: const u8[:]) {
-    let at = json_key_value(args, 0, "steps");
-    if at < 0 {
+    let list, found = json_member(args, "steps");
+    if !found {
         write_text(id_buf, "missing required array field 'steps'", true);
         return;
     }
-    if at >= args.len || args[at] != '[' {
+    var steps: const u8[:][>..] = [];
+    if !json_elements(list, steps) {
         write_text(id_buf, "'steps' must be an array", true);
         return;
     }
-    var cursor = at + 1;
     var completed: i32 = 0;
     var frames_used: i32 = 0;
     var err: u8[>..] = [];
     var results: u8[>..] = [];
     results.append("{\"results\":[");
-    while cursor < args.len {
-        while cursor < args.len && (args[cursor] == ' ' || args[cursor] == ',' || args[cursor] == '\n' || args[cursor] == '\t' || args[cursor] == '\r') { cursor = cursor + 1; }
-        if cursor >= args.len || args[cursor] == ']' { break; }
-        if args[cursor] != '{' {
+    for step in steps {
+        if step[0] != '{' {
             write_text(id_buf, "each step must be a JSON object", true);
             return;
         }
@@ -1038,164 +845,16 @@ fn tool_input_macro(emu: X68kEmulator&, args: const u8[:], id_buf: const u8[:]) 
             write_text(id_buf, "too many steps; max is 16 per arcl_input_macro call", true);
             return;
         }
-        var depth = 0;
-        var end = cursor;
-        var in_str = false;
-        while end < args.len {
-            let c = args[end];
-            if in_str {
-                if c == '\\' && end + 1 < args.len { end = end + 2; continue; }
-                if c == '"' { in_str = false; }
-                end += 1;
-                continue;
-            }
-            if c == '"' { in_str = true; end = end + 1; continue; }
-            if c == '{' { depth = depth + 1; }
-            else if c == '}' {
-                depth -= 1;
-                if depth == 0 { end = end + 1; break; }
-            }
-            end += 1;
-        }
-        var step: u8[>..] = [];
-        var k = cursor;
-        while k < end { step.push(args[k]); k = k + 1; }
         var op: u8[>..] = [];
         if !extract_json_str(step, "op", op) {
             write_text(id_buf, "each step needs a string 'op' field", true);
             return;
         }
-        var step_ok = true;
-        if op == "clear_input" {
-            input::release_held_keys(emu);
-        } else if op == "mouse" {
-            step_ok = false;
-            err.append("mouse is not available until SCC");
-        } else if op == "key" {
-            var key_name: u8[>..] = [];
-            var act_buf: u8[>..] = [];
-            if !extract_json_str(step, "key", key_name) {
-                step_ok = false;
-                err.append("missing required string field 'key'");
-            } else if !extract_json_str(step, "action", act_buf) {
-                step_ok = false;
-                err.append("missing required string field 'action' (press/release/tap)");
-            } else {
-                let code = input::key_code(key_name);
-                if code < 0 {
-                    step_ok = false;
-                    err.append("unmapped key name; see x68k_mcp.md for the supported key set");
-                } else if act_buf == "press" {
-                    input::key(emu, code, true);
-                } else if act_buf == "release" {
-                    input::key(emu, code, false);
-                } else if act_buf == "tap" {
-                    let frames = extract_json_int(step, "frames", 1);
-                    if frames < 1 || frames > 3600 || frames_used + frames > 10000 {
-                        step_ok = false;
-                        err.append("frames must be between 1 and 3600");
-                    } else {
-                        session::key_tap(emu, code, frames);
-                        frames_used += frames;
-                    }
-                } else {
-                    step_ok = false;
-                    err.append("action must be press, release, or tap");
-                }
-            }
-        } else if op == "type" {
-            var text: u8[>..] = [];
-            if !extract_json_str(step, "text", text) || text.len > 256 {
-                step_ok = false;
-                err.append("missing required string field 'text'");
-            } else {
-                let hold = extract_json_int(step, "frames", 2);
-                if hold < 1 || hold > 3600 {
-                    step_ok = false;
-                    err.append("frames must be between 1 and 3600");
-                } else {
-                    for i in text.len {
-                        if !input::type_has_key(text[i]) {
-                            step_ok = false;
-                            err.append("arcl_type failed while echoing the command");
-                        }
-                    }
-                    if step_ok {
-                        for i in text.len {
-                            frames_used += session::type_char(emu, text[i], hold);
-                        }
-                    }
-                }
-            }
-        } else if op == "joypad" {
-            var btn: u8[>..] = [];
-            var act_buf: u8[>..] = [];
-            if !extract_json_str(step, "button", btn) || !extract_json_str(step, "action", act_buf) {
-                step_ok = false;
-                err.append("missing required string field 'button'");
-            } else {
-                let mask = input::joy_mask(btn);
-                let port = extract_json_int(step, "port", 0);
-                if mask == 0 || (port != 0 && port != 1) {
-                    step_ok = false;
-                    err.append("unmapped joypad button name; see x68k_mcp.md for the supported set");
-                } else if act_buf == "press" || act_buf == "release" || act_buf == "tap" {
-                    let pressed = act_buf == "press" || act_buf == "tap";
-                    input::joy(emu, port, mask, pressed);
-                    if act_buf == "tap" {
-                        let frames = extract_json_int(step, "frames", 1);
-                        if frames < 1 || frames > 3600 || frames_used + frames > 10000 {
-                            step_ok = false;
-                            err.append("frames must be between 1 and 3600");
-                        } else {
-                            session::joy_tap(emu, port, mask, frames);
-                            frames_used += frames;
-                        }
-                    }
-                } else {
-                    step_ok = false;
-                    err.append("action must be press, release, or tap");
-                }
-            }
-        } else if op == "screenshot" {
-            if c_frame_ready() == 0 {
-                step_ok = false;
-                err.append("no frame available yet; call arcl_run first");
-            } else if json_key_value(step, 0, "inline") >= 0 {
-                step_ok = false;
-                err.append("inline PNG is not available in this build");
-            } else if extract_json_int(step, "scale", 1) != 1 || extract_json_int(step, "grid", 0) != 0 {
-                step_ok = false;
-                err.append("scaled or cropped PNG output is not available in this build");
-            } else {
-                var path_buf: u8[>..] = [];
-                if !extract_json_str(step, "path", path_buf) { path_buf.append("x68k_screenshot.bmp"); }
-                if c_save_fb_bmp(path_buf[..]) == 0 {
-                    step_ok = false;
-                    err.append("failed to write screenshot");
-                }
-            }
-        } else if op == "run" {
-            let frames = extract_json_int(step, "frames", 1);
-            if frames < 1 || frames > 10000 {
-                step_ok = false;
-                err.append("frames must be between 1 and 10000");
-            } else if frames_used + frames > 10000 {
-                step_ok = false;
-                err.append("macro would exceed the 10000 total-frame budget");
-            } else {
-                for _ in frames { session::run_frame(emu); }
-                frames_used += frames;
-            }
-        } else {
-            step_ok = false;
-            err.append("unknown macro step op");
-        }
+        let step_ok = macro_step(emu, op, step, frames_used, err);
         if completed != 0 { results.append(","); }
         let ok_txt = if step_ok { "true" } else { "false" };
         format(results, "{\"op\":\"", op, "\",\"ok\":", ok_txt, "}");
         completed += 1;
-        cursor = end;
         if !step_ok { break; }
     }
     format(results, "],\"steps_completed\":", completed, ",\"steps_ok\":", if err.len == 0 { "true" } else { "false" });
@@ -1539,10 +1198,10 @@ fn tool_screenshot(emu: X68kEmulator&, args: const u8[:], id_buf: const u8[:]) {
         write_text(id_buf, "no frame available yet; call arcl_run first", true);
         return;
     }
-    let have_x = json_key_value(args, 0, "x") >= 0;
-    let have_y = json_key_value(args, 0, "y") >= 0;
-    let have_w = json_key_value(args, 0, "w") >= 0;
-    let have_h = json_key_value(args, 0, "h") >= 0;
+    let have_x = json_has(args, "x");
+    let have_y = json_has(args, "y");
+    let have_w = json_has(args, "w");
+    let have_h = json_has(args, "h");
     if (have_x || have_y || have_w || have_h) && !(have_x && have_y && have_w && have_h) {
         write_text(id_buf, "specify all of x,y,w,h together, or none for the full frame", true);
         return;
@@ -1577,7 +1236,7 @@ fn tool_screenshot(emu: X68kEmulator&, args: const u8[:], id_buf: const u8[:]) {
         write_text(id_buf, "scaled output too large; crop with x/y/w/h or reduce scale", true);
         return;
     }
-    if json_key_value(args, 0, "inline") >= 0 {
+    if json_has(args, "inline") {
         write_text(id_buf, "inline PNG is not available in this build", true);
         return;
     }
@@ -1822,7 +1481,7 @@ fn tool_read_mem(emu: X68kEmulator&, args: const u8[:], id_buf: const u8[:]) {
 // 先頭の命令は address / opcode / text / length にも入れる。
 fn tool_disasm(emu: X68kEmulator&, args: const u8[:], id_buf: const u8[:]) {
     var addr = emu.cpu.pc & ADDR_MASK;
-    if json_key_value(args, 0, "address") >= 0 {
+    if json_has(args, "address") {
         addr = extract_json_addr(args, "address", addr) & ADDR_MASK;
     }
     let count = extract_json_int(args, "count", 1);
@@ -1884,7 +1543,7 @@ fn tool_breakpoint(emu: X68kEmulator&, args: const u8[:], id_buf: const u8[:]) {
 }
 
 fn tool_write_mem(emu: X68kEmulator&, args: const u8[:], id_buf: const u8[:]) {
-    if json_key_value(args, 0, "address") < 0 {
+    if !json_has(args, "address") {
         write_text(id_buf, "missing required field 'address' (integer or hex string)", true);
         return;
     }
@@ -1925,46 +1584,46 @@ fn tool_write_mem(emu: X68kEmulator&, args: const u8[:], id_buf: const u8[:]) {
 }
 
 fn tool_write_registers(emu: X68kEmulator&, args: const u8[:], id_buf: const u8[:]) {
-    if json_key_value(args, 0, "msp") >= 0 { write_text(id_buf, "the 68000 has no 'msp' register; nothing was written", true); return; }
-    if json_key_value(args, 0, "vbr") >= 0 { write_text(id_buf, "the 68000 has no 'vbr' register; nothing was written", true); return; }
-    if json_key_value(args, 0, "sfc") >= 0 { write_text(id_buf, "the 68000 has no 'sfc' register; nothing was written", true); return; }
-    if json_key_value(args, 0, "dfc") >= 0 { write_text(id_buf, "the 68000 has no 'dfc' register; nothing was written", true); return; }
-    if json_key_value(args, 0, "cacr") >= 0 { write_text(id_buf, "the 68000 has no 'cacr' register; nothing was written", true); return; }
-    if json_key_value(args, 0, "caar") >= 0 { write_text(id_buf, "the 68000 has no 'caar' register; nothing was written", true); return; }
-    if json_key_value(args, 0, "pref_addr") >= 0 { write_text(id_buf, "the 68000 has no 'pref_addr' register; nothing was written", true); return; }
-    if json_key_value(args, 0, "pref_data") >= 0 { write_text(id_buf, "the 68000 has no 'pref_data' register; nothing was written", true); return; }
+    if json_has(args, "msp") { write_text(id_buf, "the 68000 has no 'msp' register; nothing was written", true); return; }
+    if json_has(args, "vbr") { write_text(id_buf, "the 68000 has no 'vbr' register; nothing was written", true); return; }
+    if json_has(args, "sfc") { write_text(id_buf, "the 68000 has no 'sfc' register; nothing was written", true); return; }
+    if json_has(args, "dfc") { write_text(id_buf, "the 68000 has no 'dfc' register; nothing was written", true); return; }
+    if json_has(args, "cacr") { write_text(id_buf, "the 68000 has no 'cacr' register; nothing was written", true); return; }
+    if json_has(args, "caar") { write_text(id_buf, "the 68000 has no 'caar' register; nothing was written", true); return; }
+    if json_has(args, "pref_addr") { write_text(id_buf, "the 68000 has no 'pref_addr' register; nothing was written", true); return; }
+    if json_has(args, "pref_data") { write_text(id_buf, "the 68000 has no 'pref_data' register; nothing was written", true); return; }
     var wrote = false;
-    if json_key_value(args, 0, "pc") >= 0 { emu.cpu.pc = extract_json_addr(args, "pc", emu.cpu.pc); wrote = true; }
-    if json_key_value(args, 0, "sr") >= 0 { emu.cpu.set_sr(extract_json_addr(args, "sr", emu.cpu.sr) as u16); wrote = true; }
+    if json_has(args, "pc") { emu.cpu.pc = extract_json_addr(args, "pc", emu.cpu.pc); wrote = true; }
+    if json_has(args, "sr") { emu.cpu.set_sr(extract_json_addr(args, "sr", emu.cpu.sr) as u16); wrote = true; }
     // A7 is the stack pointer of the current mode; USP and SSP name one stack each.
     let sup = emu.cpu.is_supervisor();
-    if json_key_value(args, 0, "usp") >= 0 {
+    if json_has(args, "usp") {
         let v = extract_json_addr(args, "usp", 0);
         if sup { emu.cpu.usp = v; } else { emu.cpu.a[7] = v; }
         wrote = true;
     }
-    if json_key_value(args, 0, "ssp") >= 0 || json_key_value(args, 0, "isp") >= 0 {
+    if json_has(args, "ssp") || json_has(args, "isp") {
         let v = extract_json_addr(args, "isp", extract_json_addr(args, "ssp", 0));
         if sup { emu.cpu.a[7] = v; } else { emu.cpu.ssp = v; }
         wrote = true;
     }
-    if json_key_value(args, 0, "sp") >= 0 { emu.cpu.a[7] = extract_json_addr(args, "sp", emu.cpu.a[7]); wrote = true; }
-    if json_key_value(args, 0, "a7") >= 0 { emu.cpu.a[7] = extract_json_addr(args, "a7", emu.cpu.a[7]); wrote = true; }
-    if json_key_value(args, 0, "d0") >= 0 { emu.cpu.d[0] = extract_json_addr(args, "d0", emu.cpu.d[0]); wrote = true; }
-    if json_key_value(args, 0, "d1") >= 0 { emu.cpu.d[1] = extract_json_addr(args, "d1", emu.cpu.d[1]); wrote = true; }
-    if json_key_value(args, 0, "d2") >= 0 { emu.cpu.d[2] = extract_json_addr(args, "d2", emu.cpu.d[2]); wrote = true; }
-    if json_key_value(args, 0, "d3") >= 0 { emu.cpu.d[3] = extract_json_addr(args, "d3", emu.cpu.d[3]); wrote = true; }
-    if json_key_value(args, 0, "d4") >= 0 { emu.cpu.d[4] = extract_json_addr(args, "d4", emu.cpu.d[4]); wrote = true; }
-    if json_key_value(args, 0, "d5") >= 0 { emu.cpu.d[5] = extract_json_addr(args, "d5", emu.cpu.d[5]); wrote = true; }
-    if json_key_value(args, 0, "d6") >= 0 { emu.cpu.d[6] = extract_json_addr(args, "d6", emu.cpu.d[6]); wrote = true; }
-    if json_key_value(args, 0, "d7") >= 0 { emu.cpu.d[7] = extract_json_addr(args, "d7", emu.cpu.d[7]); wrote = true; }
-    if json_key_value(args, 0, "a0") >= 0 { emu.cpu.a[0] = extract_json_addr(args, "a0", emu.cpu.a[0]); wrote = true; }
-    if json_key_value(args, 0, "a1") >= 0 { emu.cpu.a[1] = extract_json_addr(args, "a1", emu.cpu.a[1]); wrote = true; }
-    if json_key_value(args, 0, "a2") >= 0 { emu.cpu.a[2] = extract_json_addr(args, "a2", emu.cpu.a[2]); wrote = true; }
-    if json_key_value(args, 0, "a3") >= 0 { emu.cpu.a[3] = extract_json_addr(args, "a3", emu.cpu.a[3]); wrote = true; }
-    if json_key_value(args, 0, "a4") >= 0 { emu.cpu.a[4] = extract_json_addr(args, "a4", emu.cpu.a[4]); wrote = true; }
-    if json_key_value(args, 0, "a5") >= 0 { emu.cpu.a[5] = extract_json_addr(args, "a5", emu.cpu.a[5]); wrote = true; }
-    if json_key_value(args, 0, "a6") >= 0 { emu.cpu.a[6] = extract_json_addr(args, "a6", emu.cpu.a[6]); wrote = true; }
+    if json_has(args, "sp") { emu.cpu.a[7] = extract_json_addr(args, "sp", emu.cpu.a[7]); wrote = true; }
+    if json_has(args, "a7") { emu.cpu.a[7] = extract_json_addr(args, "a7", emu.cpu.a[7]); wrote = true; }
+    if json_has(args, "d0") { emu.cpu.d[0] = extract_json_addr(args, "d0", emu.cpu.d[0]); wrote = true; }
+    if json_has(args, "d1") { emu.cpu.d[1] = extract_json_addr(args, "d1", emu.cpu.d[1]); wrote = true; }
+    if json_has(args, "d2") { emu.cpu.d[2] = extract_json_addr(args, "d2", emu.cpu.d[2]); wrote = true; }
+    if json_has(args, "d3") { emu.cpu.d[3] = extract_json_addr(args, "d3", emu.cpu.d[3]); wrote = true; }
+    if json_has(args, "d4") { emu.cpu.d[4] = extract_json_addr(args, "d4", emu.cpu.d[4]); wrote = true; }
+    if json_has(args, "d5") { emu.cpu.d[5] = extract_json_addr(args, "d5", emu.cpu.d[5]); wrote = true; }
+    if json_has(args, "d6") { emu.cpu.d[6] = extract_json_addr(args, "d6", emu.cpu.d[6]); wrote = true; }
+    if json_has(args, "d7") { emu.cpu.d[7] = extract_json_addr(args, "d7", emu.cpu.d[7]); wrote = true; }
+    if json_has(args, "a0") { emu.cpu.a[0] = extract_json_addr(args, "a0", emu.cpu.a[0]); wrote = true; }
+    if json_has(args, "a1") { emu.cpu.a[1] = extract_json_addr(args, "a1", emu.cpu.a[1]); wrote = true; }
+    if json_has(args, "a2") { emu.cpu.a[2] = extract_json_addr(args, "a2", emu.cpu.a[2]); wrote = true; }
+    if json_has(args, "a3") { emu.cpu.a[3] = extract_json_addr(args, "a3", emu.cpu.a[3]); wrote = true; }
+    if json_has(args, "a4") { emu.cpu.a[4] = extract_json_addr(args, "a4", emu.cpu.a[4]); wrote = true; }
+    if json_has(args, "a5") { emu.cpu.a[5] = extract_json_addr(args, "a5", emu.cpu.a[5]); wrote = true; }
+    if json_has(args, "a6") { emu.cpu.a[6] = extract_json_addr(args, "a6", emu.cpu.a[6]); wrote = true; }
     if !wrote {
         write_text(id_buf, "no recognized register fields in request (e.g. \"pc\", \"d0\", \"a7\")", true);
         return;
@@ -2303,14 +1962,24 @@ fn inspect_call(emu: X68kEmulator&, tool_name: const u8[:], args: const u8[:], i
     return false;
 }
 
+// tools/call の引数オブジェクト。無ければ空のオブジェクト。
+fn tool_arguments(params: const u8[:], tool_name: const u8[:]) -> const u8[:] {
+    let args, found = json_member(params, "arguments");
+    if !found || args[0] != '{' { return "{}"; }
+    // XEiJ takes the registers as {"registers": {...}}; accept that as well as flat keys.
+    let inner, nested = json_member(args, "registers");
+    if tool_name == "arcl_write_registers" && nested && inner[0] == '{' { return inner; }
+    return args;
+}
+
 fn dispatch(emu: X68kEmulator&, line: const u8[:], is_running: bool&) {
     if line.len == 0 { return; }
 
-    var id_buf: u8[>..] = [];
-    let has_id = json_top_id(line, id_buf);
+    // id は数値でも文字列でもよい。応答には書かれたままの形で返す。
+    let id_buf, has_id = json_member(line, "id");
 
     var method: u8[>..] = [];
-    json_top_string(line, "method", method);
+    extract_json_str(line, "method", method);
 
     if method == "notifications/initialized" || method == "initialized" || method == "notifications/cancelled" {
         return;
@@ -2346,21 +2015,13 @@ fn dispatch(emu: X68kEmulator&, line: const u8[:], is_running: bool&) {
 
     // 4. tools/call
     if method == "tools/call" {
-        var args: u8[>..] = [];
-        if !json_extract_object(line, "arguments", args) {
-            args.append("{}");
-        }
+        let params, _ = json_member(line, "params");
         var tool_name: u8[>..] = [];
-        json_any_string(line, "name", tool_name);
+        extract_json_str(params, "name", tool_name);
+        let args = tool_arguments(params, tool_name);
         if tool_name.len > 0 && !layer_allows(tool_name) {
             write_text(id_buf, "this tool's layer was not enabled via --mcp-layers for this session (see tools/list for what's available)", true);
             return;
-        }
-        // XEiJ takes the registers as {"registers": {...}}; accept that as well as flat keys.
-        var inner: u8[>..] = [];
-        if tool_name == "arcl_write_registers" && json_extract_object(args, "registers", inner) {
-            args.clear();
-            args.append(inner);
         }
         var bad: u8[>..] = [];
         if bad_number(args, bad) {

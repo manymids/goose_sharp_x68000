@@ -15,6 +15,7 @@ import .x68k_dmac;
 import .x68k_rtc;
 import .x68k_state;
 import .x68k_disk;
+import .mcp_args;
 
 var g_checks = 0;
 var g_failures = 0;
@@ -781,6 +782,64 @@ fn test_io_latches() {
     check("a reset clears the latches", g_mmu.pia_c == 0x0B && g_mmu.opm.regs[0x18] == 0 && g_mmu.opm.addr == 0);
 }
 
+// MCP の引数の取り出し (mcp_args)。
+fn check_addr(name: const u8[:], obj: const u8[:], want: u32, want_present: bool, want_valid: bool) {
+    let v, present, valid = json_addr_parse(obj, "a");
+    check(name, present == want_present && valid == want_valid && (!valid || !present || v == want));
+}
+
+fn test_mcp_args() {
+    let req = "{\"jsonrpc\":\"2.0\", \"id\" :  17 ,\"method\":\"tools/call\",\"params\":{\"name\":\"arcl_run\",\"arguments\":{ \"frames\": 3, \"name\":\"inner\" }}}";
+    let id, has_id = json_member(req, "id");
+    check("member: a number, without the spaces around it", has_id && id == "17");
+    let params, has_params = json_member(req, "params");
+    check("member: an object", has_params && params.len > 0 && params[0] == '{');
+    var name: u8[>..] = [];
+    check("str: the tool name is the one in params, not the one in its arguments",
+        extract_json_str(params, "name", name) && name == "arcl_run");
+    let args, _ = json_member(params, "arguments");
+    check("int: a member of the arguments", extract_json_int(args, "frames", -1) == 3);
+    check("has: present and absent keys", json_has(args, "frames") && !json_has(args, "method") && !json_has(req, "frames"));
+
+    var text: u8[>..] = [];
+    check("str: escapes are decoded", extract_json_str("{\"p\":\"a\\n\\\"b\\u3042\"}", "p", text) && text == "a\n\"bあ");
+    text.clear();
+    check("str: a number is not a string", !extract_json_str("{\"p\":5}", "p", text));
+    check("str: the first of two equal keys", extract_json_str("{\"p\":\"x\",\"p\":\"y\"}", "p", text) && text == "x");
+
+    check("int: negative", extract_json_int("{\"n\":-12}", "n", 0) == -12);
+    check("int: a string falls back", extract_json_int("{\"n\":\"5\"}", "n", 7) == 7);
+    check("int: a fraction falls back", extract_json_int("{\"n\":1.5}", "n", 7) == 7);
+    check("int: an exponent that is whole", extract_json_int("{\"n\":1e3}", "n", 7) == 1000);
+    check("int: too large for 32 bits falls back", extract_json_int("{\"n\":99999999999}", "n", 7) == 7);
+    check("int: absent falls back", extract_json_int("{}", "n", 7) == 7);
+
+    check_addr("addr: a number", "{\"a\":4096}", 4096, true, true);
+    check_addr("addr: a negative number wraps to 32 bits", "{\"a\":-1}", 0xFFFFFFFF, true, true);
+    check_addr("addr: 0x prefix", "{\"a\":\"0x00FF0010\"}", 0xFF0010, true, true);
+    check_addr("addr: $ prefix", "{\"a\":\"$e8a000\"}", 0xE8A000, true, true);
+    check_addr("addr: h suffix", "{\"a\":\"1000h\"}", 0x1000, true, true);
+    check_addr("addr: bare hex digits", "{\"a\":\"ff\"}", 0xFF, true, true);
+    check_addr("addr: a decimal string", "{\"a\":\" 255 \"}", 255, true, true);
+    check_addr("addr: more than 32 bits", "{\"a\":\"0x100000000\"}", 0, true, false);
+    check_addr("addr: not a number", "{\"a\":\"zz\"}", 0, true, false);
+    check_addr("addr: a boolean", "{\"a\":true}", 0, true, false);
+    check_addr("addr: a fraction", "{\"a\":1.5}", 0, true, false);
+    check_addr("addr: absent is not an error", "{\"b\":1}", 0, false, true);
+
+    // 壊れた入力は、キーが無いものとして扱う
+    check("broken: text that is not JSON", !json_has("not json", "a") && !json_has("", "a"));
+    check("broken: an object cut short", !json_has("{\"a\":1,\"b\":", "a"));
+
+    var steps: const u8[:][>..] = [];
+    check("elements: objects and other values, as written",
+        json_elements("[ {\"op\":\"run\"}, 5 ,\"x\" ]", steps) && steps.len == 3
+        && steps[0] == "{\"op\":\"run\"}" && steps[1] == "5" && steps[2] == "\"x\"");
+    var none: const u8[:][>..] = [];
+    check("elements: not an array", !json_elements("{\"a\":1}", none) && !json_elements("", none));
+    check("elements: an empty array", json_elements("[]", none) && none.len == 0);
+}
+
 fn main() {
     test_flag_helpers();
     test_conditions();
@@ -801,6 +860,7 @@ fn main() {
     test_disk_d88();
     test_disk_hdd_and_media();
     test_io_latches();
+    test_mcp_args();
     print(g_checks - g_failures, " / ", g_checks, " checks passed");
     if g_failures > 0 { exit(1); }
 }
