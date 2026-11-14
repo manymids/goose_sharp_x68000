@@ -9,6 +9,7 @@
 #include <stdlib.h>
 #include <time.h>
 #include "x68k_bridge.h"
+#include "x68k_path.h"
 #include "sound/x68k_sound.h"
 
 /* Palette, TVRAM and GVRAM live in the Goose emulator struct, which is a
@@ -141,12 +142,12 @@ static void bind_path(const uint8_t *p, int len, char *dst, int cap) {
     dst[n] = 0;
 }
 
-// Raw File IO
-int c_file_read(const uint8_t *path, int path_len, void *out_buf, int max_len) {
-    char pbuf[MAX_PATH];
-    bind_path(path, path_len, pbuf, MAX_PATH);
+// Reads up to max_len bytes from the start of a file.
+static int c_file_read(const uint8_t *path, int path_len, void *out_buf, int max_len) {
+    char pbuf[PATH_CAP];
+    bind_path(path, path_len, pbuf, PATH_CAP);
     if (pbuf[0] == 0 || !out_buf || max_len <= 0) return 0;
-    FILE *fp = fopen(pbuf, "rb");
+    FILE *fp = path_fopen(pbuf, L"rb");
     if (!fp) return 0;
     size_t n = fread(out_buf, 1, (size_t)max_len, fp);
     fclose(fp);
@@ -167,7 +168,7 @@ static void *host_calloc(size_t n, size_t size) {
     if (g_init_fail_after > 0) g_init_fail_after--;
     return calloc(n, size);
 }
-static char g_sys_dir[MAX_PATH];
+static char g_sys_dir[PATH_CAP];
 #define TVRAM_SIZE (512 * 1024)        // 512KB
 #define GVRAM_SIZE (512 * 1024)        // 512KB
 #define CGROM_SIZE (768 * 1024)        // 768KB
@@ -222,7 +223,7 @@ static int g_ppu_phase = 0;
 
 // Helper to find and load ROM file with multiple candidate directories
 static int load_rom_file(const char *filename, const char *sys_dir, void *buf, int size) {
-    char path[MAX_PATH];
+    char path[PATH_CAP];
     // 1. Try directly in sys_dir
     if (sys_dir && strlen(sys_dir) > 0) {
         snprintf(path, sizeof(path), "%s/%s", sys_dir, filename);
@@ -265,14 +266,14 @@ int c_mem_set_ram_mb(int32_t mb) {
     return 1;
 }
 
-int x68k_mem_init(const uint8_t *sys_bytes, int sys_len) {
-    char sys_dir[MAX_PATH];
+int x68k_mem_init(X68kByteView sys_bytes) {
+    char sys_dir[PATH_CAP];
     if (g_mem_ready) return 0; // Explicit destroy before a new host session.
-    bind_path(sys_bytes, sys_len, sys_dir, MAX_PATH);
+    bind_path(sys_bytes.data, (int)sys_bytes.len, sys_dir, PATH_CAP);
     g_sys_dir[0] = '\0';
     if (sys_dir[0]) {
-        strncpy(g_sys_dir, sys_dir, MAX_PATH - 1);
-        g_sys_dir[MAX_PATH - 1] = '\0';
+        strncpy(g_sys_dir, sys_dir, PATH_CAP - 1);
+        g_sys_dir[PATH_CAP - 1] = '\0';
     }
     if (!g_ram) g_ram = (uint8_t *)host_calloc(1, (size_t)g_ram_bytes);
     if (!g_tvram_bound && !g_tvram) g_tvram = (uint8_t *)host_calloc(1, TVRAM_SIZE);
@@ -320,11 +321,11 @@ void c_sram_set_persist(int enabled) { g_sram_persist = enabled != 0; }
 
 static void save_sram_file(void) {
     if (!g_sram_persist) return;
-    char path[MAX_PATH];
+    char path[PATH_CAP];
     FILE *f;
     if (!g_mem_ready || !g_sram || !g_sys_dir[0]) return;
     snprintf(path, sizeof(path), "%s\\sram.dat", g_sys_dir);
-    f = fopen(path, "wb");
+    f = path_fopen(path, L"wb");
     if (!f) return;
     fwrite(g_sram, 1, SRAM_SIZE, f);
     fclose(f);
@@ -568,12 +569,12 @@ static int g_pending_cmd = 0;
 enum { MEDIA_NONE = 0, MEDIA_FD0_INSERT, MEDIA_FD0_EJECT, MEDIA_FD1_INSERT, MEDIA_FD1_EJECT,
        MEDIA_HDD_INSERT, MEDIA_HDD_EJECT };
 static int g_media_request = MEDIA_NONE;
-static char g_media_path[MAX_PATH];
+static char g_media_path[PATH_CAP];
 
 static void media_request(int kind, const char *path) {
     g_media_request = kind;
-    strncpy(g_media_path, path ? path : "", MAX_PATH - 1);
-    g_media_path[MAX_PATH - 1] = '\0';
+    strncpy(g_media_path, path ? path : "", PATH_CAP - 1);
+    g_media_path[PATH_CAP - 1] = '\0';
 }
 
 int c_gui_take_media_request(uint8_t *path, int cap, int32_t *path_len) {
@@ -862,17 +863,19 @@ static void win32_set_scale(int scale) {
 }
 
 // Open File Dialog helper
-static bool open_file_dialog(HWND owner, const char *filter, char *out_path, int max_len) {
-    OPENFILENAMEA ofn;
+static bool open_file_dialog(HWND owner, const wchar_t *filter, char *out_path, int max_len) {
+    OPENFILENAMEW ofn;
+    wchar_t picked[MAX_PATH];
     memset(&ofn, 0, sizeof(ofn));
     ofn.lStructSize = sizeof(ofn);
     ofn.hwndOwner = owner;
     ofn.lpstrFilter = filter;
-    ofn.lpstrFile = out_path;
-    ofn.nMaxFile = max_len;
+    ofn.lpstrFile = picked;
+    ofn.nMaxFile = MAX_PATH;
     ofn.Flags = OFN_PATHMUSTEXIST | OFN_FILEMUSTEXIST | OFN_NOCHANGEDIR;
+    picked[0] = 0;
     out_path[0] = '\0';
-    return GetOpenFileNameA(&ofn) != 0;
+    return GetOpenFileNameW(&ofn) != 0 && path_from_wide(picked, out_path, max_len);
 }
 
 static const int k_cpu_clocks[] = { X68K_CPU_CLOCK_LIST };
@@ -936,22 +939,22 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
                 case 212: c_gui_settings_set_int(GUI_WIDTH, 512); c_set_screen_mode(512, 512); break;
                 // FD0 (a new disk here also reboots; the frontend decides that)
                 case 401: {
-                    char file_buf[MAX_PATH] = {0};
-                    if (open_file_dialog(hwnd, "X68000 Disk Images (*.2hd;*.xdf;*.dim;*.d88;*.img;*.bin)\0*.2hd;*.xdf;*.dim;*.d88;*.img;*.bin\0All Files (*.*)\0*.*\0", file_buf, MAX_PATH)) media_request(MEDIA_FD0_INSERT, file_buf);
+                    char file_buf[PATH_CAP] = {0};
+                    if (open_file_dialog(hwnd, L"X68000 Disk Images (*.2hd;*.xdf;*.dim;*.d88;*.img;*.bin)\0*.2hd;*.xdf;*.dim;*.d88;*.img;*.bin\0All Files (*.*)\0*.*\0", file_buf, PATH_CAP)) media_request(MEDIA_FD0_INSERT, file_buf);
                     break;
                 }
                 case 402: media_request(MEDIA_FD0_EJECT, NULL); break;
                 // FD1
                 case 411: {
-                    char file_buf[MAX_PATH] = {0};
-                    if (open_file_dialog(hwnd, "X68000 Disk Images (*.2hd;*.xdf;*.dim;*.d88;*.img;*.bin)\0*.2hd;*.xdf;*.dim;*.d88;*.img;*.bin\0All Files (*.*)\0*.*\0", file_buf, MAX_PATH)) media_request(MEDIA_FD1_INSERT, file_buf);
+                    char file_buf[PATH_CAP] = {0};
+                    if (open_file_dialog(hwnd, L"X68000 Disk Images (*.2hd;*.xdf;*.dim;*.d88;*.img;*.bin)\0*.2hd;*.xdf;*.dim;*.d88;*.img;*.bin\0All Files (*.*)\0*.*\0", file_buf, PATH_CAP)) media_request(MEDIA_FD1_INSERT, file_buf);
                     break;
                 }
                 case 412: media_request(MEDIA_FD1_EJECT, NULL); break;
                 // HDD
                 case 421: {
-                    char file_buf[MAX_PATH] = {0};
-                    if (open_file_dialog(hwnd, "X68000 HDD Images (*.hdf;*.hds;*.img)\0*.hdf;*.hds;*.img\0All Files (*.*)\0*.*\0", file_buf, MAX_PATH)) media_request(MEDIA_HDD_INSERT, file_buf);
+                    char file_buf[PATH_CAP] = {0};
+                    if (open_file_dialog(hwnd, L"X68000 HDD Images (*.hdf;*.hds;*.img)\0*.hdf;*.hds;*.img\0All Files (*.*)\0*.*\0", file_buf, PATH_CAP)) media_request(MEDIA_HDD_INSERT, file_buf);
                     break;
                 }
                 case 422: media_request(MEDIA_HDD_EJECT, NULL); break;
@@ -1164,10 +1167,10 @@ static void win32_audio_destroy(void) {
 static void win32_timer_init(void);
 static void win32_timer_shutdown(void);
 
-bool win32_ui_init(const uint8_t *title_bytes, int title_len, int w, int h, int scale) {
+bool win32_ui_init(X68kByteView title_bytes, int w, int h, int scale) {
     char title_buf[256];
     const char *title;
-    bind_path(title_bytes, title_len, title_buf, (int)sizeof(title_buf));
+    bind_path(title_bytes.data, (int)title_bytes.len, title_buf, (int)sizeof(title_buf));
     title = title_buf[0] ? title_buf : NULL;
     if (g_hwnd) return true;
     g_src_w = (w > 0 ? w : 512);
@@ -1395,11 +1398,11 @@ int win32_ui_get_command(void) {
 }
 
 // BMP screenshot saver
-int c_save_fb_bmp(const uint8_t *path_bytes, int path_len) {
-    char path[MAX_PATH];
-    bind_path(path_bytes, path_len, path, MAX_PATH);
+int c_save_fb_bmp(X68kByteView path_bytes) {
+    char path[PATH_CAP];
+    bind_path(path_bytes.data, (int)path_bytes.len, path, PATH_CAP);
     if (path[0] == 0 || !g_fb) return 0;
-    FILE *f = fopen(path, "wb");
+    FILE *f = path_fopen(path, L"wb");
     if (!f) return 0;
 
     int w = g_src_w;
@@ -1474,8 +1477,8 @@ static int png_chunk(FILE *f, const char *type, const uint8_t *data, int n) {
     return fwrite(crcb, 1, 4, f) == 4;
 }
 
-int c_save_fb_png(const uint8_t *path_bytes, int path_len) {
-    char path[MAX_PATH];
+int c_save_fb_png(X68kByteView path_bytes) {
+    char path[PATH_CAP];
     static const uint8_t sig[8] = { 137, 80, 78, 71, 13, 10, 26, 10 };
     int w, h, raw_n, zcap, zlen, y, x, pos, left;
     uint8_t ihdr[13];
@@ -1483,7 +1486,7 @@ int c_save_fb_png(const uint8_t *path_bytes, int path_len) {
     uint8_t *z = NULL;
     uint32_t s1 = 1, s2 = 0, adler;
     FILE *f;
-    bind_path(path_bytes, path_len, path, MAX_PATH);
+    bind_path(path_bytes.data, (int)path_bytes.len, path, PATH_CAP);
     if (path[0] == 0 || !g_fb) return 0;
     w = g_src_w;
     h = g_src_h;
@@ -1537,7 +1540,7 @@ int c_save_fb_png(const uint8_t *path_bytes, int path_len) {
     ihdr[4] = (uint8_t)(h >> 24); ihdr[5] = (uint8_t)(h >> 16);
     ihdr[6] = (uint8_t)(h >> 8); ihdr[7] = (uint8_t)h;
     ihdr[8] = 8; ihdr[9] = 2; ihdr[10] = 0; ihdr[11] = 0; ihdr[12] = 0;
-    f = fopen(path, "wb");
+    f = path_fopen(path, L"wb");
     if (!f) { free(z); return 0; }
     if (fwrite(sig, 1, 8, f) != 8 || !png_chunk(f, "IHDR", ihdr, 13) || !png_chunk(f, "IDAT", z, zlen) || !png_chunk(f, "IEND", NULL, 0)) {
         fclose(f);
@@ -1677,7 +1680,7 @@ static int write_wav(const char *path, const int16_t *data, int frames) {
     memcpy(hdr + 36, "data", 4);
     hdr[40] = (uint8_t)data_bytes; hdr[41] = (uint8_t)(data_bytes >> 8);
     hdr[42] = (uint8_t)(data_bytes >> 16); hdr[43] = (uint8_t)(data_bytes >> 24);
-    fp = fopen(path, "wb");
+    fp = path_fopen(path, L"wb");
     if (!fp) return 0;
     if (fwrite(hdr, 1, 44, fp) != 44 || fwrite(data, 1, data_bytes, fp) != data_bytes) {
         fclose(fp);
@@ -1687,10 +1690,10 @@ static int write_wav(const char *path, const int16_t *data, int frames) {
     return 1;
 }
 
-int c_audio_capture_stop(const uint8_t *path_bytes, int path_len, int *frames, int *truncated, int *peak, int *silent) {
-    char path[MAX_PATH];
+int c_audio_capture_stop(X68kByteView path_bytes, int *frames, int *truncated, int *peak, int *silent) {
+    char path[PATH_CAP];
     int i, pk = 0, n;
-    bind_path(path_bytes, path_len, path, MAX_PATH);
+    bind_path(path_bytes.data, (int)path_bytes.len, path, PATH_CAP);
     g_cap_active = 0;
     n = g_cap_frames;
     for (i = 0; i < n * 2; i++) {
@@ -1867,27 +1870,30 @@ int c_sound_poll_irq(void) {
     return x68k_sound_poll_irq();
 }
 
-int c_host_list_dir(const uint8_t *path_bytes, int path_len, char *out, int cap) {
-    char path[MAX_PATH];
-    char pattern[MAX_PATH];
-    WIN32_FIND_DATAA fd;
+int c_host_list_dir(X68kByteView path_bytes, char *out, int cap) {
+    char path[PATH_CAP];
+    char pattern[PATH_CAP];
+    wchar_t wide[MAX_PATH];
+    WIN32_FIND_DATAW fd;
     HANDLE h;
     int used = 0;
     int first = 1;
-    bind_path(path_bytes, path_len, path, MAX_PATH);
+    bind_path(path_bytes.data, (int)path_bytes.len, path, PATH_CAP);
     if (!out || cap < 2) return 0;
     if (path[0] == 0) return 0;
     if (strstr(path, "..")) return -1;
-    if ((int)strlen(path) + 3 >= MAX_PATH) return 0;
+    if ((int)strlen(path) + 3 >= PATH_CAP) return 0;
     snprintf(pattern, sizeof(pattern), "%s\\*", path);
-    h = FindFirstFileA(pattern, &fd);
+    if (!path_to_wide(pattern, wide, MAX_PATH)) return 0;
+    h = FindFirstFileW(wide, &fd);
     if (h == INVALID_HANDLE_VALUE) return 0;
     out[0] = 0;
     do {
-        const char *name = fd.cFileName;
+        char name[PATH_CAP];
         int is_dir, i, nlen;
-        char piece[600];
+        char piece[PATH_CAP * 2 + 64];
         int pn = 0;
+        if (!path_from_wide(fd.cFileName, name, PATH_CAP)) continue;
         if (strcmp(name, ".") == 0 || strcmp(name, "..") == 0) continue;
         is_dir = (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0;
         piece[pn++] = first ? '[' : ',';
@@ -1906,7 +1912,7 @@ int c_host_list_dir(const uint8_t *path_bytes, int path_len, char *out, int cap)
         memcpy(out + used, piece, (size_t)pn);
         used += pn;
         out[used] = 0;
-    } while (FindNextFileA(h, &fd));
+    } while (FindNextFileW(h, &fd));
     FindClose(h);
     if (first) {
         memcpy(out, "[]", 3);

@@ -38,10 +38,7 @@ fn print_help() {
 }
 
 fn write_dump(path: u8[>..]&) {
-    var buf: u8[>..] = [];
-    buf.append(path);
-    buf.push(0);
-    if c_save_fb_png(buf[0], buf.len as i32) == 0 {
+    if c_save_fb_png(path[..]) == 0 {
         write_stderr("dump-frame: FAILED to write\n");
     } else {
         write_stderr("dump-frame: wrote\n");
@@ -62,10 +59,7 @@ fn print_banner(content_path: u8[>..]&, sys_dir: u8[>..]&) {
 
 fn open_window(screen_w: i32, screen_h: i32, scale: i32) -> bool {
     c_set_screen_mode(screen_w, screen_h);
-    var title: u8[>..] = [];
-    title.append("Sharp X68000 Emulator - Goose Native");
-    title.push('\0');
-    return win32_ui_init(title[0], title.len as i32, screen_w, screen_h, scale);
+    return win32_ui_init("Sharp X68000 Emulator - Goose Native", screen_w, screen_h, scale);
 }
 
 // ホストのキー入力をリングへ積むだけ。CPU への割り込みはフレーム内の Keyboard_Int が出す。
@@ -89,9 +83,9 @@ let MEDIA_HDD_EJECT = 6;
 
 // メニューで選ばれた出し入れを行う。新しいディスクから起動し直すべきなら true。
 fn apply_menu_media() -> bool {
-    var path: u8[520] = [0; 520];
+    var path: u8[HOST_PATH_BYTES] = [0; HOST_PATH_BYTES];
     var len: i32 = 0;
-    let request = c_gui_take_media_request(path[0], 520, len);
+    let request = c_gui_take_media_request(path[0], HOST_PATH_BYTES, len);
     if request == MEDIA_FD0_INSERT { return disk::fd_load(0, path[..len]); }
     if request == MEDIA_FD0_EJECT { disk::fd_eject(0); }
     if request == MEDIA_FD1_INSERT { disk::fd_load(1, path[..len]); }
@@ -341,10 +335,8 @@ fn main() {
         return;
     }
 
-    var sys_buf: u8[>..] = []; sys_buf.append(sys_dir); sys_buf.push('\0');
-
     // ハードウェアメモリ (RAM 12MB, ROM, VRAM) の初期化
-    let mem_ok = x68k_mem_init(sys_buf[0], sys_buf.len as i32);
+    let mem_ok = x68k_mem_init(sys_dir[..]);
     if mem_ok == 0 {
         write_stderr(str("Could not initialize BIOS/memory from: ", sys_dir, " (iplrom.dat 128 KiB, cgrom.dat 768 KiB required)\n"));
         if !mcp_mode && !no_window { c_startup_error(); }

@@ -1170,10 +1170,7 @@ fn tool_input_macro(emu: X68kEmulator&, args: const u8[:], id_buf: const u8[:]) 
             } else {
                 var path_buf: u8[>..] = [];
                 if !extract_json_str(step, "path", path_buf) { path_buf.append("x68k_screenshot.bmp"); }
-                var path_null: u8[>..] = [];
-                path_null.append(path_buf);
-                path_null.push(0);
-                if c_save_fb_bmp(path_null[0], path_null.len as i32) == 0 {
+                if c_save_fb_bmp(path_buf[..]) == 0 {
                     step_ok = false;
                     err.append("failed to write screenshot");
                 }
@@ -1592,10 +1589,7 @@ fn tool_screenshot(emu: X68kEmulator&, args: const u8[:], id_buf: const u8[:]) {
     if !extract_json_str(args, "path", path_buf) {
         path_buf.append("x68k_screenshot.bmp");
     }
-    var path_null: u8[>..] = [];
-    path_null.append(path_buf);
-    path_null.push('\0');
-    if c_save_fb_bmp(path_null[0], path_null.len as i32) == 0 {
+    if c_save_fb_bmp(path_buf[..]) == 0 {
         write_text(id_buf, "failed to write screenshot", true);
         return;
     }
@@ -1670,11 +1664,8 @@ fn tool_host_dir(emu: X68kEmulator&, args: const u8[:], id_buf: const u8[:]) {
         write_text(id_buf, "path must not contain '..'", true);
         return;
     }
-    var path_z: u8[>..] = [];
-    path_z.append(path_buf);
-    path_z.push(0);
     var listed: u8[8192] = [0; 8192];
-    if c_host_list_dir(path_z[0], path_z.len as i32, listed[0], 8192) != 1 {
+    if c_host_list_dir(path_buf[..], listed[0], 8192) != 1 {
         write_text(id_buf, "failed to open directory (does it exist?)", true);
         return;
     }
@@ -1724,21 +1715,12 @@ fn tool_audio_record(emu: X68kEmulator&, args: const u8[:], id_buf: const u8[:])
     }
     if act == "stop" {
         var path_buf: u8[>..] = [];
-        var z: u8[512] = [0; 512];
-        if extract_json_str(args, "path", path_buf) && path_buf.len > 0 {
-            if path_buf.len >= 511 {
-                write_text(id_buf, "failed to write WAV to path", true);
-                return;
-            }
-            for pi in path_buf.len {
-                z[pi] = path_buf[pi];
-            }
-        }
+        extract_json_str(args, "path", path_buf); // 無ければ空のまま。ファイルは書かずに結果だけ返す
         var frames: i32 = 0;
         var trunc: i32 = 0;
         var peak: i32 = 0;
         var silent: i32 = 0;
-        if c_audio_capture_stop(z[0], z.len as i32, frames, trunc, peak, silent) == 0 {
+        if c_audio_capture_stop(path_buf[..], frames, trunc, peak, silent) == 0 {
             write_text(id_buf, "failed to write WAV to path", true);
             return;
         }

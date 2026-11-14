@@ -11,8 +11,8 @@ let GUI_FD1 = 2;
 let GUI_HDD = 3;
 
 fn gui_settings_path(key: i32) -> u8[>..] {
-    var buffer: u8[520] = [0; 520];
-    let n = c_gui_settings_path(key, buffer[0], 520);
+    var buffer: u8[HOST_PATH_BYTES] = [0; HOST_PATH_BYTES];
+    let n = c_gui_settings_path(key, buffer[0], HOST_PATH_BYTES);
     var path: u8[>..] = [];
     if n > 0 { path.append(buffer[0..n]); }
     return path;

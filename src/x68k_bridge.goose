@@ -1,4 +1,7 @@
 // X68000 Win32 Bridge extern declarations in Goose
+//
+// Every path and file name that crosses here is UTF-8, in both directions.
+let HOST_PATH_BYTES = 800; // room for the longest path C hands back (PATH_CAP in x68k_path.h)
 
 // Slices cross as pointer/64-bit count pairs. Counts are bytes except fb.
 // Borrowed until machine_unbind/destroy; no reference-containing struct crosses.
@@ -24,7 +27,7 @@ extern fn c_io_write_line(data: const u8&, len: i32);
 extern fn c_audio_init() -> i32;
 extern fn c_audio_shutdown();
 
-extern fn win32_ui_init(title: const u8&, title_len: i32, w: i32, h: i32, scale: i32) -> bool;
+extern fn win32_ui_init(title: const u8[:], w: i32, h: i32, scale: i32) -> bool;
 extern fn win32_ui_poll() -> u32;
 extern fn win32_ui_render_fb();
 extern fn win32_ui_is_open() -> bool;
@@ -41,8 +44,8 @@ extern fn c_get_cpu_mhz() -> i32;
 
 extern fn c_host_local_seconds() -> i64;
 
-extern fn c_save_fb_bmp(path: const u8&, path_len: i32) -> i32;
-extern fn c_save_fb_png(path: const u8&, path_len: i32) -> i32;
+extern fn c_save_fb_bmp(path: const u8[:]) -> i32;
+extern fn c_save_fb_png(path: const u8[:]) -> i32;
 // The state that lives in C: the sound chips, the I/O latches and the renderer phase, as one
 // flat image. Only the build that wrote an image can read it.
 extern fn c_native_state_size() -> i64;
@@ -51,17 +54,15 @@ extern fn c_native_state_check(image: const u8[:]) -> i32;
 extern fn c_native_state_load(image: const u8[:]) -> i32;
 extern fn c_audio_capture_start();
 extern fn c_audio_capture_status(active: i32&, frames: i32&, truncated: i32&);
-extern fn c_audio_capture_stop(path: const u8&, path_len: i32, frames: i32&, truncated: i32&, peak: i32&, silent: i32&) -> i32;
+extern fn c_audio_capture_stop(path: const u8[:], frames: i32&, truncated: i32&, peak: i32&, silent: i32&) -> i32;
 extern fn c_opm_shadow_byte(index: i32) -> i32;
 extern fn c_opm_key_on(ch: i32) -> i32;
-extern fn c_host_list_dir(path: const u8&, path_len: i32, out: u8&, cap: i32) -> i32;
+extern fn c_host_list_dir(path: const u8[:], out: u8&, cap: i32) -> i32;
 
 // Native-only compatibility/test helpers. Machine callers use x68k_state.
 // In particular, these do not snapshot Goose MMU/video or CPU metadata.
 
-extern fn x68k_mem_init(sys_dir: const u8&, sys_len: i32) -> i32;
-// Reads up to max_len bytes from the start of a file. The path is in the host's ANSI code page.
-extern fn c_file_read(path: const u8&, path_len: i32, out: u8&, max_len: i32) -> i32;
+extern fn x68k_mem_init(sys_dir: const u8[:]) -> i32;
 // A disk the user picked from the window menu: one of MEDIA_*, with the path for an insert. 0 = none.
 extern fn c_gui_take_media_request(path: u8&, cap: i32, path_len: i32&) -> i32;
 extern fn c_mem_set_ram_mb(mb: i32) -> i32;

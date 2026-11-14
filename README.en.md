@@ -25,6 +25,7 @@ goose_sharp_x68000/
     test_core.goose/.build Unit tests of the core
     x68k_bridge.c/.h      Win32, file I/O, audio output
     x68k_config.c/.h      Loading/saving GUI settings
+    x68k_path.h           Conversion between UTF-8 paths and Win32 wide strings
     sound/                FMGEN, ADPCM, sound source wiring
 ```
 
@@ -96,7 +97,7 @@ For the regular GUI, the priority order is **explicit launch arguments → saved
 - The settings last used in the regular GUI are saved for the next GUI launch.
 - **ARCL (`--mcp`) and headless mode (`--no-window`) neither read nor write GUI settings.** Launch arguments and ARCL operations take priority and are not affected by whatever clock or disk was last used in the GUI.
 
-Example configuration. Paths that are saved automatically are absolute. Relative paths you edit by hand are resolved against the current directory at launch time. The BIOS location can be changed either through this field or via `--system-dir`.
+Example configuration. The file is UTF-8, and paths that are saved automatically are absolute (a file written in ANSI by an earlier version is converted when it is read). Relative paths you edit by hand are resolved against the current directory at launch time. The BIOS location can be changed either through this field or via `--system-dir`.
 
 ```ini
 [gui]
@@ -291,7 +292,6 @@ It prints `320 / 320 checks passed` when everything passes, and reports each fai
 - The current file dialog and path handling have Win32 character-encoding and `MAX_PATH` constraints. If you run into path issues, try testing with a short, alphanumeric folder name.
 - The emulator assumes a single registered machine instance. Core sharing across multiple instances, a mouse, and full compatibility with every VRAM mode/piece of software are unsupported or unverified.
 - CPU tracing (the T bit in SR) takes a trace exception after each instruction. When the instruction itself enters an exception, such as TRAP, no trace exception follows, unlike the real CPU.
-- BIOS files and disk images given as an absolute path containing non-ASCII characters may fail to open. Run from the project folder and use relative paths.
 
 When reporting a bug, please include the build type, Windows environment, launch arguments, image format, reproduction steps, and logs or screenshots. There's no need to attach the BIOS or the game itself.
 

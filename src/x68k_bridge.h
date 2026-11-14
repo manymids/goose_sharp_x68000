@@ -9,6 +9,7 @@
 extern "C" {
 #endif
 
+/* A Goose slice. Paths and file names come as one of these, in UTF-8, without a terminator. */
 typedef struct { uint8_t *data; int64_t len; } X68kByteView;
 typedef struct { uint32_t *data; int64_t len; } X68kPixelView;
 typedef struct {
@@ -37,7 +38,7 @@ void c_audio_discard(void);
 void c_host_input_discard(void);
 
 // Win32 UI & Window management for 512x512 X68000 Display
-bool win32_ui_init(const uint8_t *title, int title_len, int w, int h, int scale);
+bool win32_ui_init(X68kByteView title, int w, int h, int scale);
 uint32_t win32_ui_poll(void);
 void win32_ui_render_fb(void);
 bool win32_ui_is_open(void);
@@ -56,14 +57,12 @@ int c_get_cpu_mhz(void);
 void c_gui_settings_store(void);
 void c_startup_error(void);
 
-// Raw File IO helpers
-int c_file_read(const uint8_t *path, int path_len, void *out_buf, int max_len);
 /* Host local time as seconds since 1970-01-01 of the local calendar. */
 int64_t c_host_local_seconds(void);
 
 // BMP screenshot saver
-int c_save_fb_bmp(const uint8_t *path, int path_len);
-int c_save_fb_png(const uint8_t *path, int path_len);
+int c_save_fb_bmp(X68kByteView path);
+int c_save_fb_png(X68kByteView path);
 /* The state that lives in C (sound chips, I/O latches, renderer phase) as one flat image.
  * x68k_state.goose stores it; load either applies all of it or changes nothing. */
 int64_t c_native_state_size(void);
@@ -72,16 +71,16 @@ int c_native_state_check(X68kByteView in);
 int c_native_state_load(X68kByteView in);
 void c_audio_capture_start(void);
 void c_audio_capture_status(int *active, int *frames, int *truncated);
-int c_audio_capture_stop(const uint8_t *path, int path_len, int *frames, int *truncated, int *peak, int *silent);
+int c_audio_capture_stop(X68kByteView path, int *frames, int *truncated, int *peak, int *silent);
 int c_opm_shadow_byte(int index);
 int c_opm_key_on(int ch);
-int c_host_list_dir(const uint8_t *path, int path_len, char *out, int cap);
+int c_host_list_dir(X68kByteView path, char *out, int cap);
 
 // ARCL Hardware State Save/Load
 /* Native-only helpers; machine checkpoints are coordinated by x68k_state. */
 
 // Hardware Memory Buffer management
-int x68k_mem_init(const uint8_t *sys_dir, int sys_len);
+int x68k_mem_init(X68kByteView sys_dir);
 int c_mem_set_ram_mb(int32_t mb);
 int32_t c_ram_size(void);
 void c_ram_limit_bind(int32_t *slot);

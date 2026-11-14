@@ -3,11 +3,9 @@
 // イメージはメモリに読み込んで使い、ホストのファイルへは書き戻さない。ドライブごとの状態
 // (種類、ヘッド位置、挿抜の通知) は DiskState にまとめてあり、チェックポイントにそのまま入る。
 // イメージ本体は大きさが実行時に決まるので、伸長配列のグローバルに置く。
-//
-// ファイルを開くところだけは C (c_file_read) に残してある。メニューのファイル選択と INI は
-// パスを ANSI で渡してくるが、標準ライブラリの read_file は UTF-8 として開くためである。
 
 import std;
+import os;
 import .x68k_bridge;
 import .x68k_config;
 namespace disk;
@@ -116,11 +114,10 @@ fn path_is_hdd(path: const u8[:]) -> bool {
     return exact && (ext == "hdf" || ext == "hds");
 }
 
-// ファイルの先頭から最大 limit バイトを out に読む。読めた長さを返す。
+// ファイルを out に読む。使う長さ (limit を超える分は切り捨てる) を返す。読めなければ 0。
 fn read_image(path: const u8[:], limit: i64, out: u8[>..]&) -> i64 {
-    if path.len == 0 { return 0; }
-    out.resize(limit, 0);
-    return c_file_read(path[0], path.len as i32, out[0], limit as i32);
+    if path.len == 0 || !read_file(path, out) { return 0; }
+    return min(out.len, limit);
 }
 
 fn replace(image: u8[>..]&, bytes: const u8[:]) {
@@ -156,6 +153,7 @@ fn fd_load(drive: i32, path: const u8[:]) -> bool {
     if n <= 0 { return false; }
     if !xdf && (n > FDD_MAX_IMAGE || n < 16) { return false; }
     // XDF は短いファイルでも 2HD の大きさまで 0 で埋めて持つ。
+    if xdf && file.len < FDD_XDF_BYTES { file.resize(FDD_XDF_BYTES, 0); }
     let size = if xdf { FDD_XDF_BYTES } else { n };
     if drive == 0 { replace(g_fd0, file[..size]); } else { replace(g_fd1, file[..size]); }
 
