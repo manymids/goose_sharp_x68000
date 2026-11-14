@@ -754,6 +754,33 @@ fn test_disk_hdd_and_media() {
     check("power on empties every drive", !disk::fd_loaded(0) && !disk::hdd_loaded() && !g_disk.media_pending);
 }
 
+// 8255 ポート C と OPM の控え。どちらも MMU が持ち、チェックポイントに入る。
+fn test_io_latches() {
+    g_mmu.init();
+    check_eq("pia: port C after reset", g_mmu.read8(0xE9A005), 0x0B);
+    g_mmu.write8(0xE9A005, 0x35);
+    check_eq("pia: port C reads back", g_mmu.read8(0xE9A005), 0x35);
+    g_mmu.write8(0xE9A007, 0x03); // bit 1 を 1 に
+    check_eq("pia: bit set", g_mmu.read8(0xE9A005), 0x37);
+    g_mmu.write8(0xE9A007, 0x08); // bit 4 を 0 に
+    check_eq("pia: bit reset", g_mmu.read8(0xE9A005), 0x27);
+    g_mmu.write8(0xE9A007, 0x81); // bit 7 が立っていればモード設定で、ポート C は変わらない
+    check_eq("pia: a mode word leaves port C", g_mmu.read8(0xE9A005), 0x27);
+
+    g_mmu.write8(0xE90001, 0x18);
+    g_mmu.write8(0xE90003, 0xC4);
+    check_eq("opm: register value is kept", g_mmu.opm.regs[0x18], 0xC4);
+    g_mmu.write8(0xE90001, 0x08);
+    g_mmu.write8(0xE90003, 0x7B); // チャンネル 3、スロット 4 つともキーオン
+    check_eq("opm: key-on slots of the channel", g_mmu.opm.key_on[3], 0x0F);
+    g_mmu.write8(0xE90003, 0x03); // 同じチャンネルをキーオフ
+    check_eq("opm: key off", g_mmu.opm.key_on[3], 0);
+    check_eq("opm: other channels untouched", g_mmu.opm.key_on[2], 0);
+
+    g_mmu.init();
+    check("a reset clears the latches", g_mmu.pia_c == 0x0B && g_mmu.opm.regs[0x18] == 0 && g_mmu.opm.addr == 0);
+}
+
 fn main() {
     test_flag_helpers();
     test_conditions();
@@ -773,6 +800,7 @@ fn main() {
     test_disk_dim();
     test_disk_d88();
     test_disk_hdd_and_media();
+    test_io_latches();
     print(g_checks - g_failures, " / ", g_checks, " checks passed");
     if g_failures > 0 { exit(1); }
 }

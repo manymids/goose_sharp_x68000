@@ -218,8 +218,6 @@ static void screen_publish(void) {
     if (g_screen_w_slot) *g_screen_w_slot = g_src_w;
     if (g_screen_h_slot) *g_screen_h_slot = g_src_h;
 }
-/* 0: full composite. 1: clear+GVRAM only (sprites follow per scanline). 2: text only. */
-static int g_ppu_phase = 0;
 
 // Helper to find and load ROM file with multiple candidate directories
 static int load_rom_file(const char *filename, const char *sys_dir, void *buf, int size) {
@@ -909,6 +907,10 @@ int c_get_cpu_mhz(void) {
     return g_cpu_mhz;
 }
 
+int c_cpu_mhz_ok(int mhz) {
+    return cpu_clock_index(mhz) >= 0;
+}
+
 void c_gui_settings_store(void) {
     c_gui_settings_set_int(GUI_CLOCK, g_cpu_mhz);
     c_gui_settings_set_int(GUI_SCALE, g_scale);
@@ -1553,76 +1555,31 @@ int c_save_fb_png(X68kByteView path_bytes) {
 }
 
 // -----------------------------------------------------------------------------
-// The part of a checkpoint that lives in C: the sound chips, the I/O latches and the
-// renderer phase, as one flat image. x68k_state.goose keeps the image next to the RAM and
-// disk images and owns the slots; nothing is retained here.
+// The part of a checkpoint that lives in C++: the sound chips (fmgen OPM, ADPCM), as one
+// flat image. x68k_state.goose keeps the image next to the RAM and disk images and owns
+// the slots; nothing is retained here.
 // -----------------------------------------------------------------------------
-#define NATIVE_STATE_MAGIC 0x324E3658u /* "X6N2" */
-
-typedef struct {
-    int cpu_mhz;
-    uint8_t pia_c;
-    uint8_t joy_strobe[2];
-    int opm_addr;
-    uint8_t opm_shadow[256];
-    uint8_t opm_key_on[8];
-} ArclIoLatches;
-
-typedef struct {
-    uint32_t magic;
-    uint32_t header_bytes;
-    int32_t sound_bytes;
-    int32_t ppu_phase;
-    ArclIoLatches io;
-} NativeState;
-
-static void io_latches_save(ArclIoLatches *state);
-static void io_latches_load(const ArclIoLatches *state);
-static void opm_shadow_reset(void);
-
-int64_t c_native_state_size(void) {
-    int sn = x68k_sound_state_size();
-    return sn > 0 ? (int64_t)sizeof(NativeState) + sn : 0;
+int64_t c_sound_state_size(void) {
+    int n = x68k_sound_state_size();
+    return n > 0 ? n : 0;
 }
 
-// Fills out, which must be exactly c_native_state_size() bytes. Returns 1 on success.
-int c_native_state_save(X68kByteView out) {
-    NativeState h;
-    int sn = x68k_sound_state_size();
-    if (sn <= 0 || !out.data || out.len != (int64_t)sizeof(h) + sn) return 0;
-    memset(&h, 0, sizeof(h));
-    h.magic = NATIVE_STATE_MAGIC;
-    h.header_bytes = (uint32_t)sizeof(h);
-    h.sound_bytes = sn;
-    h.ppu_phase = g_ppu_phase;
-    io_latches_save(&h.io);
-    memcpy(out.data, &h, sizeof(h));
-    return x68k_sound_state_save(out.data + sizeof(h), sn) ? 1 : 0;
+// Fills out, which must be exactly c_sound_state_size() bytes. Returns 1 on success.
+int c_sound_state_save(X68kByteView out) {
+    int n = x68k_sound_state_size();
+    if (n <= 0 || !out.data || out.len != n) return 0;
+    return x68k_sound_state_save(out.data, n) ? 1 : 0;
 }
 
-static int native_state_read(X68kByteView in, NativeState *h) {
-    if (!in.data || in.len < (int64_t)sizeof(*h)) return 0;
-    memcpy(h, in.data, sizeof(*h));
-    if (h->magic != NATIVE_STATE_MAGIC || h->header_bytes != sizeof(*h)) return 0;
-    if (h->sound_bytes <= 0 || in.len != (int64_t)sizeof(*h) + h->sound_bytes) return 0;
-    if (cpu_clock_index(h->io.cpu_mhz) < 0 || h->io.opm_addr < 0 || h->io.opm_addr > 255) return 0;
-    return x68k_sound_state_check(in.data + sizeof(*h), h->sound_bytes) ? 1 : 0;
-}
-
-int c_native_state_check(X68kByteView in) {
-    NativeState h;
-    return native_state_read(in, &h);
+int c_sound_state_check(X68kByteView in) {
+    if (!in.data || in.len <= 0 || in.len > INT32_MAX) return 0;
+    return x68k_sound_state_check(in.data, (int)in.len) ? 1 : 0;
 }
 
 // Either applies the whole image or changes nothing.
-int c_native_state_load(X68kByteView in) {
-    NativeState h;
-    if (!native_state_read(in, &h)) return 0;
-    // The checked sound loader can fail only before applying its state.
-    if (!x68k_sound_state_load(in.data + sizeof(h), h.sound_bytes)) return 0;
-    g_ppu_phase = h.ppu_phase;
-    io_latches_load(&h.io);
-    return 1;
+int c_sound_state_load(X68kByteView in) {
+    if (!c_sound_state_check(in)) return 0;
+    return x68k_sound_state_load(in.data, (int)in.len) ? 1 : 0;
 }
 
 #define AUDIO_CAP_RATE 44100
@@ -1724,15 +1681,6 @@ void c_sound_cleanup(void) {
     x68k_sound_cleanup();
 }
 
-static uint8_t g_opm_shadow[256];
-static int g_opm_addr = 0;
-static uint8_t g_opm_key_on[8];
-
-static void opm_shadow_reset(void) {
-    memset(g_opm_shadow, 0, sizeof(g_opm_shadow));
-    memset(g_opm_key_on, 0, sizeof(g_opm_key_on));
-    g_opm_addr = 0;
-}
 static uint32_t s_opm_w_count = 0;
 static uint32_t s_adpcm_w_count = 0;
 static int32_t s_peak_sample = 0;
@@ -1740,22 +1688,7 @@ static uint32_t s_total_rendered_samples = 0;
 
 void c_sound_opm_write(uint32_t addr, uint8_t val) {
     s_opm_w_count++;
-    if ((addr & 1) == 0) g_opm_addr = val & 255;
-    else {
-        g_opm_shadow[g_opm_addr] = val;
-        if (g_opm_addr == 0x08) g_opm_key_on[val & 7] = (uint8_t)((val >> 3) & 15);
-    }
     x68k_sound_opm_write(addr, val);
-}
-
-int c_opm_shadow_byte(int index) {
-    if (index < 0 || index > 255) return 0;
-    return g_opm_shadow[index];
-}
-
-int c_opm_key_on(int ch) {
-    if (ch < 0 || ch > 7) return 0;
-    return g_opm_key_on[ch];
 }
 
 uint8_t c_sound_opm_read(uint32_t addr) {
@@ -1775,15 +1708,8 @@ void c_sound_adpcm_set_pan(uint8_t pan) {
     x68k_sound_adpcm_set_pan(pan);
 }
 
-static uint8_t g_pia_c = 0x0b;
-static uint8_t g_joy_strobe[2];
-
 void c_machine_reset_devices(void) {
     c_sound_reset();
-    opm_shadow_reset();
-    g_pia_c = 0x0b;
-    memset(g_joy_strobe, 0, sizeof(g_joy_strobe));
-    g_ppu_phase = 0;
     c_host_input_discard();
     c_audio_discard();
 }
@@ -1801,50 +1727,6 @@ void c_audio_discard(void) {
     memset(g_audio_busy, 0, sizeof(g_audio_busy));
     g_audio_hold_n = 0;
     g_cur_buf = 0;
-}
-
-static void io_latches_save(ArclIoLatches *state) {
-    state->cpu_mhz = g_cpu_mhz;
-    state->pia_c = g_pia_c;
-    memcpy(state->joy_strobe, g_joy_strobe, sizeof(g_joy_strobe));
-    state->opm_addr = g_opm_addr;
-    memcpy(state->opm_shadow, g_opm_shadow, sizeof(g_opm_shadow));
-    memcpy(state->opm_key_on, g_opm_key_on, sizeof(g_opm_key_on));
-}
-
-static void io_latches_load(const ArclIoLatches *state) {
-    c_set_cpu_mhz(state->cpu_mhz);
-    // Sound has already restored ADPCM pan/clock. Do not replay port writes.
-    g_pia_c = state->pia_c;
-    memcpy(g_joy_strobe, state->joy_strobe, sizeof(g_joy_strobe));
-    g_opm_addr = state->opm_addr;
-    memcpy(g_opm_shadow, state->opm_shadow, sizeof(g_opm_shadow));
-    memcpy(g_opm_key_on, state->opm_key_on, sizeof(g_opm_key_on));
-}
-
-static void pia_set_portc(uint8_t next) {
-    uint8_t prev = g_pia_c;
-    g_pia_c = next;
-    if ((prev & 0x0f) != (next & 0x0f)) c_sound_adpcm_set_pan(next & 0x0f);
-    if ((prev & 0x10) != (next & 0x10)) g_joy_strobe[0] = (next & 0x10) ? 0xff : 0x00;
-    if ((prev & 0x20) != (next & 0x20)) g_joy_strobe[1] = (next & 0x20) ? 0xff : 0x00;
-}
-
-void c_pia_write(int32_t adr, uint8_t data) {
-    if (adr == 0x00E9A005) {
-        pia_set_portc(data);
-    } else if (adr == 0x00E9A007 && (data & 0x80) == 0) {
-        uint8_t bit = (uint8_t)((data >> 1) & 7);
-        uint8_t mask = (uint8_t)(1u << bit);
-        uint8_t next = g_pia_c;
-        if (data & 1) next = (uint8_t)(next | mask);
-        else next = (uint8_t)(next & (uint8_t)~mask);
-        pia_set_portc(next);
-    }
-}
-
-uint8_t c_pia_read_c(void) {
-    return g_pia_c;
 }
 
 void c_sound_scanline_timer(uint32_t cycles) {

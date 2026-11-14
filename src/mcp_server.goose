@@ -2213,10 +2213,10 @@ fn tool_dma(emu: X68kEmulator&, args: const u8[:], id_buf: const u8[:]) {
 
 fn tool_opm(emu: X68kEmulator&, args: const u8[:], id_buf: const u8[:]) {
     var obj: u8[>..] = [];
-    format(obj, "{\"lfo\":{\"freq\":", c_opm_shadow_byte(0x18), "},\"channels\":[");
+    format(obj, "{\"lfo\":{\"freq\":", emu.mmu.opm.regs[0x18], "},\"channels\":[");
     for ch in 8 {
         if ch != 0 { obj.append(","); }
-        format(obj, "{\"ch\":", ch, ",\"key_on_mask\":", c_opm_key_on(ch as i32), "}");
+        format(obj, "{\"ch\":", ch, ",\"key_on_mask\":", emu.mmu.opm.key_on[ch], "}");
     }
     obj.append("]");
     append_machine(obj, emu, 0, false, true);

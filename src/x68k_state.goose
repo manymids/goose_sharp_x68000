@@ -2,7 +2,7 @@
 //
 // 1 件は 2 つの部分からなる。
 //   X68kCheckpoint   大きさの決まった状態 (CPU、MMU とその中の各デバイス、ディスクドライブ)
-//   blob             大きさが実行時に決まるバイト列。RAM、SRAM、C 側の状態 (音源と I/O ラッチ)、
+//   blob             大きさが実行時に決まるバイト列。RAM、SRAM、音源の状態 (C++ 側が作るバイト列)、
 //                    FD0、FD1、HDD のイメージをこの順に並べたもの
 // blob は 1 つのスライスプールから切り出す。巻き戻しのように保存と破棄を繰り返しても、
 // 空いた区間が次の保存に使い回される。
@@ -21,29 +21,30 @@ namespace state;
 let ::STATE_SLOT = 0;
 let ::STATE_SNAPSHOT = 1;
 let ::STATE_REWIND = 2;
+// v5: 8255 ポート C と OPM の控えを MMU へ移した。C 側に残る状態は音源だけ。
 // v4: ディスクの状態とイメージの置き場所を Goose 側へ移した。v3: FDC の相が enum。
 // 版の違う記録は読めない。
-let ::STATE_VERSION = 4;
+let ::STATE_VERSION = 5;
 
-let NATIVE_MAX_BYTES = 67108864; // C 側の状態の上限 (64 MB)。壊れた記録を弾くための値
+let SOUND_MAX_BYTES = 67108864; // 音源の状態の上限 (64 MB)。壊れた記録を弾くための値
 
 // blob の内訳。この順に並ぶ。
 struct BlobLayout {
     ram_bytes: i64 = 0,
-    native_bytes: i64 = 0,
+    sound_bytes: i64 = 0,
     image_bytes: i64[DISK_IMAGES] = [0; DISK_IMAGES],
 }
 
 let SECTION_RAM = 0;
 let SECTION_SRAM = 1;
-let SECTION_NATIVE = 2;
+let SECTION_SOUND = 2;
 let SECTION_IMAGES = 3; // ここから DISK_IMAGES 個
 let SECTIONS = 6;
 
 fn section_bytes(layout: BlobLayout&, which: i64) -> i64 {
     if which == SECTION_RAM { return layout.ram_bytes; }
     if which == SECTION_SRAM { return SRAM_BYTES; }
-    if which == SECTION_NATIVE { return layout.native_bytes; }
+    if which == SECTION_SOUND { return layout.sound_bytes; }
     return layout.image_bytes[which - SECTION_IMAGES];
 }
 
@@ -120,10 +121,11 @@ fn saved(bank: i32, idx: i32) -> bool {
 fn record_ok(r: X68kCheckpoint&, blob: u8[:]) -> bool {
     let layout .= r.layout;
     if layout.ram_bytes != x68k_ram_limit() { return false; }
-    if layout.native_bytes <= 0 || layout.native_bytes > NATIVE_MAX_BYTES { return false; }
+    if layout.sound_bytes <= 0 || layout.sound_bytes > SOUND_MAX_BYTES { return false; }
+    if c_cpu_mhz_ok(r.clock_mhz) == 0 { return false; }
     if !disk::state_ok(r.disk, layout.image_bytes) { return false; }
     if blob.len != total_bytes(layout) { return false; }
-    return c_native_state_check(section(layout, blob, SECTION_NATIVE)) != 0;
+    return c_sound_state_check(section(layout, blob, SECTION_SOUND)) != 0;
 }
 
 fn validate(bank: i32, idx: i32) -> bool {
@@ -149,9 +151,9 @@ fn capture(emu: X68kEmulator&, bank: i32, idx: i32) -> bool {
     let at = index(bank, idx);
     if at < 0 { return false; }
 
-    var layout = BlobLayout { ram_bytes: x68k_ram_limit(), native_bytes: c_native_state_size() };
+    var layout = BlobLayout { ram_bytes: x68k_ram_limit(), sound_bytes: c_sound_state_size() };
     for which in DISK_IMAGES { layout.image_bytes[which] = disk::image_bytes(which); }
-    if layout.native_bytes <= 0 { return false; }
+    if layout.sound_bytes <= 0 { return false; }
 
     // 先に新しい blob を作る。失敗したら前の内容がそのまま残る。
     let previous = g_spans[at];
@@ -161,7 +163,7 @@ fn capture(emu: X68kEmulator&, bank: i32, idx: i32) -> bool {
     for which in DISK_IMAGES {
         copy_into(section(layout, blob, SECTION_IMAGES + which), disk::image(which));
     }
-    if c_native_state_save(section(layout, blob, SECTION_NATIVE)) == 0 {
+    if c_sound_state_save(section(layout, blob, SECTION_SOUND)) == 0 {
         g_blob_pool.free_slice(blob);
         g_spans[at] = previous;
         return false;
@@ -190,8 +192,8 @@ fn restore(emu: X68kEmulator&, bank: i32, idx: i32) -> bool {
     let slot .= g_checkpoints[at];
     let blob = blob_of(at);
     let layout .= slot.layout;
-    // C 側は、失敗するなら何も変えずに失敗する。ここを過ぎたら最後まで戻す。
-    if c_native_state_load(section(layout, blob, SECTION_NATIVE)) == 0 { return false; }
+    // 音源は、失敗するなら何も変えずに失敗する。ここを過ぎたら最後まで戻す。
+    if c_sound_state_load(section(layout, blob, SECTION_SOUND)) == 0 { return false; }
     copy_into(g_x68k_ram[..layout.ram_bytes], section(layout, blob, SECTION_RAM));
     copy_into(g_sram[..], section(layout, blob, SECTION_SRAM));
     disk::restore(slot.disk, section(layout, blob, SECTION_IMAGES), section(layout, blob, SECTION_IMAGES + 1),
@@ -202,6 +204,7 @@ fn restore(emu: X68kEmulator&, bank: i32, idx: i32) -> bool {
     emu.total_cycles = slot.total_cycles;
     emu.clk_used = slot.clk_used;
     x68k_sram_set_write_enable(slot.sram_we);
+    c_set_cpu_mhz(slot.clock_mhz); // ウィンドウのメニューの印もここで合う
     emu.clock_mhz = slot.clock_mhz;
     emu.is_paused = true;
     // Discard host events only after commit; keep restored MFP/joy machine data.
@@ -244,7 +247,7 @@ fn total(bank: i32) -> i64 {
 // ファイルは次の 3 つを並べたもの:
 //   1. StateFileHeader 1 件   種別、版、後続 2 つの大きさとチェックサム
 //   2. X68kCheckpoint 1 件    大きさの決まった状態
-//   3. blob                   RAM、SRAM、C 側の状態、FD / HDD イメージ。ファイルの終わりまで
+//   3. blob                   RAM、SRAM、音源の状態、FD / HDD イメージ。ファイルの終わりまで
 // 1 と 2 は to_bytes で書き、from_bytes で読む。from_bytes は長さや enum のタグを確かめてから
 // 値にするので、壊れたファイルから不正な状態は入らない。内容の改変は検出しないため、
 // チェックサムを自前で持つ。値の範囲は record_ok で確かめる。

@@ -16,6 +16,14 @@ let ::PCG8_BYTES = 16384;    // 8x8 パターンを 1 ドット 1 バイトに�
 let ::PCG16_BYTES = 65536;   // 16x16 パターンを 1 ドット 1 バイトに展開したもの
 let ::VRAM_BYTES = 524288;    // TVRAM と GVRAM はそれぞれ 512 KB
 
+// YM2151 に書いた値の控え。音源そのものは C++ (fmgen) にあり、状態を読み返す手段が無いので、
+// ツール (arcl_opm) が見るぶんをここに残す。
+struct OpmShadow {
+    addr: u8 = 0,              // $E90001 に最後に書いたレジスタ番号
+    regs: u8[256] = [0; 256],  // レジスタごとの最後の書き込み値
+    key_on: u8[8] = [0; 8],    // チャンネルごとのキーオン中のスロット (レジスタ $08 の bit 3-6)
+}
+
 struct M68kMMU {
     reset_overlay: bool = true,
     crtc_regs: u8[64] = [0; 64],
@@ -43,6 +51,8 @@ struct M68kMMU {
     sysport_cputype: u8 = 0xFF, // 68000, 10MHz (px68k sysport.c)
     joy1: u8 = 0xFF,
     joy2: u8 = 0xFF,
+    pia_c: u8 = 0x0B,           // 8255 ポート C。bit 0-3 が ADPCM のパンとサンプリング周波数
+    opm: OpmShadow = OpmShadow {},
     // 68000 group 0 exceptions. Checks apply only while the CPU runs an instruction.
     cpu_access: bool = false,
     user_mode: bool = false,
@@ -82,6 +92,13 @@ fn crtc_word(mmu: M68kMMU&, hi: i32) -> i32 {
 }
 
 // 機械のリセット。電池で保持される RTC だけを残し、VRAM やパレットも含めてほかは既定値に戻す。
+// ポート C を書き換える。下位 4 ビットが変わったときだけ ADPCM へ伝える。
+fn set_pia_c(mmu: M68kMMU&, next: u8) {
+    let changed = mmu.pia_c ^ next;
+    mmu.pia_c = next;
+    if (changed & 0x0F) != 0 { c_sound_adpcm_set_pan(next & 0x0F); }
+}
+
 fn init(mmu: M68kMMU&) {
     mmu = M68kMMU { rtc: mmu.rtc, .. };
     mmu.mfp.init(); // MFP のレジスタは 0 ではない初期値を持つ
@@ -516,7 +533,7 @@ fn io_read8(mmu: M68kMMU&, a: u32) -> u8 {
     if (a & 0xFFFF00) == 0xE9A000 {
         if a == 0xE9A001 { return mmu.joy1; }
         if a == 0xE9A003 { return mmu.joy2; }
-        if a == 0xE9A005 { return c_pia_read_c(); }
+        if a == 0xE9A005 { return mmu.pia_c; }
         return 0xFF;
     }
 
@@ -712,8 +729,11 @@ fn io_write8(mmu: M68kMMU&, a: u32, val: u8) {
     // 0x00E90000 - 0x00E90003: OPM (YM2151)
     if (a & 0xFFFF00) == 0xE90000 {
         if a == 0xE90001 {
+            mmu.opm.addr = val;
             c_sound_opm_write(0, val);
         } else if a == 0xE90003 {
+            mmu.opm.regs[mmu.opm.addr] = val;
+            if mmu.opm.addr == 0x08 { mmu.opm.key_on[val & 7] = (val >> 3) & 15; }
             c_sound_opm_write(1, val);
         }
         return;
@@ -756,8 +776,12 @@ fn io_write8(mmu: M68kMMU&, a: u32, val: u8) {
 
     // 0x00E9A000 - 0x00E9A007: JoyPort / PIA (8255)
     if (a & 0xFFFF00) == 0xE9A000 {
-        if a == 0xE9A005 || a == 0xE9A007 {
-            c_pia_write(a as i32, val);
+        if a == 0xE9A005 {
+            mmu.set_pia_c(val);
+        } else if a == 0xE9A007 && (val & 0x80) == 0 {
+            // ビットセット / リセット: bit 1-3 がポート C のビット番号、bit 0 が値
+            let mask: u8 = 1 << ((val >> 1) & 7);
+            mmu.set_pia_c(if (val & 1) != 0 { mmu.pia_c | mask } else { mmu.pia_c & ~mask });
         }
         return;
     }

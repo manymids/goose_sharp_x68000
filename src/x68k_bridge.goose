@@ -41,22 +41,20 @@ extern fn win32_ui_get_key_scancode() -> i32;
 extern fn c_host_joy_byte() -> i32;
 extern fn c_set_cpu_mhz(mhz: i32) -> i32;
 extern fn c_get_cpu_mhz() -> i32;
+extern fn c_cpu_mhz_ok(mhz: i32) -> i32;
 
 extern fn c_host_local_seconds() -> i64;
 
 extern fn c_save_fb_bmp(path: const u8[:]) -> i32;
 extern fn c_save_fb_png(path: const u8[:]) -> i32;
-// The state that lives in C: the sound chips, the I/O latches and the renderer phase, as one
-// flat image. Only the build that wrote an image can read it.
-extern fn c_native_state_size() -> i64;
-extern fn c_native_state_save(out: u8[:]) -> i32;
-extern fn c_native_state_check(image: const u8[:]) -> i32;
-extern fn c_native_state_load(image: const u8[:]) -> i32;
+// The sound chips' state as one flat image. Only the build that wrote an image can read it.
+extern fn c_sound_state_size() -> i64;
+extern fn c_sound_state_save(out: u8[:]) -> i32;
+extern fn c_sound_state_check(image: const u8[:]) -> i32;
+extern fn c_sound_state_load(image: const u8[:]) -> i32;
 extern fn c_audio_capture_start();
 extern fn c_audio_capture_status(active: i32&, frames: i32&, truncated: i32&);
 extern fn c_audio_capture_stop(path: const u8[:], frames: i32&, truncated: i32&, peak: i32&, silent: i32&) -> i32;
-extern fn c_opm_shadow_byte(index: i32) -> i32;
-extern fn c_opm_key_on(ch: i32) -> i32;
 extern fn c_host_list_dir(path: const u8[:], out: u8&, cap: i32) -> i32;
 
 // Native-only compatibility/test helpers. Machine callers use x68k_state.
@@ -81,8 +79,6 @@ extern fn c_mem_read_sprite(off: i32) -> u8;
 
 extern fn c_mem_read_bg_reg(off: i32) -> u8;
 
-extern fn c_pia_write(adr: i32, data: u8);
-extern fn c_pia_read_c() -> u8;
 extern fn c_line_zero(grp: u16&, mix: u8&, sp: u16&, sp2: u16&, bg: u16&, tr: u8&);
 
 extern fn c_set_screen_mode(w: i32, h: i32);
@@ -97,6 +93,7 @@ extern fn c_sound_opm_write(addr: u32, val: u8);
 extern fn c_sound_opm_read(addr: u32) -> u8;
 extern fn c_sound_adpcm_write(addr: u32, val: u8);
 extern fn c_sound_adpcm_read(addr: u32) -> u8;
+extern fn c_sound_adpcm_set_pan(pan: u8);
 extern fn c_sound_scanline_timer(cycles: u32);
 extern fn c_sound_frame_update(samples: i32);
 extern fn c_sound_poll_irq() -> i32;

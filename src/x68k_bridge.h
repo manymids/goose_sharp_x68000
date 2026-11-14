@@ -54,6 +54,7 @@ void c_host_joy_reset(void);
 int c_host_joy_byte(void);
 int c_set_cpu_mhz(int mhz);
 int c_get_cpu_mhz(void);
+int c_cpu_mhz_ok(int mhz);
 void c_gui_settings_store(void);
 void c_startup_error(void);
 
@@ -63,17 +64,15 @@ int64_t c_host_local_seconds(void);
 // BMP screenshot saver
 int c_save_fb_bmp(X68kByteView path);
 int c_save_fb_png(X68kByteView path);
-/* The state that lives in C (sound chips, I/O latches, renderer phase) as one flat image.
- * x68k_state.goose stores it; load either applies all of it or changes nothing. */
-int64_t c_native_state_size(void);
-int c_native_state_save(X68kByteView out);
-int c_native_state_check(X68kByteView in);
-int c_native_state_load(X68kByteView in);
+/* The sound chips' state as one flat image. x68k_state.goose stores it; load either
+ * applies all of it or changes nothing. */
+int64_t c_sound_state_size(void);
+int c_sound_state_save(X68kByteView out);
+int c_sound_state_check(X68kByteView in);
+int c_sound_state_load(X68kByteView in);
 void c_audio_capture_start(void);
 void c_audio_capture_status(int *active, int *frames, int *truncated);
 int c_audio_capture_stop(X68kByteView path, int *frames, int *truncated, int *peak, int *silent);
-int c_opm_shadow_byte(int index);
-int c_opm_key_on(int ch);
 int c_host_list_dir(X68kByteView path, char *out, int cap);
 
 // ARCL Hardware State Save/Load
