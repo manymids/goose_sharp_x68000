@@ -1629,10 +1629,7 @@ fn tool_mount(emu: X68kEmulator&, args: const u8[:], id_buf: const u8[:]) {
             write_text(id_buf, "insert requires a string field 'path'", true);
             return;
         }
-        var path_null: u8[>..] = [];
-        path_null.append(path_buf);
-        path_null.push('\0');
-        if c_fdd_load_file(1, path_null[0], path_null.len as i32) == 0 {
+        if !disk::fd_load(1, path_buf[..]) {
             write_text(id_buf, "the core rejected the disk image (bad path or unsupported format)", true);
             return;
         }
@@ -1646,7 +1643,7 @@ fn tool_mount(emu: X68kEmulator&, args: const u8[:], id_buf: const u8[:]) {
         return;
     }
     if act_buf == "eject" {
-        c_fdd_eject(1);
+        disk::fd_eject(1);
         var obj: u8[>..] = [];
         obj.append("{\"action\":\"eject\"");
         append_machine(obj, emu, 0, false, true);

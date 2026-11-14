@@ -15,7 +15,7 @@ typedef struct {
     X68kByteView ram, ipl, cgrom, sram, tvram, gvram, pal, vc;
     X68kByteView sprite, bgreg, bgram, chr8, chr16;
     X68kPixelView fb;
-    int32_t *ram_limit, *screen_w, *screen_h, *dma_vec, *media_irq;
+    int32_t *ram_limit, *screen_w, *screen_h, *dma_vec;
 } X68kHostViews;
 // One active borrowed machine. Validate every view before changing registration.
 // Keep MMU/PPU owners at a stable address until replacement/unbind/destroy;
@@ -23,7 +23,7 @@ typedef struct {
 uint64_t c_machine_bind(X68kByteView ram, X68kByteView ipl, X68kByteView cgrom, X68kByteView sram,
     X68kByteView tvram, X68kByteView gvram, X68kByteView pal, X68kByteView vc, X68kByteView sprite,
     X68kByteView bgreg, X68kByteView bgram, X68kByteView chr8, X68kByteView chr16, X68kPixelView fb,
-    int32_t *ram_limit, int32_t *screen_w, int32_t *screen_h, int32_t *dma_vec, int32_t *media_irq);
+    int32_t *ram_limit, int32_t *screen_w, int32_t *screen_h, int32_t *dma_vec);
 int c_machine_unbind(uint64_t epoch); // Stale epochs cannot detach a newer owner.
 uint64_t c_machine_epoch(void);
 void c_machine_reset_devices(void);
@@ -64,13 +64,12 @@ int64_t c_host_local_seconds(void);
 // BMP screenshot saver
 int c_save_fb_bmp(const uint8_t *path, int path_len);
 int c_save_fb_png(const uint8_t *path, int path_len);
-int c_extra_bytes(int bank, int idx);
-int c_state_capture(int bank, int idx);
-int c_state_validate(int bank, int idx);
-int c_state_restore(int bank, int idx);
-uint64_t c_state_generation(int bank, int idx);
-void c_state_drop(int bank, int idx);
-int c_state_bytes(int bank, int idx);
+/* The state that lives in C (sound chips, I/O latches, renderer phase) as one flat image.
+ * x68k_state.goose stores it; load either applies all of it or changes nothing. */
+int64_t c_native_state_size(void);
+int c_native_state_save(X68kByteView out);
+int c_native_state_check(X68kByteView in);
+int c_native_state_load(X68kByteView in);
 void c_audio_capture_start(void);
 void c_audio_capture_status(int *active, int *frames, int *truncated);
 int c_audio_capture_stop(const uint8_t *path, int path_len, int *frames, int *truncated, int *peak, int *silent);
@@ -82,7 +81,7 @@ int c_host_list_dir(const uint8_t *path, int path_len, char *out, int cap);
 /* Native-only helpers; machine checkpoints are coordinated by x68k_state. */
 
 // Hardware Memory Buffer management
-int x68k_mem_init(const uint8_t *sys_dir, int sys_len, const uint8_t *floppy_path, int floppy_len);
+int x68k_mem_init(const uint8_t *sys_dir, int sys_len);
 int c_mem_set_ram_mb(int32_t mb);
 int32_t c_ram_size(void);
 void c_ram_limit_bind(int32_t *slot);
@@ -90,9 +89,6 @@ void c_ram_bind(uint8_t *ram);
 uint8_t *c_ram_base(void);
 void x68k_mem_destroy(void);
 void c_sram_set_persist(int enabled);
-int64_t c_state_export_size(int bank, int idx);
-int64_t c_state_export(int bank, int idx, X68kByteView out);
-int c_state_import(int bank, int idx, X68kByteView in);
 
 uint8_t c_mem_read_tvram(int32_t off);
 
@@ -115,25 +111,9 @@ void c_ipl_bind(uint8_t *ipl);
 void c_cgrom_bind(uint8_t *cgrom);
 void c_sram_bind(uint8_t *sram);
 
-// Floppy disk helpers (FD0, FD1)
-int c_fdd_load_file(int32_t drive, const uint8_t *path, int path_len);
-void c_fdd_eject(int32_t drive);
-void c_fdd_media_reset(void);
-void c_fdd_set_media_enable(int32_t enable);
-void c_fdd_media_tick(int32_t enable);
-void c_fdd_ack_media_irq(void);
-bool c_fdd_is_loaded(int32_t drive);
-
-// Hard disk helpers (HDD0)
-int c_hdd_load_file(int32_t drive, const uint8_t *path, int path_len);
-void c_hdd_eject(int32_t drive);
-bool c_hdd_is_loaded(int32_t drive);
-/* One 256-byte sector of the RAM image. 1 = copied, 0 = past the image, -1 = no image.
- * Does not write the host file and does not change SASI phase. */
-int c_hdd_read_sector(uint32_t sector, uint8_t *dst);
-int c_hdd_write_sector(uint32_t sector, const uint8_t *src);
-int c_hdd_unit_ok(void);
-int c_hdd_take_sasi_reset(void);
+/* A disk the user picked from the window menu: 1/2 FD0 insert/eject, 3/4 FD1, 5/6 HDD,
+ * 0 none. For an insert, path receives the file name. Disk images live in x68k_disk.goose. */
+int c_gui_take_media_request(uint8_t *path, int cap, int32_t *path_len);
 /* Point the renderer and state save at Goose-owned buffers. One call, not per byte. */
 void c_video_bind(uint8_t *pal, uint8_t *sprite, uint8_t *bgreg, uint8_t *bgram, uint8_t *chr8, uint8_t *chr16);
 void c_tvram_bind(uint8_t *tvram);

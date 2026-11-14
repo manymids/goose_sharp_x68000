@@ -1,25 +1,67 @@
-// Machine checkpoints. No JSON, frontend names, host handles or borrowed
-// references are stored here. Native banks own sound/media/RAM snapshots.
+// 機械のチェックポイント。JSON、フロントエンドの名前、ホストのハンドルは入れない。
+//
+// 1 件は 2 つの部分からなる。
+//   X68kCheckpoint   大きさの決まった状態 (CPU、MMU とその中の各デバイス、ディスクドライブ)
+//   blob             大きさが実行時に決まるバイト列。RAM、SRAM、C 側の状態 (音源と I/O ラッチ)、
+//                    FD0、FD1、HDD のイメージをこの順に並べたもの
+// blob は 1 つのスライスプールから切り出す。巻き戻しのように保存と破棄を繰り返しても、
+// 空いた区間が次の保存に使い回される。
 import std;
 import os;
 import .x68k_bridge;
 import .x68k_emu;
 import .m68k_cpu;
 import .m68k_mmu;
+import .x68k_ram;
 import .x68k_rom;
+import .x68k_disk;
 import .x68k_input;
 namespace state;
 
 let ::STATE_SLOT = 0;
 let ::STATE_SNAPSHOT = 1;
 let ::STATE_REWIND = 2;
-// v3: the FDC phase is an enum. v2: SASI phase/direction are typed tags. Older records are incompatible.
-let ::STATE_VERSION = 3;
+// v4: ディスクの状態とイメージの置き場所を Goose 側へ移した。v3: FDC の相が enum。
+// 版の違う記録は読めない。
+let ::STATE_VERSION = 4;
+
+let NATIVE_MAX_BYTES = 67108864; // C 側の状態の上限 (64 MB)。壊れた記録を弾くための値
+
+// blob の内訳。この順に並ぶ。
+struct BlobLayout {
+    ram_bytes: i64 = 0,
+    native_bytes: i64 = 0,
+    image_bytes: i64[DISK_IMAGES] = [0; DISK_IMAGES],
+}
+
+let SECTION_RAM = 0;
+let SECTION_SRAM = 1;
+let SECTION_NATIVE = 2;
+let SECTION_IMAGES = 3; // ここから DISK_IMAGES 個
+let SECTIONS = 6;
+
+fn section_bytes(layout: BlobLayout&, which: i64) -> i64 {
+    if which == SECTION_RAM { return layout.ram_bytes; }
+    if which == SECTION_SRAM { return SRAM_BYTES; }
+    if which == SECTION_NATIVE { return layout.native_bytes; }
+    return layout.image_bytes[which - SECTION_IMAGES];
+}
+
+fn total_bytes(layout: BlobLayout&) -> i64 {
+    var total: i64 = 0;
+    for which in SECTIONS { total += section_bytes(layout, which); }
+    return total;
+}
+
+fn section(layout: BlobLayout&, blob: u8[:], which: i64) -> u8[:] {
+    var at: i64 = 0;
+    for before in which { at += section_bytes(layout, before); }
+    return blob[at..at + section_bytes(layout, which)];
+}
 
 struct X68kCheckpoint {
     saved: bool = false,
     version: i32 = 0,
-    native_generation: u64 = 0,
     cpu: M68kCPU = M68kCPU {},
     mmu: M68kMMU = M68kMMU {},
     total_frames: i64 = 0,
@@ -27,6 +69,8 @@ struct X68kCheckpoint {
     clk_used: i32 = 0,
     sram_we: i32 = 0,
     clock_mhz: i32 = 10,
+    disk: DiskState = DiskState {},
+    layout: BlobLayout = BlobLayout {},
 }
 type ::X68kCheckpoint = state::X68kCheckpoint;
 
@@ -37,6 +81,20 @@ let ::REWIND_SLOTS = 8;
 let ::CHECKPOINT_SLOTS = 50; // 上の 3 つの合計
 
 var ::g_checkpoints: X68kCheckpoint[CHECKPOINT_SLOTS] = [X68kCheckpoint {}; CHECKPOINT_SLOTS];
+
+reusable[] var g_blob_pool: u8[>..] = [];
+
+// 各チェックポイントの blob がプールのどこにあるか。空のスロットは長さ 0。
+// スライスそのものではなく位置で持つ。スライスをグローバルの配列に入れて読み戻すと、
+// コンパイラからは「u8 を持つどの配列を指しているか分からない」ものになり、ディスクイメージを
+// 入れ替える関数へ渡せなくなる。位置から切り出し直せば、プールを指すことがはっきりする。
+struct BlobSpan { at: i64 = 0, len: i64 = 0 }
+var g_spans: BlobSpan[CHECKPOINT_SLOTS] = [BlobSpan {}; CHECKPOINT_SLOTS];
+
+fn blob_of(at: i32) -> u8[:] {
+    let span .= g_spans[at];
+    return g_blob_pool[span.at..span.at + span.len];
+}
 
 fn capacity(bank: i32) -> i32 {
     if bank == STATE_SLOT { return SAVE_SLOTS; }
@@ -55,22 +113,61 @@ fn index(bank: i32, idx: i32) -> i32 {
 fn saved(bank: i32, idx: i32) -> bool {
     let at = index(bank, idx);
     if at < 0 { return false; }
-    let slot .= g_checkpoints[at];
-    return slot.saved && slot.version == STATE_VERSION
-        && slot.native_generation != 0
-        && slot.native_generation == c_state_generation(bank, idx);
+    return g_checkpoints[at].saved && g_checkpoints[at].version == STATE_VERSION;
+}
+
+// 記録と blob の組が、今の機械へ戻せる形かどうか。ファイルから来たものもここを通す。
+fn record_ok(r: X68kCheckpoint&, blob: u8[:]) -> bool {
+    let layout .= r.layout;
+    if layout.ram_bytes != x68k_ram_limit() { return false; }
+    if layout.native_bytes <= 0 || layout.native_bytes > NATIVE_MAX_BYTES { return false; }
+    if !disk::state_ok(r.disk, layout.image_bytes) { return false; }
+    if blob.len != total_bytes(layout) { return false; }
+    return c_native_state_check(section(layout, blob, SECTION_NATIVE)) != 0;
 }
 
 fn validate(bank: i32, idx: i32) -> bool {
-    return saved(bank, idx) && c_state_validate(bank, idx) != 0;
+    if !saved(bank, idx) { return false; }
+    let at = index(bank, idx);
+    return record_ok(g_checkpoints[at], blob_of(at));
+}
+
+fn release_blob(at: i32) {
+    if g_spans[at].len > 0 { g_blob_pool.free_slice(blob_of(at)); }
+    g_spans[at] = BlobSpan {};
+}
+
+// プールから bytes バイトを切り出してスロットの blob にする。前の blob は先に release_blob で返すこと。
+fn claim_blob(at: i32, bytes: i64) -> u8[:] {
+    let blob = g_blob_pool.alloc_slice(bytes);
+    g_spans[at] = BlobSpan { at: g_blob_pool.index_of(blob[0]), len: bytes };
+    return blob;
 }
 
 fn capture(emu: X68kEmulator&, bank: i32, idx: i32) -> bool {
     if !emu.active() { return false; }
     let at = index(bank, idx);
     if at < 0 { return false; }
-    // The native transaction preserves the old generation on any failure.
-    if c_state_capture(bank, idx) == 0 { return false; }
+
+    var layout = BlobLayout { ram_bytes: x68k_ram_limit(), native_bytes: c_native_state_size() };
+    for which in DISK_IMAGES { layout.image_bytes[which] = disk::image_bytes(which); }
+    if layout.native_bytes <= 0 { return false; }
+
+    // 先に新しい blob を作る。失敗したら前の内容がそのまま残る。
+    let previous = g_spans[at];
+    let blob = claim_blob(at, total_bytes(layout));
+    copy_into(section(layout, blob, SECTION_RAM), g_x68k_ram[..layout.ram_bytes]);
+    copy_into(section(layout, blob, SECTION_SRAM), g_sram[..]);
+    for which in DISK_IMAGES {
+        copy_into(section(layout, blob, SECTION_IMAGES + which), disk::image(which));
+    }
+    if c_native_state_save(section(layout, blob, SECTION_NATIVE)) == 0 {
+        g_blob_pool.free_slice(blob);
+        g_spans[at] = previous;
+        return false;
+    }
+    if previous.len > 0 { g_blob_pool.free_slice(g_blob_pool[previous.at..previous.at + previous.len]); }
+
     let slot .= g_checkpoints[at];
     slot.cpu = emu.cpu;
     slot.mmu = emu.mmu;
@@ -79,7 +176,8 @@ fn capture(emu: X68kEmulator&, bank: i32, idx: i32) -> bool {
     slot.clk_used = emu.clk_used;
     slot.sram_we = x68k_sram_write_enable();
     slot.clock_mhz = c_get_cpu_mhz();
-    slot.native_generation = c_state_generation(bank, idx);
+    slot.disk = g_disk;
+    slot.layout = layout;
     slot.version = STATE_VERSION;
     slot.saved = true;
     return true;
@@ -88,8 +186,16 @@ fn capture(emu: X68kEmulator&, bank: i32, idx: i32) -> bool {
 fn restore(emu: X68kEmulator&, bank: i32, idx: i32) -> bool {
     if !emu.active() { return false; }
     if !validate(bank, idx) { return false; }
-    if c_state_restore(bank, idx) == 0 { return false; }
-    let slot .= g_checkpoints[index(bank, idx)];
+    let at = index(bank, idx);
+    let slot .= g_checkpoints[at];
+    let blob = blob_of(at);
+    let layout .= slot.layout;
+    // C 側は、失敗するなら何も変えずに失敗する。ここを過ぎたら最後まで戻す。
+    if c_native_state_load(section(layout, blob, SECTION_NATIVE)) == 0 { return false; }
+    copy_into(g_x68k_ram[..layout.ram_bytes], section(layout, blob, SECTION_RAM));
+    copy_into(g_sram[..], section(layout, blob, SECTION_SRAM));
+    disk::restore(slot.disk, section(layout, blob, SECTION_IMAGES), section(layout, blob, SECTION_IMAGES + 1),
+        section(layout, blob, SECTION_IMAGES + 2));
     emu.cpu = slot.cpu;
     emu.mmu = slot.mmu;
     emu.total_frames = slot.total_frames;
@@ -111,9 +217,8 @@ fn restore(emu: X68kEmulator&, bank: i32, idx: i32) -> bool {
 fn drop(bank: i32, idx: i32) {
     let at = index(bank, idx);
     if at < 0 { return; }
-    c_state_drop(bank, idx);
+    release_blob(at);
     g_checkpoints[at].saved = false;
-    g_checkpoints[at].native_generation = 0;
 }
 
 fn frame(bank: i32, idx: i32) -> i64 {
@@ -121,12 +226,10 @@ fn frame(bank: i32, idx: i32) -> i64 {
     return g_checkpoints[index(bank, idx)].total_frames;
 }
 
-// Occupied checkpoint bytes: native-owned storage plus this Goose record.
-// Empty records are preallocated globals and are excluded from this metric.
+// 使っているバイト数: blob とこの記録。空の記録は最初から確保してあるので数えない。
 fn bytes(bank: i32, idx: i32) -> i64 {
     if !saved(bank, idx) { return 0; }
-    return (c_state_bytes(bank, idx))
-        + bytes_of(g_checkpoints).len / g_checkpoints.len;
+    return g_spans[index(bank, idx)].len + bytes_of(g_checkpoints).len / g_checkpoints.len;
 }
 
 fn total(bank: i32) -> i64 {
@@ -138,13 +241,13 @@ fn total(bank: i32) -> i64 {
 // ---------------------------------------------------------------
 // ファイルへの保存と読み込み
 //
-// ファイルは 3 つの直列化イメージを並べたもの:
+// ファイルは次の 3 つを並べたもの:
 //   1. StateFileHeader 1 件   種別、版、後続 2 つの大きさとチェックサム
-//   2. X68kCheckpoint 1 件    Goose 側の機械の状態 (CPU、MMU とその中の各デバイス)
-//   3. バイト列               C 側のスロット (RAM、SRAM、音源、FD / HDD イメージ、I/O ラッチ)
-// どれも to_bytes で書き、from_bytes で読む。from_bytes は長さや enum のタグを確かめてから
+//   2. X68kCheckpoint 1 件    大きさの決まった状態
+//   3. blob                   RAM、SRAM、C 側の状態、FD / HDD イメージ。ファイルの終わりまで
+// 1 と 2 は to_bytes で書き、from_bytes で読む。from_bytes は長さや enum のタグを確かめてから
 // 値にするので、壊れたファイルから不正な状態は入らない。内容の改変は検出しないため、
-// チェックサムを自前で持つ。
+// チェックサムを自前で持つ。値の範囲は record_ok で確かめる。
 //
 // 構造体のバイト配置がそのままファイル形式になる。X68kCheckpoint やその中の構造体に
 // フィールドを足したら STATE_VERSION を上げること。
@@ -156,7 +259,7 @@ struct StateFileHeader {
     magic: u32 = 0,
     version: i32 = 0,
     record_bytes: i64 = 0,
-    native_bytes: i64 = 0,
+    blob_bytes: i64 = 0,
     checksum: u64 = 0,
 }
 type ::StateFileHeader = state::StateFileHeader;
@@ -187,26 +290,22 @@ let ::STATE_HASH_SEED = 14695981039346656037;
 // スロットの内容をファイル形式のバイト列にして out に追記する。
 fn export_image(bank: i32, idx: i32, out: u8[>..]&) -> bool {
     if !validate(bank, idx) { return false; }
+    let at = index(bank, idx);
+    let blob = blob_of(at);
     var record: X68kCheckpoint[>..] = [];
-    record.push(g_checkpoints[index(bank, idx)]);
-
-    let native_bytes = c_state_export_size(bank, idx);
-    if native_bytes <= 0 { return false; }
-    var native: u8[>..] = [];
-    native.resize(native_bytes, 0);
-    if c_state_export(bank, idx, native[..]) != native_bytes { return false; }
+    record.push(g_checkpoints[at]);
 
     var header: StateFileHeader[>..] = [];
     header.push(StateFileHeader {
         magic: STATE_FILE_MAGIC,
         version: STATE_VERSION,
         record_bytes: bytes_of(record).len,
-        native_bytes: native_bytes,
-        checksum: checksum(checksum(STATE_HASH_SEED, bytes_of(record)), native[..]),
+        blob_bytes: blob.len,
+        checksum: checksum(checksum(STATE_HASH_SEED, bytes_of(record)), blob),
     });
     to_bytes(header, out);
     to_bytes(record, out);
-    to_bytes(native, out);
+    out.append(blob);
     return true;
 }
 
@@ -230,20 +329,20 @@ fn import_image(bank: i32, idx: i32, data: u8[:]) -> StateFileError {
     if header[0].version != STATE_VERSION { return StateFileError.WrongVersion; }
 
     let end2, ok2 = next_image(data, end1);
-    let end3, ok3 = next_image(data, end2);
-    if !ok2 || !ok3 || end3 != data.len { return StateFileError.Corrupt; }
-    var record, record_ok = from_bytes<X68kCheckpoint[>..]>(data[end1..end2]);
-    if !record_ok || record.len != 1 { return StateFileError.Corrupt; }
+    if !ok2 { return StateFileError.Corrupt; }
+    var record, parsed = from_bytes<X68kCheckpoint[>..]>(data[end1..end2]);
+    if !parsed || record.len != 1 { return StateFileError.Corrupt; }
     if bytes_of(record).len != header[0].record_bytes { return StateFileError.WrongVersion; }
-    var native, native_ok = from_bytes<u8[>..]>(data[end2..end3]);
-    if !native_ok || native.len != header[0].native_bytes { return StateFileError.Corrupt; }
-    if checksum(checksum(STATE_HASH_SEED, bytes_of(record)), native[..]) != header[0].checksum {
+    let blob = data[end2..];
+    if blob.len != header[0].blob_bytes { return StateFileError.Corrupt; }
+    if checksum(checksum(STATE_HASH_SEED, bytes_of(record)), blob) != header[0].checksum {
         return StateFileError.Corrupt;
     }
+    if !record_ok(record[0], blob) { return StateFileError.Rejected; }
 
-    if c_state_import(bank, idx, native[..]) == 0 { return StateFileError.Rejected; }
+    release_blob(at);
+    copy_into(claim_blob(at, blob.len), blob);
     g_checkpoints[at] = record[0];
-    g_checkpoints[at].native_generation = c_state_generation(bank, idx);
     g_checkpoints[at].version = STATE_VERSION;
     g_checkpoints[at].saved = true;
     return StateFileError.None;

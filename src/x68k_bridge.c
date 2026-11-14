@@ -160,7 +160,6 @@ static int32_t *g_ram_limit_slot = NULL;
 static int g_mem_ready = 0;
 static uint64_t g_machine_epoch = 0;
 static uint64_t g_machine_epoch_next = 0;
-static void state_banks_clear(void);
 static int g_init_fail_after = -1;
 
 static void *host_calloc(size_t n, size_t size) {
@@ -174,8 +173,6 @@ static char g_sys_dir[MAX_PATH];
 #define CGROM_SIZE (768 * 1024)        // 768KB
 #define IPL_SIZE   (128 * 1024)        // 128KB
 #define SRAM_SIZE  (16 * 1024)         // 16KB
-#define FDD_SIZE   (1261568)           // 1.2MB 2HD (154 tracks * 8 sectors * 1024 bytes)
-#define HDD_SIZE   (40 * 1024 * 1024)  // 40MB max SASI HDD
 #define PAL_SIZE     (1024)            // 1024 bytes (0xE82000 - 0xE823FF)
 #define VCREG_SIZE   (0x400)           // 1024 bytes (0xE82400 - 0xE827FF)
 #define SPRITE_SIZE  (0x800)           // 2048 bytes (0xEB0000 - 0xEB07FF)
@@ -197,9 +194,6 @@ static uint8_t *g_iplrom = NULL;
 static int g_ipl_bound = 0;
 static uint8_t *g_sram = NULL;
 static int g_sram_bound = 0;
-static uint8_t *g_fdd0 = NULL;
-static uint8_t *g_fdd1 = NULL;
-static uint8_t *g_hdd0 = NULL;
 static uint32_t *g_fb = NULL;
 static int g_fb_bound = 0;
 
@@ -226,73 +220,6 @@ static void screen_publish(void) {
 /* 0: full composite. 1: clear+GVRAM only (sprites follow per scanline). 2: text only. */
 static int g_ppu_phase = 0;
 
-static bool g_fdd0_loaded = false;
-static bool g_fdd1_loaded = false;
-static bool g_hdd0_loaded = false;
-static int g_hdd0_len = 0;
-static int g_sasi_reset_req = 0;
-static char g_fdd0_path[MAX_PATH] = {0};
-static char g_fdd1_path[MAX_PATH] = {0};
-static char g_hdd0_path[MAX_PATH] = {0};
-/* px68k fdd.c SetDelay。挿入は 3 フレーム後、排出は入っていたときすぐ。 */
-static int g_fdd_delay[2];
-static int g_fdd_media_enable;
-static int g_fdd_media_pending;
-static int32_t *g_fdd_media_slot = NULL;
-/* 1=XDF 2=D88 3=DIM. px68k GetDiskType. XDF stays the flat 1024x8 layout. */
-#define FDD_KIND_XDF 1
-#define FDD_KIND_D88 2
-#define FDD_KIND_DIM 3
-#define FDD_DIM_HEADER 256
-#define FDD_D88_HEADER 0x2B0
-#define FDD_MAX_IMAGE (4 * 1024 * 1024)
-static int g_fdd_kind[2];
-static int g_fdd_cap[2];
-static int g_fdd_len[2];
-static int g_fdd_trk[2];
-static int g_fdd_cur[2];
-static uint32_t g_fdd_d88_top[2];
-static uint32_t g_fdd_d88_cur[2];
-
-static void fdd_media_store(int pending) {
-    g_fdd_media_pending = pending;
-    if (g_fdd_media_slot) *g_fdd_media_slot = pending;
-}
-
-static void fdd_media_raise(void) {
-    if (g_fdd_media_enable) fdd_media_store(1);
-}
-
-void c_fdd_media_bind(int32_t *slot) {
-    g_fdd_media_slot = slot;
-    if (slot) *slot = g_fdd_media_pending ? 1 : 0;
-}
-
-void c_fdd_media_reset(void) {
-    g_fdd_delay[0] = 0;
-    g_fdd_delay[1] = 0;
-    g_fdd_media_enable = 0;
-    fdd_media_store(0);
-}
-
-void c_fdd_set_media_enable(int32_t enable) {
-    g_fdd_media_enable = enable ? 1 : 0;
-}
-
-void c_fdd_media_tick(int32_t enable) {
-    c_fdd_set_media_enable(enable);
-    for (int i = 0; i < 2; i++) {
-        if (g_fdd_delay[i] > 0) {
-            g_fdd_delay[i]--;
-            if (g_fdd_delay[i] == 0) fdd_media_raise();
-        }
-    }
-}
-
-void c_fdd_ack_media_irq(void) {
-    fdd_media_store(0);
-}
-
 // Helper to find and load ROM file with multiple candidate directories
 static int load_rom_file(const char *filename, const char *sys_dir, void *buf, int size) {
     char path[MAX_PATH];
@@ -309,284 +236,6 @@ static int load_rom_file(const char *filename, const char *sys_dir, void *buf, i
 
     return 0;
 }
-
-static int fdd_kind_of(const char *path) {
-    const char *dot = strrchr(path, '.');
-    if (!dot || !dot[1] || !dot[2] || !dot[3]) return FDD_KIND_XDF;
-    char a = dot[1]; if (a >= 'A' && a <= 'Z') a = (char)(a - 'A' + 'a');
-    char b = dot[2]; if (b >= 'A' && b <= 'Z') b = (char)(b - 'A' + 'a');
-    char c = dot[3]; if (c >= 'A' && c <= 'Z') c = (char)(c - 'A' + 'a');
-    if ((a == 'd' && b == '8' && c == '8') || (a == '8' && b == '8' && c == 'd')) return FDD_KIND_D88;
-    if (a == 'd' && b == 'i' && c == 'm') return FDD_KIND_DIM;
-    return FDD_KIND_XDF;
-}
-
-static uint8_t *fdd_slot_img(int drive) {
-    if (drive == 0) return g_fdd0;
-    if (drive == 1) return g_fdd1;
-    return NULL;
-}
-
-static int fdd_store(int drive, const char *path, int kind) {
-    FILE *fp = fopen(path, "rb");
-    if (!fp) return 0;
-    if (fseek(fp, 0, SEEK_END) != 0) { fclose(fp); return 0; }
-    long sz = ftell(fp);
-    if (sz <= 0 || fseek(fp, 0, SEEK_SET) != 0) { fclose(fp); return 0; }
-    int need = (kind == FDD_KIND_XDF) ? FDD_SIZE : (int)sz;
-    if (kind != FDD_KIND_XDF && (sz > FDD_MAX_IMAGE || sz < 16)) { fclose(fp); return 0; }
-    uint8_t **img = (drive == 0) ? &g_fdd0 : &g_fdd1;
-    if (!*img || g_fdd_cap[drive] < need) {
-        uint8_t *buf = (uint8_t *)calloc(1, (size_t)need);
-        if (!buf) { fclose(fp); return 0; }
-        free(*img);
-        *img = buf;
-        g_fdd_cap[drive] = need;
-    } else {
-        memset(*img, 0, (size_t)g_fdd_cap[drive]);
-    }
-    int want = (kind == FDD_KIND_XDF) ? (int)((sz < FDD_SIZE) ? sz : FDD_SIZE) : (int)sz;
-    size_t n = fread(*img, 1, (size_t)want, fp);
-    fclose(fp);
-    if (n == 0) return 0;
-    g_fdd_len[drive] = (int)n;
-    g_fdd_kind[drive] = kind;
-    g_fdd_trk[drive] = -1;
-    g_fdd_cur[drive] = 0;
-    g_fdd_d88_top[drive] = 0;
-    g_fdd_d88_cur[drive] = 0;
-    return 1;
-}
-
-static int dim_track_ok(const uint8_t *img, int len, int trk) {
-    if (!img || len < FDD_DIM_HEADER || trk < 0 || trk >= 170) return 0;
-    int type = img[0];
-    int limit = (type == 0) ? 153 : 159;
-    if (type != 0 && type != 1 && type != 2 && type != 3 && type != 9) return 0;
-    if (trk > limit && !img[255]) return 0;
-    return img[1 + trk] ? 1 : 0;
-}
-
-static int dim_pos(const uint8_t *img, int c, int h, int r, int n) {
-    int type = img[0];
-    int rr = r;
-    int hh = h;
-    int unit = 0;
-    int sct = 1024;
-    if (type == 0) {
-        if (c < 0 || c > 84 || hh < 0 || hh > 1 || rr < 1 || rr > 8 || n != 3) return 0;
-        unit = 1024 * 8;
-    } else if (type == 1) {
-        if (rr > 9) rr -= 9;
-        if (c < 0 || c > 84 || hh < 0 || hh > 1 || rr < 1 || rr > 9 || n != 3) return 0;
-        unit = 1024 * 9;
-    } else if (type == 3) {
-        hh &= 1;
-        if (c < 0 || c > 84 || hh < 0 || hh > 1 || rr < 1 || rr > 9 || n != 3) return 0;
-        unit = 1024 * 9;
-    } else if (type == 2) {
-        if (c < 0 || c > 84 || hh < 0 || hh > 1 || rr < 1 || rr > 15 || n != 2) return 0;
-        unit = 512 * 15;
-        sct = 512;
-    } else if (type == 9) {
-        if (c < 0 || c > 84 || hh < 0 || hh > 1 || rr < 1 || rr > 18 || n != 2) return 0;
-        unit = 512 * 18;
-        sct = 512;
-    } else {
-        return 0;
-    }
-    return unit * (c * 2 + hh) + (rr - 1) * sct + FDD_DIM_HEADER;
-}
-
-static int dim_inc(int type, int r) {
-    if (type == 0) return (r + 1) & 7;
-    if (type == 1 && r > 8) r -= 9;
-    if (type == 1 || type == 3) return (r + 1) % 9;
-    if (type == 2) return (r + 1) % 15;
-    if (type == 9) return (r + 1) % 18;
-    return r;
-}
-
-static int d88_track_ptr(const uint8_t *img, int len, int trk, uint32_t *out) {
-    uint32_t ptr, fd_size;
-    if (!img || trk < 0 || trk > 163 || len < FDD_D88_HEADER) return 0;
-    memcpy(&fd_size, img + 28, 4);
-    memcpy(&ptr, img + 32 + trk * 4, 4);
-    if (ptr < FDD_D88_HEADER || ptr >= fd_size || ptr >= (uint32_t)len) return 0;
-    *out = ptr;
-    return 1;
-}
-
-static int d88_match(uint8_t *img, int len, uint32_t top, int c, int h, int r, int n,
-                     uint32_t *payload, int *paylen, uint32_t *next) {
-    uint32_t p = top;
-    int count = 65535;
-    for (int s = 0; s < count; s++) {
-        uint32_t size, np;
-        int sectors;
-        if (p + 16 > (uint32_t)len) return 0;
-        sectors = img[p + 4] | (img[p + 5] << 8);
-        size = (uint32_t)(img[p + 14] | (img[p + 15] << 8));
-        if (s == 0) count = sectors > 0 ? sectors : 0;
-        if (count <= 0 || p + 16 + size > (uint32_t)len) return 0;
-        np = p + 16 + size;
-        if (img[p] == (uint8_t)c && img[p + 1] == (uint8_t)h && img[p + 2] == (uint8_t)r && img[p + 3] == (uint8_t)n) {
-            *payload = p + 16;
-            *paylen = (int)size;
-            *next = (s + 1 >= count) ? top : np;
-            return 1;
-        }
-        p = np;
-    }
-    return 0;
-}
-
-static int fdd_seek_kind(int drive, int trk) {
-    uint8_t *img = fdd_slot_img(drive);
-    int len = g_fdd_len[drive];
-    int kind = g_fdd_kind[drive];
-    if (!img) return 0;
-    if (kind == FDD_KIND_XDF) {
-        if (trk < 0 || trk > 153) return 0;
-        if (g_fdd_trk[drive] != trk) g_fdd_cur[drive] = 0;
-        g_fdd_trk[drive] = trk;
-        return 1;
-    }
-    if (kind == FDD_KIND_DIM) {
-        if (trk < 0 || trk > 169 || !dim_track_ok(img, len, trk)) return 0;
-        if (g_fdd_trk[drive] != trk) g_fdd_cur[drive] = 0;
-        g_fdd_trk[drive] = trk;
-        return 1;
-    }
-    if (kind == FDD_KIND_D88) {
-        uint32_t ptr = 0;
-        if (!d88_track_ptr(img, len, trk, &ptr)) return 0;
-        if (g_fdd_d88_top[drive] != ptr) {
-            g_fdd_d88_cur[drive] = ptr;
-            g_fdd_d88_top[drive] = ptr;
-        }
-        g_fdd_trk[drive] = trk;
-        return 1;
-    }
-    return 0;
-}
-
-int c_fdd_load_file(int32_t drive, const uint8_t *path_bytes, int path_len) {
-    char path[MAX_PATH];
-    bind_path(path_bytes, path_len, path, MAX_PATH);
-    if (path[0] == 0) return 0;
-    if (drive != 0 && drive != 1) return 0;
-    int kind = fdd_kind_of(path);
-    if (!fdd_store(drive, path, kind)) return 0;
-    int was = (drive == 0 ? g_fdd0_loaded : g_fdd1_loaded) ? 1 : 0;
-    if (drive == 0) {
-        strncpy(g_fdd0_path, path, MAX_PATH - 1);
-        g_fdd0_loaded = true;
-    } else {
-        strncpy(g_fdd1_path, path, MAX_PATH - 1);
-        g_fdd1_loaded = true;
-    }
-    if (was) fdd_media_raise();
-    g_fdd_delay[drive] = 3;
-    return 1;
-}
-
-void c_fdd_eject(int32_t drive) {
-    if (drive != 0 && drive != 1) return;
-    int was = (drive == 0 ? g_fdd0_loaded : g_fdd1_loaded) ? 1 : 0;
-    uint8_t *img = fdd_slot_img(drive);
-    if (img && g_fdd_cap[drive] > 0) memset(img, 0, (size_t)g_fdd_cap[drive]);
-    if (drive == 0) {
-        g_fdd0_loaded = false;
-        g_fdd0_path[0] = '\0';
-    } else {
-        g_fdd1_loaded = false;
-        g_fdd1_path[0] = '\0';
-    }
-    g_fdd_kind[drive] = 0;
-    g_fdd_len[drive] = 0;
-    g_fdd_trk[drive] = -1;
-    g_fdd_cur[drive] = 0;
-    g_fdd_d88_top[drive] = 0;
-    g_fdd_d88_cur[drive] = 0;
-    if (was) fdd_media_raise();
-}
-
-bool c_fdd_is_loaded(int32_t drive) {
-    if (drive == 0) return g_fdd0_loaded;
-    if (drive == 1) return g_fdd1_loaded;
-    return false;
-}
-
-int c_hdd_load_file(int32_t drive, const uint8_t *path_bytes, int path_len) {
-    char path[MAX_PATH];
-    bind_path(path_bytes, path_len, path, MAX_PATH);
-    if (path[0] == 0 || drive != 0) return 0;
-    if (!g_hdd0) g_hdd0 = (uint8_t *)calloc(1, HDD_SIZE);
-    if (!g_hdd0) return 0;
-    memset(g_hdd0, 0, HDD_SIZE);
-    int n = c_file_read((const uint8_t *)path, (int)strlen(path), g_hdd0, HDD_SIZE);
-    if (n > 0) {
-        strncpy(g_hdd0_path, path, MAX_PATH - 1);
-        g_hdd0_path[MAX_PATH - 1] = '\0';
-        g_hdd0_loaded = true;
-        g_hdd0_len = n;
-        g_sasi_reset_req = 1;
-        return 1;
-    }
-    g_hdd0_loaded = false;
-    g_hdd0_len = 0;
-    return 0;
-}
-
-void c_hdd_eject(int32_t drive) {
-    if (drive == 0) {
-        if (g_hdd0) memset(g_hdd0, 0, HDD_SIZE);
-        g_hdd0_loaded = false;
-        g_hdd0_len = 0;
-        g_hdd0_path[0] = '\0';
-        g_sasi_reset_req = 1;
-    }
-}
-
-bool c_hdd_is_loaded(int32_t drive) {
-    if (drive == 0) return g_hdd0_loaded;
-    return false;
-}
-
-int c_hdd_read_sector(uint32_t sector, uint8_t *dst) {
-    uint64_t off;
-    if (!dst) return -1;
-    memset(dst, 0, 256);
-    if (!g_hdd0_loaded || !g_hdd0 || g_hdd0_len < 256) return -1;
-    off = ((uint64_t)sector) << 8;
-    if (off + 256 > (uint64_t)g_hdd0_len) return 0;
-    memcpy(dst, g_hdd0 + off, 256);
-    return 1;
-}
-
-int c_hdd_write_sector(uint32_t sector, const uint8_t *src) {
-    uint64_t off;
-    if (!src) return -1;
-    if (!g_hdd0_loaded || !g_hdd0 || g_hdd0_len < 256) return -1;
-    off = ((uint64_t)sector) << 8;
-    if (off + 256 > (uint64_t)g_hdd0_len) return 0;
-    memcpy(g_hdd0 + off, src, 256);
-    return 1;
-}
-
-/* SASI phase lives in x68k_sasi.goose. This flag asks that code to reset
- * after the image is loaded or ejected. */
-int c_hdd_unit_ok(void) {
-    return (g_hdd0_loaded && g_hdd0 && g_hdd0_len >= 256) ? 1 : 0;
-}
-
-int c_hdd_take_sasi_reset(void) {
-    int v = g_sasi_reset_req;
-    g_sasi_reset_req = 0;
-    return v;
-}
-
 
 static void stamp_sram_ram_size(void) {
     if (!g_sram) return;
@@ -616,22 +265,10 @@ int c_mem_set_ram_mb(int32_t mb) {
     return 1;
 }
 
-static int path_is_hdd(const char *path) {
-    const char *dot = strrchr(path, '.');
-    if (!dot || !dot[1] || !dot[2] || !dot[3] || dot[4]) return 0;
-    char a = dot[1]; if (a >= 'A' && a <= 'Z') a = (char)(a - 'A' + 'a');
-    char b = dot[2]; if (b >= 'A' && b <= 'Z') b = (char)(b - 'A' + 'a');
-    char c = dot[3]; if (c >= 'A' && c <= 'Z') c = (char)(c - 'A' + 'a');
-    return a == 'h' && b == 'd' && (c == 'f' || c == 's');
-}
-
-int x68k_mem_init(const uint8_t *sys_bytes, int sys_len, const uint8_t *floppy_bytes, int floppy_len) {
+int x68k_mem_init(const uint8_t *sys_bytes, int sys_len) {
     char sys_dir[MAX_PATH];
-    char floppy_path[MAX_PATH];
     if (g_mem_ready) return 0; // Explicit destroy before a new host session.
     bind_path(sys_bytes, sys_len, sys_dir, MAX_PATH);
-    bind_path(floppy_bytes, floppy_len, floppy_path, MAX_PATH);
-    c_fdd_media_reset();
     g_sys_dir[0] = '\0';
     if (sys_dir[0]) {
         strncpy(g_sys_dir, sys_dir, MAX_PATH - 1);
@@ -643,7 +280,6 @@ int x68k_mem_init(const uint8_t *sys_bytes, int sys_len, const uint8_t *floppy_b
     if (!g_cgrom) g_cgrom = (uint8_t *)host_calloc(1, CGROM_SIZE);
     if (!g_iplrom) g_iplrom = (uint8_t *)host_calloc(1, IPL_SIZE);
     if (!g_sram) g_sram = (uint8_t *)host_calloc(1, SRAM_SIZE);
-    if (!g_fdd0) g_fdd0 = (uint8_t *)host_calloc(1, FDD_SIZE);
     if (!g_fb) g_fb = (uint32_t *)host_calloc(1, FB_MAX_PIXELS * sizeof(uint32_t));
 
     if (!g_vcreg) g_vcreg = (uint8_t *)host_calloc(1, VCREG_SIZE);
@@ -656,7 +292,7 @@ int x68k_mem_init(const uint8_t *sys_bytes, int sys_len, const uint8_t *floppy_b
         if (!g_bg_chr16) g_bg_chr16 = (uint8_t *)host_calloc(1, 16 * 16 * 256);
     }
     if (!g_ram || !g_tvram || !g_gvram || !g_cgrom || !g_iplrom || !g_sram ||
-        !g_fdd0 || !g_fb || !g_vcreg || !g_pal || !g_sprite || !g_bgreg ||
+        !g_fb || !g_vcreg || !g_pal || !g_sprite || !g_bgreg ||
         !g_bgram || !g_bg_chr8 || !g_bg_chr16) {
         x68k_mem_destroy();
         return 0;
@@ -671,14 +307,6 @@ int x68k_mem_init(const uint8_t *sys_bytes, int sys_len, const uint8_t *floppy_b
     }
     load_rom_file("sram.dat", sys_dir, g_sram, SRAM_SIZE);
     stamp_sram_ram_size();
-
-    // .hdf / .hds are SASI images. Everything else stays a floppy.
-    if (floppy_path[0]) {
-        if (path_is_hdd(floppy_path))
-            c_hdd_load_file(0, (const uint8_t *)floppy_path, (int)strlen(floppy_path));
-        else
-            c_fdd_load_file(0, (const uint8_t *)floppy_path, (int)strlen(floppy_path));
-    }
 
     g_mem_ready = 1;
     return 1;
@@ -706,12 +334,10 @@ void x68k_mem_destroy(void) {
     save_sram_file();
     // Stop publications before dropping any borrowed array or scalar view.
     c_dma_vec_bind(NULL);
-    c_fdd_media_bind(NULL);
     g_ram_limit_slot = NULL;
     g_screen_w_slot = g_screen_h_slot = NULL;
     g_machine_epoch = 0;
     g_mem_ready = 0;
-    state_banks_clear();
     c_sound_cleanup();
     if (!g_ram_bound && g_ram) free(g_ram);
     g_ram = NULL;
@@ -731,9 +357,6 @@ void x68k_mem_destroy(void) {
     if (!g_sram_bound && g_sram) free(g_sram);
     g_sram = NULL;
     g_sram_bound = 0;
-    if (g_fdd0) { free(g_fdd0); g_fdd0 = NULL; }
-    if (g_fdd1) { free(g_fdd1); g_fdd1 = NULL; }
-    if (g_hdd0) { free(g_hdd0); g_hdd0 = NULL; }
     if (!g_fb_bound && g_fb) free(g_fb);
     g_fb = NULL;
     g_fb_bound = 0;
@@ -757,19 +380,6 @@ void x68k_mem_destroy(void) {
     g_bg_chr16 = NULL;
     g_video_bound = 0;
 
-    g_fdd0_loaded = false;
-    g_fdd1_loaded = false;
-    g_hdd0_loaded = false;
-    g_hdd0_len = 0;
-    memset(g_fdd_cap, 0, sizeof(g_fdd_cap));
-    memset(g_fdd_len, 0, sizeof(g_fdd_len));
-    memset(g_fdd_kind, 0, sizeof(g_fdd_kind));
-    memset(g_fdd_trk, 0, sizeof(g_fdd_trk));
-    memset(g_fdd_cur, 0, sizeof(g_fdd_cur));
-    memset(g_fdd_d88_top, 0, sizeof(g_fdd_d88_top));
-    memset(g_fdd_d88_cur, 0, sizeof(g_fdd_d88_cur));
-    c_fdd_media_reset();
-    g_sasi_reset_req = 0;
     g_frame_ready = 0;
     g_sys_dir[0] = 0;
 }
@@ -945,142 +555,6 @@ void c_line_zero(uint16_t *grp, uint8_t *mix, uint16_t *sp, uint16_t *sp2, uint1
     memset(tr, 0, 1040);
 }
 
-static uint8_t *fdd_image(int32_t drive, bool *loaded) {
-    if (drive == 0) { *loaded = g_fdd0_loaded; return g_fdd0; }
-    if (drive == 1) { *loaded = g_fdd1_loaded; return g_fdd1; }
-    *loaded = false;
-    return NULL;
-}
-
-int c_fdd_seek(int32_t drive, int32_t trk) {
-    bool loaded = false;
-    if (!fdd_image(drive, &loaded) || !loaded) return 0;
-    return fdd_seek_kind(drive, trk);
-}
-
-int c_fdd_read_fdc(int32_t drive, int32_t trk, int32_t c, int32_t h, int32_t r, int32_t n, uint8_t *dst) {
-    bool loaded = false;
-    uint8_t *img = fdd_image(drive, &loaded);
-    if (!img || !dst || !loaded || drive < 0 || drive > 1) return 0;
-    if (!fdd_seek_kind(drive, trk)) return 0;
-    int kind = g_fdd_kind[drive];
-    int len = g_fdd_len[drive];
-    if (kind == FDD_KIND_XDF) {
-        if (((c << 1) + (h & 1)) != trk) return 0;
-        if (r < 1 || r > 8 || n != 3 || (h != 0 && h != 1)) return 0;
-        int offset = (trk * 8 + (r - 1)) * 1024;
-        if (offset + 1024 > FDD_SIZE) return 0;
-        memcpy(dst, img + offset, 1024);
-        g_fdd_cur[drive] = r & 7;
-        return 1;
-    }
-    if (kind == FDD_KIND_DIM) {
-        if (((c << 1) + (h & 1)) != g_fdd_trk[drive]) return 0;
-        if (!dim_track_ok(img, len, (c << 1) + (h & 1))) return 0;
-        int pos = dim_pos(img, c, h, r, n);
-        int nbytes = (n == 2) ? 512 : 1024;
-        if (pos <= 0 || pos + nbytes > len) return 0;
-        memcpy(dst, img + pos, (size_t)nbytes);
-        g_fdd_cur[drive] = dim_inc(img[0], r - 1);
-        return 1;
-    }
-    if (kind == FDD_KIND_D88) {
-        uint32_t payload = 0, next = 0;
-        int paylen = 0;
-        int nbytes = (n > 0) ? (128 << n) : 1024;
-        if (!d88_match(img, len, g_fdd_d88_top[drive], c, h, r, n, &payload, &paylen, &next)) return 0;
-        if (nbytes > paylen) nbytes = paylen;
-        if (nbytes > 8192) nbytes = 8192;
-        memcpy(dst, img + payload, (size_t)nbytes);
-        g_fdd_d88_cur[drive] = next;
-        return 1;
-    }
-    return 0;
-}
-
-int c_fdd_write_fdc(int32_t drive, int32_t trk, int32_t c, int32_t h, int32_t r, int32_t n, const uint8_t *src) {
-    bool loaded = false;
-    uint8_t *img = fdd_image(drive, &loaded);
-    if (!img || !src || !loaded || drive < 0 || drive > 1) return 0;
-    if (!fdd_seek_kind(drive, trk)) return 0;
-    int kind = g_fdd_kind[drive];
-    int len = g_fdd_len[drive];
-    if (kind == FDD_KIND_XDF) {
-        if (((c << 1) + (h & 1)) != trk) return 0;
-        if (r < 1 || r > 8 || n != 3 || (h != 0 && h != 1)) return 0;
-        int offset = (trk * 8 + (r - 1)) * 1024;
-        if (offset + 1024 > FDD_SIZE) return 0;
-        memcpy(img + offset, src, 1024);
-        g_fdd_cur[drive] = r & 7;
-        return 1;
-    }
-    if (kind == FDD_KIND_DIM) {
-        if (((c << 1) + (h & 1)) != g_fdd_trk[drive]) return 0;
-        int pos = dim_pos(img, c, h, r, n);
-        int nbytes = (n == 2) ? 512 : 1024;
-        if (pos <= 0 || pos + nbytes > len) return 0;
-        memcpy(img + pos, src, (size_t)nbytes);
-        g_fdd_cur[drive] = dim_inc(img[0], r - 1);
-        return 1;
-    }
-    if (kind == FDD_KIND_D88) {
-        uint32_t payload = 0, next = 0;
-        int paylen = 0;
-        int nbytes = (n > 0) ? (128 << n) : 1024;
-        if (!d88_match(img, len, g_fdd_d88_top[drive], c, h, r, n, &payload, &paylen, &next)) return 0;
-        if (nbytes > paylen) nbytes = paylen;
-        memcpy(img + payload, src, (size_t)nbytes);
-        g_fdd_d88_cur[drive] = next;
-        return 1;
-    }
-    return 0;
-}
-
-int c_fdd_current_id(int32_t drive, uint8_t *c, uint8_t *h, uint8_t *r, uint8_t *n) {
-    bool loaded = false;
-    uint8_t *img = fdd_image(drive, &loaded);
-    if (!img || !loaded || !c || !h || !r || !n || drive < 0 || drive > 1) return 0;
-    int trk = g_fdd_trk[drive];
-    if (g_fdd_kind[drive] == FDD_KIND_XDF) {
-        if (trk < 0 || trk > 153) return 0;
-        *c = (uint8_t)(trk >> 1);
-        *h = (uint8_t)(trk & 1);
-        *r = (uint8_t)(g_fdd_cur[drive] + 1);
-        *n = 3;
-        return 1;
-    }
-    if (g_fdd_kind[drive] == FDD_KIND_DIM) {
-        if (!dim_track_ok(img, g_fdd_len[drive], trk)) return 0;
-        int type = img[0];
-        int cc = trk >> 1;
-        int hh = trk & 1;
-        int rr = g_fdd_cur[drive] + 1;
-        int nn = 3;
-        if (type == 1) {
-            if (cc || hh || rr != 1) rr += 9;
-        } else if (type == 3) {
-            if (cc || hh || rr != 1) hh += 0x80;
-        } else if (type == 2 || type == 9) {
-            nn = 2;
-        }
-        *c = (uint8_t)cc;
-        *h = (uint8_t)hh;
-        *r = (uint8_t)rr;
-        *n = (uint8_t)nn;
-        return 1;
-    }
-    if (g_fdd_kind[drive] == FDD_KIND_D88) {
-        uint32_t p = g_fdd_d88_cur[drive];
-        if (p + 4 > (uint32_t)g_fdd_len[drive]) return 0;
-        *c = img[p];
-        *h = img[p + 1];
-        *r = img[p + 2];
-        *n = img[p + 3];
-        return 1;
-    }
-    return 0;
-}
-
 static HWND g_hwnd = NULL;
 static HDC g_hdc = NULL;
 static int g_scale = 1;
@@ -1088,6 +562,29 @@ static bool g_is_open = false;
 static uint32_t g_keys = 0;
 static BITMAPINFO g_bmi;
 static int g_pending_cmd = 0;
+
+/* A disk the user picked from the menu. The images belong to the Goose side, so the menu
+ * only records the request and the frontend loop collects it once per frame. */
+enum { MEDIA_NONE = 0, MEDIA_FD0_INSERT, MEDIA_FD0_EJECT, MEDIA_FD1_INSERT, MEDIA_FD1_EJECT,
+       MEDIA_HDD_INSERT, MEDIA_HDD_EJECT };
+static int g_media_request = MEDIA_NONE;
+static char g_media_path[MAX_PATH];
+
+static void media_request(int kind, const char *path) {
+    g_media_request = kind;
+    strncpy(g_media_path, path ? path : "", MAX_PATH - 1);
+    g_media_path[MAX_PATH - 1] = '\0';
+}
+
+int c_gui_take_media_request(uint8_t *path, int cap, int32_t *path_len) {
+    int kind = g_media_request;
+    int n = (int)strlen(g_media_path);
+    g_media_request = MEDIA_NONE;
+    if (!path || !path_len || n >= cap) return MEDIA_NONE;
+    memcpy(path, g_media_path, (size_t)n + 1);
+    *path_len = n;
+    return kind;
+}
 
 static void win32_set_scale(int scale);
 
@@ -1108,10 +605,10 @@ static uint64_t machine_bind_views(const X68kHostViews *v) {
         !VIEW_OK(bgreg, BGREG_SIZE) || !VIEW_OK(bgram, BGRAM_SIZE) ||
         !VIEW_OK(chr8, 8 * 8 * 256) || !VIEW_OK(chr16, 16 * 16 * 256) ||
         !VIEW_OK(fb, FB_MAX_PIXELS) || !v->ram_limit || !v->screen_w || !v->screen_h ||
-        !v->dma_vec || !v->media_irq) return 0;
+        !v->dma_vec) return 0;
 #undef VIEW_OK
     // All validation precedes registration. No allocation or callbacks here.
-    c_dma_vec_bind(NULL); c_fdd_media_bind(NULL);
+    c_dma_vec_bind(NULL);
     if (!g_ram_bound) {
         memset(v->ram.data, 0, (size_t)v->ram.len);
         if (g_ram && g_ram != v->ram.data) memcpy(v->ram.data, g_ram, (size_t)g_ram_bytes);
@@ -1121,7 +618,7 @@ static uint64_t machine_bind_views(const X68kHostViews *v) {
     c_video_bind(v->pal.data, v->sprite.data, v->bgreg.data, v->bgram.data, v->chr8.data, v->chr16.data);
     c_vcreg_bind(v->vc.data); c_tvram_bind(v->tvram.data); c_gvram_bind(v->gvram.data);
     c_fb_bind(v->fb.data); c_screen_bind(v->screen_w, v->screen_h);
-    c_dma_vec_bind(v->dma_vec); c_fdd_media_bind(v->media_irq);
+    c_dma_vec_bind(v->dma_vec);
     if (++g_machine_epoch_next == 0) ++g_machine_epoch_next;
     g_machine_epoch = g_machine_epoch_next;
     return g_machine_epoch;
@@ -1130,15 +627,15 @@ static uint64_t machine_bind_views(const X68kHostViews *v) {
 uint64_t c_machine_bind(X68kByteView ram, X68kByteView ipl, X68kByteView cgrom, X68kByteView sram,
     X68kByteView tvram, X68kByteView gvram, X68kByteView pal, X68kByteView vc, X68kByteView sprite,
     X68kByteView bgreg, X68kByteView bgram, X68kByteView chr8, X68kByteView chr16, X68kPixelView fb,
-    int32_t *ram_limit, int32_t *screen_w, int32_t *screen_h, int32_t *dma_vec, int32_t *media_irq) {
+    int32_t *ram_limit, int32_t *screen_w, int32_t *screen_h, int32_t *dma_vec) {
     X68kHostViews views = {ram, ipl, cgrom, sram, tvram, gvram, pal, vc, sprite,
-        bgreg, bgram, chr8, chr16, fb, ram_limit, screen_w, screen_h, dma_vec, media_irq};
+        bgreg, bgram, chr8, chr16, fb, ram_limit, screen_w, screen_h, dma_vec};
     return machine_bind_views(&views);
 }
 
 int c_machine_unbind(uint64_t epoch) {
     if (!epoch || epoch != g_machine_epoch) return 0;
-    c_dma_vec_bind(NULL); c_fdd_media_bind(NULL);
+    c_dma_vec_bind(NULL);
     g_ram_limit_slot = NULL;
     g_screen_w_slot = g_screen_h_slot = NULL;
     // These are borrowed from the active emulator, never freed by C.
@@ -1413,9 +910,6 @@ void c_gui_settings_store(void) {
     c_gui_settings_set_int(GUI_CLOCK, g_cpu_mhz);
     c_gui_settings_set_int(GUI_SCALE, g_scale);
     if (g_sys_dir[0]) c_gui_settings_set_path(GUI_BIOS, (const uint8_t *)g_sys_dir, (int)strlen(g_sys_dir));
-    c_gui_settings_set_path(GUI_FD0, (const uint8_t *)g_fdd0_path, g_fdd0_loaded ? (int)strlen(g_fdd0_path) : 0);
-    c_gui_settings_set_path(GUI_FD1, (const uint8_t *)g_fdd1_path, g_fdd1_loaded ? (int)strlen(g_fdd1_path) : 0);
-    c_gui_settings_set_path(GUI_HDD, (const uint8_t *)g_hdd0_path, g_hdd0_loaded ? (int)strlen(g_hdd0_path) : 0);
     if (!c_gui_settings_save()) fprintf(stderr, "warning: could not save arcl_windows_x68k_goose.ini\n");
 }
 
@@ -1440,49 +934,27 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
                 case 202: win32_set_scale(2); break;
                 case 211: c_gui_settings_set_int(GUI_WIDTH, 768); c_set_screen_mode(768, 512); break;
                 case 212: c_gui_settings_set_int(GUI_WIDTH, 512); c_set_screen_mode(512, 512); break;
-                // FD0
+                // FD0 (a new disk here also reboots; the frontend decides that)
                 case 401: {
                     char file_buf[MAX_PATH] = {0};
-                    if (open_file_dialog(hwnd, "X68000 Disk Images (*.2hd;*.xdf;*.dim;*.d88;*.img;*.bin)\0*.2hd;*.xdf;*.dim;*.d88;*.img;*.bin\0All Files (*.*)\0*.*\0", file_buf, MAX_PATH)) {
-                        if (c_fdd_load_file(0, (const uint8_t *)file_buf, (int)strlen(file_buf))) {
-                            g_pending_cmd = 3; // Trigger Reboot with new disk
-                        }
-                    }
+                    if (open_file_dialog(hwnd, "X68000 Disk Images (*.2hd;*.xdf;*.dim;*.d88;*.img;*.bin)\0*.2hd;*.xdf;*.dim;*.d88;*.img;*.bin\0All Files (*.*)\0*.*\0", file_buf, MAX_PATH)) media_request(MEDIA_FD0_INSERT, file_buf);
                     break;
                 }
-                case 402: {
-                    c_fdd_eject(0);
-                    break;
-                }
+                case 402: media_request(MEDIA_FD0_EJECT, NULL); break;
                 // FD1
                 case 411: {
                     char file_buf[MAX_PATH] = {0};
-                    if (open_file_dialog(hwnd, "X68000 Disk Images (*.2hd;*.xdf;*.dim;*.d88;*.img;*.bin)\0*.2hd;*.xdf;*.dim;*.d88;*.img;*.bin\0All Files (*.*)\0*.*\0", file_buf, MAX_PATH)) {
-                        c_fdd_load_file(1, (const uint8_t *)file_buf, (int)strlen(file_buf));
-                    }
+                    if (open_file_dialog(hwnd, "X68000 Disk Images (*.2hd;*.xdf;*.dim;*.d88;*.img;*.bin)\0*.2hd;*.xdf;*.dim;*.d88;*.img;*.bin\0All Files (*.*)\0*.*\0", file_buf, MAX_PATH)) media_request(MEDIA_FD1_INSERT, file_buf);
                     break;
                 }
-                case 412: {
-                    c_fdd_eject(1);
-                    break;
-                }
+                case 412: media_request(MEDIA_FD1_EJECT, NULL); break;
                 // HDD
                 case 421: {
                     char file_buf[MAX_PATH] = {0};
-                    if (open_file_dialog(hwnd, "X68000 HDD Images (*.hdf;*.hds;*.img)\0*.hdf;*.hds;*.img\0All Files (*.*)\0*.*\0", file_buf, MAX_PATH)) {
-                        if (c_hdd_load_file(0, (const uint8_t *)file_buf, (int)strlen(file_buf))) {
-                            /* IPL boots a floppy ahead of SASI. Drop floppies and reset. */
-                            c_fdd_eject(0);
-                            c_fdd_eject(1);
-                            g_pending_cmd = 3;
-                        }
-                    }
+                    if (open_file_dialog(hwnd, "X68000 HDD Images (*.hdf;*.hds;*.img)\0*.hdf;*.hds;*.img\0All Files (*.*)\0*.*\0", file_buf, MAX_PATH)) media_request(MEDIA_HDD_INSERT, file_buf);
                     break;
                 }
-                case 422: {
-                    c_hdd_eject(0);
-                    break;
-                }
+                case 422: media_request(MEDIA_HDD_EJECT, NULL); break;
                 case 301:
                     MessageBoxA(hwnd,
                         "Goose Sharp X68000 Emulator\nWritten in Goose language!\nSupports Motorola 68000 CPU, MMU, PPU, FD0/FD1/HDD disk insertion, and ARCL MCP.",
@@ -2078,10 +1550,11 @@ int c_save_fb_png(const uint8_t *path_bytes, int path_len) {
 }
 
 // -----------------------------------------------------------------------------
-// Full Hardware State Save / Load for ARCL Rollback & State Machine
+// The part of a checkpoint that lives in C: the sound chips, the I/O latches and the
+// renderer phase, as one flat image. x68k_state.goose keeps the image next to the RAM and
+// disk images and owns the slots; nothing is retained here.
 // -----------------------------------------------------------------------------
-#define MAX_ARCL_SLOTS 10
-#define ARCL_SLOT_VERSION 5
+#define NATIVE_STATE_MAGIC 0x324E3658u /* "X6N2" */
 
 typedef struct {
     int cpu_mhz;
@@ -2092,453 +1565,60 @@ typedef struct {
     uint8_t opm_key_on[8];
 } ArclIoLatches;
 
-static void io_latches_save(ArclIoLatches *state);
-static void io_latches_load(const ArclIoLatches *state);
-
-typedef struct {
-    uint32_t version;
-    uint64_t generation;
-    uint8_t *ram;
-    uint8_t *sram;
-    uint8_t *sound;
-    uint8_t *fdd[2];
-    uint8_t *hdd;
-    int hdd_len;
-    int hdd_loaded;
-    int sasi_reset_req;
-    int sound_bytes;
-    int fdd_cap[2];
-    int fdd_len[2];
-    int fdd_kind[2];
-    int fdd_loaded[2];
-    int fdd_trk[2];
-    int fdd_cur[2];
-    uint32_t fdd_d88_top[2];
-    uint32_t fdd_d88_cur[2];
-    int fdd_delay[2];
-    int fdd_media_enable;
-    int fdd_media_pending;
-    int ppu_phase;
-    ArclIoLatches io;
-    bool valid;
-    size_t ram_bytes;
-} ArclHwSlot;
-
-static ArclHwSlot g_arcl_slots[MAX_ARCL_SLOTS] = {0};
-static uint64_t g_state_generation = 0;
-
-// Local fault injection follows the existing test_break_version hook. It is
-// used only by native regression tests, never exposed as an MCP tool.
-static int g_state_fail_after = -1;
-static int g_state_alloc_count = 0;
-
-static void *state_alloc(size_t bytes) {
-    g_state_alloc_count++;
-    if (g_state_fail_after == 0) {
-        g_state_fail_after = -1;
-        return NULL;
-    }
-    if (g_state_fail_after > 0) g_state_fail_after--;
-    return malloc(bytes);
-}
-
-static void slot_dispose(ArclHwSlot *slot) {
-    free(slot->ram); free(slot->sram); free(slot->sound);
-    free(slot->fdd[0]); free(slot->fdd[1]); free(slot->hdd);
-    memset(slot, 0, sizeof(*slot));
-}
-
-static int arcl_slot_alloc(ArclHwSlot *slot) {
-#define ALLOC_STATE(field, size) \
-    do { slot->field = (uint8_t *)state_alloc(size); if (!slot->field) return 0; } while (0)
-    ALLOC_STATE(ram, (size_t)g_ram_bytes);
-    slot->ram_bytes = (size_t)g_ram_bytes;
-    ALLOC_STATE(sram, SRAM_SIZE);
-#undef ALLOC_STATE
-    return 1;
-}
-
-static int hw_capture_slot(ArclHwSlot *slot) {
-    // Video arrays belong to the Goose MMU checkpoint, never duplicated here.
-    if (!g_ram || !g_sram) return 0;
-    if (!arcl_slot_alloc(slot)) return 0;
-
-    if (g_ram && slot->ram) memcpy(slot->ram, g_ram, g_ram_bytes);
-    if (g_sram && slot->sram) memcpy(slot->sram, g_sram, SRAM_SIZE);
-
-    {
-        int sn = x68k_sound_state_size();
-        int drive;
-        if (sn <= 0) { slot->valid = false; slot->version = 0; return 0; }
-        if (!slot->sound || slot->sound_bytes != sn) {
-            free(slot->sound);
-            slot->sound = (uint8_t *)state_alloc((size_t)sn);
-            slot->sound_bytes = slot->sound ? sn : 0;
-        }
-        if (!slot->sound || !x68k_sound_state_save(slot->sound, sn)) {
-            slot->valid = false;
-            slot->version = 0;
-            return 0;
-        }
-        for (drive = 0; drive < 2; drive++) {
-            int len = g_fdd_len[drive];
-            int copy_n = g_fdd_cap[drive];
-            int loaded = (drive == 0 ? g_fdd0_loaded : g_fdd1_loaded) ? 1 : 0;
-            uint8_t *img = (drive == 0) ? g_fdd0 : g_fdd1;
-            slot->fdd_len[drive] = len;
-            slot->fdd_kind[drive] = g_fdd_kind[drive];
-            slot->fdd_loaded[drive] = loaded;
-            slot->fdd_trk[drive] = g_fdd_trk[drive];
-            slot->fdd_cur[drive] = g_fdd_cur[drive];
-            slot->fdd_d88_top[drive] = g_fdd_d88_top[drive];
-            slot->fdd_d88_cur[drive] = g_fdd_d88_cur[drive];
-            slot->fdd_delay[drive] = g_fdd_delay[drive];
-            if (!loaded || !img || copy_n <= 0) copy_n = 0;
-            if (copy_n > 0) {
-                if (!slot->fdd[drive] || slot->fdd_cap[drive] < copy_n) {
-                    uint8_t *nbuf = (uint8_t *)state_alloc((size_t)copy_n);
-                    if (!nbuf) { slot->valid = false; slot->version = 0; return 0; }
-                    free(slot->fdd[drive]);
-                    slot->fdd[drive] = nbuf;
-                    slot->fdd_cap[drive] = copy_n;
-                }
-                memcpy(slot->fdd[drive], img, (size_t)copy_n);
-            }
-            slot->fdd_cap[drive] = copy_n;
-        }
-    }
-
-    {
-        int n = g_hdd0_loaded ? g_hdd0_len : 0;
-        if (n < 0 || n > HDD_SIZE || (n && !g_hdd0)) return 0;
-        if (n != slot->hdd_len || (n && !slot->hdd)) {
-            uint8_t *next = n ? (uint8_t *)state_alloc((size_t)n) : NULL;
-            if (n && !next) return 0;
-            free(slot->hdd);
-            slot->hdd = next;
-        }
-        if (n) memcpy(slot->hdd, g_hdd0, (size_t)n);
-        slot->hdd_len = n;
-        slot->hdd_loaded = g_hdd0_loaded ? 1 : 0;
-        slot->sasi_reset_req = g_sasi_reset_req;
-    }
-    slot->fdd_media_enable = g_fdd_media_enable;
-    slot->fdd_media_pending = g_fdd_media_pending;
-    slot->ppu_phase = g_ppu_phase;
-    io_latches_save(&slot->io);
-    slot->version = ARCL_SLOT_VERSION;
-    slot->valid = true;
-    return 1;
-}
-
-static int slot_check(const ArclHwSlot *slot);
-
-static int hw_save_slot(ArclHwSlot *slot) {
-    ArclHwSlot next = {0};
-    ArclHwSlot old;
-    if (!slot) return 0;
-    if (!hw_capture_slot(&next) || !slot_check(&next)) {
-        slot_dispose(&next);
-        return 0;
-    }
-    old = *slot;
-    if (++g_state_generation == 0) ++g_state_generation;
-    next.generation = g_state_generation;
-    *slot = next;
-    slot_dispose(&old);
-    return 1;
-}
-
-static void slot_commit_fdd(const ArclHwSlot *slot, int drive, uint8_t *prepared) {
-    uint8_t **img = (drive == 0) ? &g_fdd0 : &g_fdd1;
-    free(*img);
-    *img = prepared;
-    g_fdd_cap[drive] = slot->fdd_cap[drive];
-    g_fdd_len[drive] = slot->fdd_len[drive];
-    g_fdd_kind[drive] = slot->fdd_kind[drive];
-    g_fdd_trk[drive] = slot->fdd_trk[drive];
-    g_fdd_cur[drive] = slot->fdd_cur[drive];
-    g_fdd_d88_top[drive] = slot->fdd_d88_top[drive];
-    g_fdd_d88_cur[drive] = slot->fdd_d88_cur[drive];
-    g_fdd_delay[drive] = slot->fdd_delay[drive];
-    if (drive == 0) g_fdd0_loaded = slot->fdd_loaded[0] != 0;
-    else g_fdd1_loaded = slot->fdd_loaded[1] != 0;
-}
-
-static void opm_shadow_reset(void);
-
-static int slot_check(const ArclHwSlot *slot) {
-    int drive;
-    if (!slot) return 0;
-    if (!slot->valid || slot->version != ARCL_SLOT_VERSION) return 0;
-    if (slot->ram_bytes != (size_t)g_ram_bytes) return 0;
-    if (!slot->ram || !slot->sram || !g_ram || !g_sram) return 0;
-    if (!x68k_sound_state_check(slot->sound, slot->sound_bytes)) return 0;
-    if (slot->hdd_len < 0 || slot->hdd_len > HDD_SIZE || (slot->hdd_len && !slot->hdd)) return 0;
-    if (slot->hdd_loaded != 0 && slot->hdd_loaded != 1) return 0;
-    if (slot->hdd_loaded != (slot->hdd_len > 0)) return 0;
-    if (cpu_clock_index(slot->io.cpu_mhz) < 0 || slot->io.opm_addr < 0 || slot->io.opm_addr > 255) return 0;
-    if ((slot->fdd_media_pending & ~1) || (slot->fdd_media_enable & ~1) || (slot->sasi_reset_req & ~1)) return 0;
-    for (drive = 0; drive < 2; drive++) {
-        int cap = slot->fdd_cap[drive], len = slot->fdd_len[drive];
-        int kind = slot->fdd_kind[drive], loaded = slot->fdd_loaded[drive];
-        if (loaded != 0 && loaded != 1) return 0;
-        if (cap < 0 || cap > FDD_MAX_IMAGE || len < 0 || len > cap) return 0;
-        if (loaded) {
-            if (!slot->fdd[drive] || len == 0 || kind < FDD_KIND_XDF || kind > FDD_KIND_DIM) return 0;
-            if (kind == FDD_KIND_XDF && cap != FDD_SIZE) return 0;
-            if (kind == FDD_KIND_D88 && len < FDD_D88_HEADER) return 0;
-            if (kind == FDD_KIND_DIM && len < FDD_DIM_HEADER) return 0;
-        } else if (cap || len) return 0;
-        if (slot->fdd_trk[drive] < -1 || slot->fdd_trk[drive] > 169) return 0;
-        if (slot->fdd_cur[drive] < 0 || slot->fdd_cur[drive] > 255) return 0;
-        if (slot->fdd_d88_top[drive] > (uint32_t)len || slot->fdd_d88_cur[drive] > (uint32_t)len) return 0;
-        if (slot->fdd_delay[drive] < 0 || slot->fdd_delay[drive] > 3) return 0;
-    }
-    return 1;
-}
-
-static int hw_load_slot(ArclHwSlot *slot) {
-    uint8_t *fd[2] = {NULL, NULL};
-    uint8_t *hdd = NULL;
-    int drive;
-    if (!slot_check(slot)) return 0;
-    // Prepare every fallible allocation before touching any machine state.
-    for (drive = 0; drive < 2; drive++) {
-        if (slot->fdd_cap[drive]) {
-            fd[drive] = (uint8_t *)state_alloc((size_t)slot->fdd_cap[drive]);
-            if (!fd[drive]) goto fail;
-            memcpy(fd[drive], slot->fdd[drive], (size_t)slot->fdd_cap[drive]);
-        }
-    }
-    if (slot->hdd_loaded) {
-        hdd = (uint8_t *)state_alloc(HDD_SIZE);
-        if (!hdd) goto fail;
-        memset(hdd, 0, HDD_SIZE);
-        memcpy(hdd, slot->hdd, (size_t)slot->hdd_len);
-    }
-    // The checked sound loader can fail only before applying its state.
-    if (!x68k_sound_state_load(slot->sound, slot->sound_bytes)) goto fail;
-
-    if (g_ram && slot->ram) memcpy(g_ram, slot->ram, g_ram_bytes);
-    if (g_sram && slot->sram) memcpy(g_sram, slot->sram, SRAM_SIZE);
-    slot_commit_fdd(slot, 0, fd[0]);
-    slot_commit_fdd(slot, 1, fd[1]);
-    free(g_hdd0);
-    g_hdd0 = hdd;
-    g_hdd0_loaded = slot->hdd_loaded != 0;
-    g_hdd0_len = slot->hdd_len;
-    g_sasi_reset_req = slot->sasi_reset_req;
-    g_fdd_media_enable = slot->fdd_media_enable;
-    fdd_media_store(slot->fdd_media_pending);
-    // Restored images live in memory; no host path is opened or written.
-    g_fdd0_path[0] = g_fdd1_path[0] = g_hdd0_path[0] = 0;
-    g_ppu_phase = slot->ppu_phase;
-    io_latches_load(&slot->io);
-    return 1;
-fail:
-    free(fd[0]); free(fd[1]); free(hdd);
-    return 0;
-}
-
-static ArclHwSlot g_snaps[32];
-static ArclHwSlot g_rew[8];
-
-static void state_banks_clear(void) {
-    int i;
-    for (i = 0; i < MAX_ARCL_SLOTS; i++) slot_dispose(&g_arcl_slots[i]);
-    for (i = 0; i < 32; i++) slot_dispose(&g_snaps[i]);
-    for (i = 0; i < 8; i++) slot_dispose(&g_rew[i]);
-}
-
-static ArclHwSlot *extra_slot(int bank, int idx) {
-    if (bank == 0) {
-        if (idx < 0 || idx >= 32) return NULL;
-        return &g_snaps[idx];
-    }
-    if (bank != 1 || idx < 0 || idx >= 8) return NULL;
-    return &g_rew[idx];
-}
-
-static int slot_bytes(const ArclHwSlot *slot) {
-    int n;
-    if (!slot || !slot->valid) return 0;
-    n = (int)slot->ram_bytes + SRAM_SIZE;
-    n += slot->sound_bytes + slot->fdd_cap[0] + slot->fdd_cap[1] + slot->hdd_len;
-    return n;
-}
-
-int c_extra_bytes(int bank, int idx) {
-    return slot_bytes(extra_slot(bank, idx));
-}
-
-// One native bank convention shared with x68k_state.goose.
-static ArclHwSlot *state_slot(int bank, int idx) {
-    if (bank == 0) {
-        if (idx < 0 || idx >= MAX_ARCL_SLOTS) return NULL;
-        return &g_arcl_slots[idx];
-    }
-    if (bank == 1) return extra_slot(0, idx);
-    if (bank == 2) return extra_slot(1, idx);
-    return NULL;
-}
-
-int c_state_capture(int bank, int idx) { return hw_save_slot(state_slot(bank, idx)); }
-int c_state_validate(int bank, int idx) { return slot_check(state_slot(bank, idx)); }
-int c_state_restore(int bank, int idx) { return hw_load_slot(state_slot(bank, idx)); }
-uint64_t c_state_generation(int bank, int idx) {
-    ArclHwSlot *slot = state_slot(bank, idx);
-    return slot && slot->valid && slot->version == ARCL_SLOT_VERSION ? slot->generation : 0;
-}
-void c_state_drop(int bank, int idx) {
-    ArclHwSlot *slot = state_slot(bank, idx);
-    if (slot) slot_dispose(slot);
-}
-int c_state_bytes(int bank, int idx) {
-    ArclHwSlot *slot = state_slot(bank, idx);
-    return slot && slot->valid ? slot_bytes(slot) + (int)sizeof(*slot) : 0;
-}
-
-// ---- Slot image: one native slot as a flat byte image, for saving a state to a file.
-// Layout: ArclSlotImage header, then RAM, SRAM, sound state, FD0, FD1, HDD, each with the
-// length the header gives. The image is only meaningful to the build that wrote it; the
-// header carries its own size and ARCL_SLOT_VERSION so that a mismatch is rejected.
-#define ARCL_IMAGE_MAGIC 0x314E3658u /* "X6N1" */
-
 typedef struct {
     uint32_t magic;
-    uint32_t version;
     uint32_t header_bytes;
-    uint32_t ram_bytes;
-    uint32_t sound_bytes;
-    uint32_t hdd_len;
-    int32_t hdd_loaded;
-    int32_t sasi_reset_req;
-    int32_t fdd_cap[2];
-    int32_t fdd_len[2];
-    int32_t fdd_kind[2];
-    int32_t fdd_loaded[2];
-    int32_t fdd_trk[2];
-    int32_t fdd_cur[2];
-    uint32_t fdd_d88_top[2];
-    uint32_t fdd_d88_cur[2];
-    int32_t fdd_delay[2];
-    int32_t fdd_media_enable;
-    int32_t fdd_media_pending;
+    int32_t sound_bytes;
     int32_t ppu_phase;
     ArclIoLatches io;
-} ArclSlotImage;
+} NativeState;
 
-int64_t c_state_export_size(int bank, int idx) {
-    const ArclHwSlot *slot = state_slot(bank, idx);
-    if (!slot_check(slot)) return 0;
-    return (int64_t)sizeof(ArclSlotImage) + slot_bytes(slot);
+static void io_latches_save(ArclIoLatches *state);
+static void io_latches_load(const ArclIoLatches *state);
+static void opm_shadow_reset(void);
+
+int64_t c_native_state_size(void) {
+    int sn = x68k_sound_state_size();
+    return sn > 0 ? (int64_t)sizeof(NativeState) + sn : 0;
 }
 
-// Writes the image into out and returns its size, or 0 if the slot is empty or out is too small.
-int64_t c_state_export(int bank, int idx, X68kByteView out) {
-    const ArclHwSlot *slot = state_slot(bank, idx);
-    int64_t need = c_state_export_size(bank, idx);
-    ArclSlotImage h;
-    uint8_t *p;
-    int drive;
-    if (need <= 0 || !out.data || out.len < need) return 0;
+// Fills out, which must be exactly c_native_state_size() bytes. Returns 1 on success.
+int c_native_state_save(X68kByteView out) {
+    NativeState h;
+    int sn = x68k_sound_state_size();
+    if (sn <= 0 || !out.data || out.len != (int64_t)sizeof(h) + sn) return 0;
     memset(&h, 0, sizeof(h));
-    h.magic = ARCL_IMAGE_MAGIC;
-    h.version = ARCL_SLOT_VERSION;
+    h.magic = NATIVE_STATE_MAGIC;
     h.header_bytes = (uint32_t)sizeof(h);
-    h.ram_bytes = (uint32_t)slot->ram_bytes;
-    h.sound_bytes = (uint32_t)slot->sound_bytes;
-    h.hdd_len = (uint32_t)slot->hdd_len;
-    h.hdd_loaded = slot->hdd_loaded;
-    h.sasi_reset_req = slot->sasi_reset_req;
-    for (drive = 0; drive < 2; drive++) {
-        h.fdd_cap[drive] = slot->fdd_cap[drive];
-        h.fdd_len[drive] = slot->fdd_len[drive];
-        h.fdd_kind[drive] = slot->fdd_kind[drive];
-        h.fdd_loaded[drive] = slot->fdd_loaded[drive];
-        h.fdd_trk[drive] = slot->fdd_trk[drive];
-        h.fdd_cur[drive] = slot->fdd_cur[drive];
-        h.fdd_d88_top[drive] = slot->fdd_d88_top[drive];
-        h.fdd_d88_cur[drive] = slot->fdd_d88_cur[drive];
-        h.fdd_delay[drive] = slot->fdd_delay[drive];
-    }
-    h.fdd_media_enable = slot->fdd_media_enable;
-    h.fdd_media_pending = slot->fdd_media_pending;
-    h.ppu_phase = slot->ppu_phase;
-    h.io = slot->io;
-    p = out.data;
-    memcpy(p, &h, sizeof(h)); p += sizeof(h);
-    memcpy(p, slot->ram, slot->ram_bytes); p += slot->ram_bytes;
-    memcpy(p, slot->sram, SRAM_SIZE); p += SRAM_SIZE;
-    if (slot->sound_bytes) { memcpy(p, slot->sound, (size_t)slot->sound_bytes); p += slot->sound_bytes; }
-    for (drive = 0; drive < 2; drive++) {
-        if (slot->fdd_cap[drive]) { memcpy(p, slot->fdd[drive], (size_t)slot->fdd_cap[drive]); p += slot->fdd_cap[drive]; }
-    }
-    if (slot->hdd_len) { memcpy(p, slot->hdd, (size_t)slot->hdd_len); p += slot->hdd_len; }
-    return (int64_t)(p - out.data);
+    h.sound_bytes = sn;
+    h.ppu_phase = g_ppu_phase;
+    io_latches_save(&h.io);
+    memcpy(out.data, &h, sizeof(h));
+    return x68k_sound_state_save(out.data + sizeof(h), sn) ? 1 : 0;
 }
 
-// Builds a slot from an image. Every length is checked against the bytes present before
-// anything is copied, and the finished slot must pass slot_check; the existing slot is
-// replaced only then. Returns 1 on success.
-int c_state_import(int bank, int idx, X68kByteView in) {
-    ArclHwSlot *slot = state_slot(bank, idx);
-    ArclHwSlot next = {0};
-    ArclHwSlot old;
-    ArclSlotImage h;
-    const uint8_t *p;
-    int64_t left;
-    int drive;
-    if (!slot || !in.data || in.len < (int64_t)sizeof(h)) return 0;
-    memcpy(&h, in.data, sizeof(h));
-    if (h.magic != ARCL_IMAGE_MAGIC || h.version != ARCL_SLOT_VERSION || h.header_bytes != sizeof(h)) return 0;
-    if (h.ram_bytes != (uint32_t)g_ram_bytes || h.sound_bytes > (64u << 20) || h.hdd_len > HDD_SIZE) return 0;
-    for (drive = 0; drive < 2; drive++) {
-        if (h.fdd_cap[drive] < 0 || h.fdd_cap[drive] > FDD_MAX_IMAGE) return 0;
-    }
-    left = in.len - (int64_t)sizeof(h);
-    if (left != (int64_t)h.ram_bytes + SRAM_SIZE + h.sound_bytes + h.fdd_cap[0] + h.fdd_cap[1] + h.hdd_len) return 0;
-    p = in.data + sizeof(h);
-#define TAKE(field, size) \
-    do { if (size) { next.field = (uint8_t *)state_alloc((size_t)(size)); \
-         if (!next.field) { slot_dispose(&next); return 0; } \
-         memcpy(next.field, p, (size_t)(size)); p += (size); } } while (0)
-    TAKE(ram, h.ram_bytes);
-    TAKE(sram, SRAM_SIZE);
-    TAKE(sound, h.sound_bytes);
-    TAKE(fdd[0], h.fdd_cap[0]);
-    TAKE(fdd[1], h.fdd_cap[1]);
-    TAKE(hdd, h.hdd_len);
-#undef TAKE
-    next.ram_bytes = h.ram_bytes;
-    next.sound_bytes = (int)h.sound_bytes;
-    next.hdd_len = (int)h.hdd_len;
-    next.hdd_loaded = h.hdd_loaded;
-    next.sasi_reset_req = h.sasi_reset_req;
-    for (drive = 0; drive < 2; drive++) {
-        next.fdd_cap[drive] = h.fdd_cap[drive];
-        next.fdd_len[drive] = h.fdd_len[drive];
-        next.fdd_kind[drive] = h.fdd_kind[drive];
-        next.fdd_loaded[drive] = h.fdd_loaded[drive];
-        next.fdd_trk[drive] = h.fdd_trk[drive];
-        next.fdd_cur[drive] = h.fdd_cur[drive];
-        next.fdd_d88_top[drive] = h.fdd_d88_top[drive];
-        next.fdd_d88_cur[drive] = h.fdd_d88_cur[drive];
-        next.fdd_delay[drive] = h.fdd_delay[drive];
-    }
-    next.fdd_media_enable = h.fdd_media_enable;
-    next.fdd_media_pending = h.fdd_media_pending;
-    next.ppu_phase = h.ppu_phase;
-    next.io = h.io;
-    next.version = ARCL_SLOT_VERSION;
-    next.valid = true;
-    if (!slot_check(&next)) { slot_dispose(&next); return 0; }
-    old = *slot;
-    if (++g_state_generation == 0) ++g_state_generation;
-    next.generation = g_state_generation;
-    *slot = next;
-    slot_dispose(&old);
+static int native_state_read(X68kByteView in, NativeState *h) {
+    if (!in.data || in.len < (int64_t)sizeof(*h)) return 0;
+    memcpy(h, in.data, sizeof(*h));
+    if (h->magic != NATIVE_STATE_MAGIC || h->header_bytes != sizeof(*h)) return 0;
+    if (h->sound_bytes <= 0 || in.len != (int64_t)sizeof(*h) + h->sound_bytes) return 0;
+    if (cpu_clock_index(h->io.cpu_mhz) < 0 || h->io.opm_addr < 0 || h->io.opm_addr > 255) return 0;
+    return x68k_sound_state_check(in.data + sizeof(*h), h->sound_bytes) ? 1 : 0;
+}
+
+int c_native_state_check(X68kByteView in) {
+    NativeState h;
+    return native_state_read(in, &h);
+}
+
+// Either applies the whole image or changes nothing.
+int c_native_state_load(X68kByteView in) {
+    NativeState h;
+    if (!native_state_read(in, &h)) return 0;
+    // The checked sound loader can fail only before applying its state.
+    if (!x68k_sound_state_load(in.data + sizeof(h), h.sound_bytes)) return 0;
+    g_ppu_phase = h.ppu_phase;
+    io_latches_load(&h.io);
     return 1;
 }
 
@@ -2701,11 +1781,6 @@ void c_machine_reset_devices(void) {
     g_pia_c = 0x0b;
     memset(g_joy_strobe, 0, sizeof(g_joy_strobe));
     g_ppu_phase = 0;
-    // Preserve media contents, cursor and physical insertion countdown.
-    // px68k FDD_Reset also leaves that state in the drive.
-    g_fdd_media_enable = 0;
-    fdd_media_store(0);
-    g_sasi_reset_req = 0;
     c_host_input_discard();
     c_audio_discard();
 }

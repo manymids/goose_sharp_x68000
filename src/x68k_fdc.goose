@@ -2,6 +2,7 @@
 // ※実機 ROM / ディスクコード自走用
 
 import .x68k_bridge;
+import .x68k_disk;
 namespace fdc;
 
 // uPD72065 のコマンド番号 (コマンドバイトの下位 5 bit)
@@ -107,11 +108,8 @@ fn ephase_end(fdc: X68kFDC&) {
     fdc.read_pos = 0;
     fdc.int_pending = true;
 
-    var idc: u8 = 0;
-    var idh: u8 = 0;
-    var idr: u8 = 0;
-    var idn: u8 = 0;
-    if c_fdd_current_id(fdc.drv, idc, idh, idr, idn) != 0 {
+    let found, idc, idh, idr, idn = disk::fd_current_id(fdc.drv);
+    if found {
         fdc.rsp_buf[3] = idc;
         fdc.rsp_buf[4] = idh;
         fdc.rsp_buf[5] = idr;
@@ -131,13 +129,13 @@ fn exec_cmd(fdc: X68kFDC&) {
             fdc.st0 = us;
             var st3: u8 = us;
             if fdc.cyl == 0 { st3 |= 0x10; } // Track 0
-            if c_fdd_is_loaded(fdc.drv) { st3 |= 0x20; } // Ready
+            if disk::fd_loaded(fdc.drv) { st3 |= 0x20; } // Ready
             fdc.rsp_buf[0] = st3;
         },
         FDC_RECALIBRATE => {
             fdc.st0 = (fdc.prm_buf[1] & 7);
             fdc.cyl = 0;
-            if !c_fdd_is_loaded(fdc.drv) {
+            if !disk::fd_loaded(fdc.drv) {
                 fdc.st0 |= 0x48; // no FD
             } else if fdc.drv >= 0 && fdc.drv < 2 {
                 fdc.st0 |= 0x20; // with FD and drive
@@ -153,7 +151,7 @@ fn exec_cmd(fdc: X68kFDC&) {
         },
         FDC_SEEK => {
             fdc.st0 = (fdc.prm_buf[1] & 7);
-            if c_fdd_is_loaded(fdc.drv) {
+            if disk::fd_loaded(fdc.drv) {
                 fdc.cyl = fdc.prm_buf[2];
                 fdc.st0 |= 0x20;
             } else {
@@ -164,7 +162,7 @@ fn exec_cmd(fdc: X68kFDC&) {
         FDC_READ_ID => {
             fdc.st0 = fdc.prm_buf[1] & 7;
             let hd = (fdc.prm_buf[1] >> 2) & 1;
-            if c_fdd_is_loaded(fdc.drv) {
+            if disk::fd_loaded(fdc.drv) {
                 fdc.rsp_buf[0] = fdc.st0;
                 fdc.rsp_buf[1] = fdc.st1;
                 fdc.rsp_buf[2] = fdc.st2;
@@ -186,11 +184,11 @@ fn exec_cmd(fdc: X68kFDC&) {
         },
         FDC_WRITE_DATA, FDC_WRITE_DELETED => {
             fdc.st0 = (fdc.prm_buf[1] & 7);
-            if c_fdd_is_loaded(fdc.drv) {
+            if disk::fd_loaded(fdc.drv) {
                 let hd = (fdc.prm_buf[1] >> 2) & 1;
                 let trk = fdc.cyl * 2 + hd;
                 let n: i32 = fdc.prm_buf[5];
-                if c_fdd_seek(fdc.drv, trk) == 0 {
+                if !disk::fd_seek(fdc.drv, trk) {
                     fdc.st0 |= 0x40;
                     fdc.st1 |= 0x04;
                     fdc.ephase_end();
@@ -206,7 +204,7 @@ fn exec_cmd(fdc: X68kFDC&) {
         },
         FDC_READ_DATA, FDC_READ_DELETED => {
             fdc.st0 = (fdc.prm_buf[1] & 7);
-            if c_fdd_is_loaded(fdc.drv) {
+            if disk::fd_loaded(fdc.drv) {
                 let hd = (fdc.prm_buf[1] >> 2) & 1;
                 let trk = fdc.cyl * 2 + hd;
                 let c: i32 = fdc.prm_buf[2];
@@ -216,8 +214,7 @@ fn exec_cmd(fdc: X68kFDC&) {
 
                 let sec_size = if n > 0 { (128 << n) as i32 } else { 1024 };
 
-                let ok = c_fdd_read_fdc(fdc.drv, trk, c, h, r, n, fdc.data_buf[0]);
-                if ok != 0 {
+                if disk::fd_read(fdc.drv, trk, c, h, r, n, fdc.data_buf[..]) {
                     fdc.phase = FdcPhase.Exec { len: sec_size, writing: false };
                     fdc.read_pos = 0;
                 } else {
@@ -300,10 +297,10 @@ fn read(fdc: X68kFDC&, reg: i32) -> u8 {
         }
     } else if reg == 5 { // 0x00E94005: Control / Status
         var ret: u8 = 0;
-        if (fdc.ctrl & 1) != 0 && c_fdd_is_loaded(0) {
+        if (fdc.ctrl & 1) != 0 && disk::fd_loaded(0) {
             ret |= 0x80; // Drive 0 ready
         }
-        if (fdc.ctrl & 2) != 0 && c_fdd_is_loaded(1) {
+        if (fdc.ctrl & 2) != 0 && disk::fd_loaded(1) {
             ret |= 0x80; // Drive 1 ready
         }
         return ret;
@@ -332,8 +329,7 @@ fn write_buffer(fdc: X68kFDC&, last: bool) {
         let h: i32 = fdc.prm_buf[3];
         let r: i32 = fdc.prm_buf[4];
         let n: i32 = fdc.prm_buf[5];
-        let ok = c_fdd_write_fdc(fdc.drv, trk, c, h, r, n, fdc.data_buf[0]);
-        if ok == 0 {
+        if !disk::fd_write(fdc.drv, trk, c, h, r, n, fdc.data_buf[..]) {
             fdc.st0 |= 0x40;
             fdc.st1 |= 0x04;
             fdc.ephase_end();

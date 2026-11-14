@@ -261,13 +261,14 @@ This public-distribution layout does not include `tools/architecture/build.ps1` 
 | [src/main.goose](src/main.goose) | Launch arguments, GUI/ARCL event loop |
 | `src/m68k_*` | CPU instructions, MMU |
 | `src/x68k_mfp/fdc/dmac/sasi/rtc.goose` | Peripherals |
+| [src/x68k_disk.goose](src/x68k_disk.goose) | FD (XDF, D88, DIM) and HDD images |
 | [src/x68k_ppu.goose](src/x68k_ppu.goose) | Scanline processing and rendering composition |
 | [src/x68k_emu.goose](src/x68k_emu.goose) | Frame progression and shared reset logic |
-| [src/x68k_state.goose](src/x68k_state.goose) | Shared save logic for regular saves, snapshots, and rewind |
+| [src/x68k_state.goose](src/x68k_state.goose) | Shared save logic for regular saves, snapshots, and rewind, including the copies of RAM and the disk images |
 | [src/x68k_session.goose](src/x68k_session.goose) / [src/x68k_input.goose](src/x68k_input.goose) | Shared execution control and input handling across frontends |
 | [src/mcp_server.goose](src/mcp_server.goose) | JSON-RPC parsing, exposed tools, responses |
 | [src/x68k_config.c](src/x68k_config.c) | GUI INI handling. Independent of machine save states |
-| `src/x68k_bridge.c` / `src/sound/` | Win32, file I/O, audio device and mixing |
+| `src/x68k_bridge.c` / `src/sound/` | Win32, opening files, audio device and mixing |
 
 In the original development tree, release/debug CPU, device, save, lifecycle-management, and configuration tests have been run, along with confirming boot and save/restore for Chourenjin 68K and Doom. For configuration, separation from ARCL, CLI priority, the initial empty boot, and retaining the existing INI on a failed write have also been verified.
 
@@ -280,7 +281,7 @@ goose build .\src\test_core.goose -o .\test_core.exe
 .\test_core.exe
 ```
 
-It prints `276 / 276 checks passed` when everything passes, and reports each failure and exits with status 1 otherwise. Building with `--debug` also enables the overflow and range checks.
+It prints `320 / 320 checks passed` when everything passes, and reports each failure and exits with status 1 otherwise. Building with `--debug` also enables the overflow and range checks.
 
 ## Troubleshooting and known limitations
 

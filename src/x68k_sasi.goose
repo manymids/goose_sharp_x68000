@@ -1,7 +1,8 @@
 // SASI (0xE96000). Phase and command bytes live here.
-// Sector bytes stay in c_hdd_read_sector / c_hdd_write_sector.
+// Sector bytes are in x68k_disk (hdd_read / hdd_write).
 
 import .x68k_bridge;
+import .x68k_disk;
 namespace sasi;
 
 // Tags are internal; their order is not the hardware bus status encoding.
@@ -49,13 +50,13 @@ fn clear_buf(sasi: X68kSASI&) {
 }
 
 fn pull_host_reset(sasi: X68kSASI&) {
-    if c_hdd_take_sasi_reset() != 0 {
+    if disk::take_sasi_reset() {
         sasi.reset();
     }
 }
 
 fn image_present() -> bool {
-    return c_hdd_unit_ok() != 0;
+    return disk::hdd_unit_ok();
 }
 
 fn unit_present(sasi: X68kSASI&) -> bool {
@@ -67,14 +68,14 @@ fn seek(sasi: X68kSASI&) -> i32 {
         sasi.clear_buf();
         return -1;
     }
-    return c_hdd_read_sector(sasi.sector, sasi.buf[0]);
+    return disk::hdd_read(sasi.sector, sasi.buf);
 }
 
 fn flush(sasi: X68kSASI&) -> i32 {
     if !sasi.unit_present() {
         return -1;
     }
-    return c_hdd_write_sector(sasi.sector, sasi.buf[0]);
+    return disk::hdd_write(sasi.sector, sasi.buf);
 }
 
 fn dec_blocks(sasi: X68kSASI&) {

@@ -10,14 +10,14 @@ import .x68k_ppu;
 import .x68k_fdc;
 import .x68k_dmac;
 import .x68k_sasi;
+import .x68k_disk;
 import .x68k_ram;
 import .x68k_rom;
 import .x68k_session_types;
 namespace emu;
 
-// Sound and the floppy host write these when the event happens. The step reads them.
+// Sound writes this when the event happens. The step reads it.
 var ::g_host_dma_vec: i32 = -1;
-var ::g_fdd_media_irq: i32 = 0;
 
 struct X68kEmulator {
     session: X68kSession = X68kSession {},
@@ -41,7 +41,7 @@ fn bind(emu: X68kEmulator&) -> bool {
         emu.mmu.tvram[..], emu.mmu.gvram[..], emu.mmu.pal[..], emu.mmu.vcreg[..],
         emu.mmu.sprite[..], emu.mmu.bgreg[..], emu.mmu.bgram[..], emu.mmu.bg_chr8[..],
         emu.mmu.bg_chr16[..], emu.ppu.fb[..], g_ram_limit, g_screen_w, g_screen_h,
-        g_host_dma_vec, g_fdd_media_irq);
+        g_host_dma_vec);
     if epoch == 0 { return false; }
     emu.binding_epoch = epoch;
     return true;
@@ -71,6 +71,7 @@ fn reset(emu: X68kEmulator&) {
     emu.mmu.init();
     x68k_sram_set_write_enable(0);
     c_machine_reset_devices();
+    disk::machine_reset();
     c_set_screen_mode(768, 512);
     c_clear_framebuffer(0xFF000000);
     c_set_frame_ready(0);
@@ -166,9 +167,9 @@ fn step_core(emu: X68kEmulator&) -> i32 {
         }
     }
     // FDD 挿抜。px68k は bit1 が立っているときだけ要求し、ベクタは +1。
-    if !took_level1 && g_fdd_media_irq != 0 {
+    if !took_level1 && g_disk.media_pending {
         if emu.cpu.int_mask() < 1 {
-            c_fdd_ack_media_irq();
+            g_disk.media_pending = false;
             let vect = (emu.mmu.ioc_int_vect as i32) + 1;
             m68k::interrupt(emu.cpu, emu.mmu, 1, vect);
         }
@@ -356,8 +357,7 @@ fn run_frame(emu: X68kEmulator&) {
     c_sound_frame_update(samples);
     emu.mmu.dmac.sound_pull();
 
-    let media_en: i32 = if (emu.mmu.ioc_int_stat & 2) != 0 { 1 } else { 0 };
-    c_fdd_media_tick(media_en);
+    disk::media_tick((emu.mmu.ioc_int_stat & 2) != 0);
 
     emu.total_frames++;
 }

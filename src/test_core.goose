@@ -14,6 +14,7 @@ import .x68k_fdc;
 import .x68k_dmac;
 import .x68k_rtc;
 import .x68k_state;
+import .x68k_disk;
 
 var g_checks = 0;
 var g_failures = 0;
@@ -593,7 +594,7 @@ fn test_disasm() {
     check_dis([0x4E7A, 0x0002], "DC.W $4e7a", 2);
 }
 
-// ステートファイルの読み込みは、C 側へ渡す前に形式を確かめて弾く。
+// ステートファイルの読み込みは、スロットへ入れる前に形式を確かめて弾く。
 fn test_state_file() {
     var empty: u8[>..] = [];
     check("empty data is not a state file", state::import_image(STATE_SLOT, 0, empty[..]) == state::StateFileError.NotAStateFile);
@@ -619,6 +620,140 @@ fn test_state_file() {
     check("FNV-1a of \"a\"", h == 0xAF63DC4C8601EC8C);
 }
 
+// ディスクモジュール。イメージはその場で作り、ファイルは使わない。
+fn mount_fd0(kind: disk::FdKind, image: u8[:]) {
+    var none: u8[>..] = [];
+    var s = DiskState {};
+    s.fd[0] = disk::FdDrive { kind: kind, len: image.len as i32, .. };
+    disk::restore(s, image, none[..], none[..]);
+}
+
+fn test_disk_paths() {
+    check("d88 by extension", disk::kind_of("a.D88") == disk::FdKind.D88);
+    check("88d by extension", disk::kind_of("dir.x/a.88d") == disk::FdKind.D88);
+    check("dim by extension", disk::kind_of("a.dim") == disk::FdKind.Dim);
+    check("2hd is a flat image", disk::kind_of("a.2HD") == disk::FdKind.Xdf);
+    check("no extension is a flat image", disk::kind_of("image") == disk::FdKind.Xdf);
+    check("hdf is a hard disk", disk::path_is_hdd("X.HDF") && disk::path_is_hdd("x.hds"));
+    check("other names are floppies", !disk::path_is_hdd("x.xdf") && !disk::path_is_hdd("x.hdfx") && !disk::path_is_hdd("hdf"));
+}
+
+fn test_disk_xdf() {
+    var image: u8[>..] = [];
+    image.resize(FDD_XDF_BYTES, 0);
+    image[(3 * 8 + 1) * 1024] = 0xA5; // トラック 3 (シリンダ 1、ヘッド 1) のセクタ 2
+    mount_fd0(disk::FdKind.Xdf, image[..]);
+    var buf: u8[8192] = [0; 8192];
+    check("xdf: read a sector", disk::fd_read(0, 3, 1, 1, 2, 3, buf[..]) && buf[0] == 0xA5);
+    let ok, c, h, r, n = disk::fd_current_id(0);
+    check("xdf: READ ID gives the next sector", ok && c == 1 && h == 1 && r == 3 && n == 3);
+    check("xdf: the ID must match the track", !disk::fd_read(0, 3, 2, 1, 2, 3, buf[..]));
+    check("xdf: there is no sector 9", !disk::fd_read(0, 3, 1, 1, 9, 3, buf[..]));
+    check("xdf: there is no track 154", !disk::fd_seek(0, 154));
+    buf[0] = 0x5A;
+    check("xdf: write a sector", disk::fd_write(0, 3, 1, 1, 2, 3, buf[..]));
+    buf[0] = 0;
+    check("xdf: the write is read back", disk::fd_read(0, 3, 1, 1, 2, 3, buf[..]) && buf[0] == 0x5A);
+    check("an empty drive does not seek", !disk::fd_seek(1, 0) && !disk::fd_loaded(1));
+}
+
+fn test_disk_dim() {
+    // 2HS: 1024 バイト * 9 セクタ。トラック 0〜2 だけがあるイメージ。
+    var image: u8[>..] = [];
+    image.resize(256 + 9 * 1024 * 3, 0);
+    image[0] = 1;
+    for trk in 3 { image[1 + trk] = 1; }
+    image[256 + 9 * 1024 + 1024] = 0xC3; // トラック 1 の 2 番目のセクタ。2HS の ID では R = 11
+    mount_fd0(disk::FdKind.Dim, image[..]);
+    var buf: u8[8192] = [0; 8192];
+    check("dim: read a 2HS sector", disk::fd_read(0, 1, 0, 1, 11, 3, buf[..]) && buf[0] == 0xC3);
+    let ok, c, h, r, n = disk::fd_current_id(0);
+    check("dim: READ ID gives the next 2HS sector", ok && c == 0 && h == 1 && r == 12 && n == 3);
+    check("dim: a 512-byte ID does not match", !disk::fd_read(0, 1, 0, 1, 11, 2, buf[..]));
+    check("dim: a track the header leaves out", !disk::fd_seek(0, 3));
+    check("dim: a sector past the image", disk::fd_seek(0, 2) && disk::fd_read(0, 2, 1, 0, 9, 3, buf[..]) && !disk::fd_seek(0, 200));
+}
+
+fn test_disk_d88() {
+    // トラック 0 に 256 バイトのセクタが 2 つあるイメージ。
+    let top = 0x2B0;
+    var image: u8[>..] = [];
+    image.resize(top + 2 * (16 + 256), 0);
+    image[28] = (image.len & 0xFF) as u8;
+    image[29] = (image.len >> 8) as u8;
+    image[32] = 0xB0;
+    image[33] = 0x02;
+    for s in 2 {
+        let at = top + s * (16 + 256);
+        image[at + 2] = (s + 1) as u8; // R
+        image[at + 3] = 1;             // N
+        image[at + 4] = 2;             // このトラックのセクタ数
+        image[at + 15] = 1;            // データ長 256
+    }
+    image[top + (16 + 256) + 16] = 0x77;
+    mount_fd0(disk::FdKind.D88, image[..]);
+    var buf: u8[8192] = [0; 8192];
+    check("d88: read the last sector", disk::fd_read(0, 0, 0, 0, 2, 1, buf[..]) && buf[0] == 0x77);
+    let ok, _, _, r, n = disk::fd_current_id(0);
+    check("d88: READ ID wraps to the first sector", ok && r == 1 && n == 1);
+    check("d88: read the first sector", disk::fd_read(0, 0, 0, 0, 1, 1, buf[..]) && buf[0] == 0);
+    let ok2, _, _, r2, _ = disk::fd_current_id(0);
+    check("d88: READ ID moves to the second sector", ok2 && r2 == 2);
+    check("d88: no such sector", !disk::fd_read(0, 0, 0, 0, 3, 1, buf[..]));
+    check("d88: a track with no data", !disk::fd_seek(0, 1));
+    buf[0] = 0x33;
+    check("d88: write a sector", disk::fd_write(0, 0, 0, 0, 2, 1, buf[..]));
+    buf[0] = 0;
+    check("d88: the write is read back", disk::fd_read(0, 0, 0, 0, 2, 1, buf[..]) && buf[0] == 0x33);
+}
+
+fn test_disk_hdd_and_media() {
+    var none: u8[>..] = [];
+    var hdd: u8[>..] = [];
+    hdd.resize(1024, 0);
+    hdd[2 * 256] = 0x42;
+    var s = DiskState {};
+    disk::restore(s, none[..], none[..], hdd[..]);
+    var sector: u8[256] = [0xFF; 256];
+    check("hdd: read a sector", disk::hdd_read(2, sector) == 1 && sector[0] == 0x42 && sector[1] == 0);
+    sector[5] = 0x99;
+    check("hdd: write a sector", disk::hdd_write(3, sector) == 1 && disk::hdd_read(3, sector) == 1 && sector[5] == 0x99);
+    check("hdd: a sector past the image", disk::hdd_read(4, sector) == 0 && sector[5] == 0);
+    disk::hdd_eject();
+    check("hdd: no image", disk::hdd_read(0, sector) == -1 && !disk::hdd_unit_ok());
+    check("hdd: ejecting asks SASI to reset, once", disk::take_sasi_reset() && !disk::take_sasi_reset());
+
+    // 挿入の通知は 3 フレーム後、排出は入っていたときすぐ
+    var image: u8[>..] = [];
+    image.resize(FDD_XDF_BYTES, 0);
+    mount_fd0(disk::FdKind.Xdf, image[..]);
+    g_disk.fd[0].delay = 2;
+    disk::media_tick(true);
+    check("media: not yet", !g_disk.media_pending);
+    disk::media_tick(true);
+    check("media: the insertion is reported", g_disk.media_pending);
+    disk::machine_reset();
+    check("media: a reset withdraws the request and keeps the disk", !g_disk.media_pending && disk::fd_loaded(0));
+    disk::fd_eject(0);
+    check("media: masked, nothing is reported", !g_disk.media_pending && !disk::fd_loaded(0));
+    mount_fd0(disk::FdKind.Xdf, image[..]);
+    disk::media_tick(true);
+    disk::fd_eject(0);
+    check("media: an ejection is reported at once", g_disk.media_pending);
+
+    // 保存してあった状態の検査
+    var good = DiskState {};
+    good.fd[0] = disk::FdDrive { kind: disk::FdKind.Xdf, len: 1000, trk: 5, .. };
+    check("state: a short XDF padded to full size", disk::state_ok(good, [FDD_XDF_BYTES, 0, 0]));
+    check("state: an XDF of another size", !disk::state_ok(good, [1000, 0, 0]));
+    check("state: bytes for an empty drive", !disk::state_ok(good, [FDD_XDF_BYTES, 16, 0]));
+    check("state: a hard disk over 40 MB", !disk::state_ok(good, [FDD_XDF_BYTES, 0, HDD_MAX_BYTES + 1]));
+    good.fd[0].delay = 9;
+    check("state: an impossible delay", !disk::state_ok(good, [FDD_XDF_BYTES, 0, 0]));
+    disk::power_on();
+    check("power on empties every drive", !disk::fd_loaded(0) && !disk::hdd_loaded() && !g_disk.media_pending);
+}
+
 fn main() {
     test_flag_helpers();
     test_conditions();
@@ -633,6 +768,11 @@ fn main() {
     test_rtc();
     test_disasm();
     test_state_file();
+    test_disk_paths();
+    test_disk_xdf();
+    test_disk_dim();
+    test_disk_d88();
+    test_disk_hdd_and_media();
     print(g_checks - g_failures, " / ", g_checks, " checks passed");
     if g_failures > 0 { exit(1); }
 }

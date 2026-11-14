@@ -10,6 +10,7 @@ import .mcp_server;
 import .x68k_session;
 import .x68k_input;
 import .x68k_config;
+import .x68k_disk;
 
 fn launch_error(message: const u8[:]) {
     write_stderr(message);
@@ -55,7 +56,7 @@ fn print_banner(content_path: u8[>..]&, sys_dir: u8[>..]&) {
     print("Content Disk : ", content_path);
     print("System ROMs  : ", sys_dir);
     print("Clock / RAM  : ", c_get_cpu_mhz(), " MHz / 12 MB");
-    print("Floppy Loaded: ", if c_fdd_is_loaded(0) { "Yes" } else { "No" });
+    print("Floppy Loaded: ", if disk::fd_loaded(0) { "Yes" } else { "No" });
     print("-------------------------------------------------");
 }
 
@@ -78,6 +79,39 @@ fn pump_host_keys(emu: X68kEmulator&) {
 
 let UI_COMMAND_RESET = 3; // メニュー / F5
 
+// ウィンドウのメニューが出すディスクの出し入れ (c_gui_take_media_request の戻り値)
+let MEDIA_FD0_INSERT = 1;
+let MEDIA_FD0_EJECT = 2;
+let MEDIA_FD1_INSERT = 3;
+let MEDIA_FD1_EJECT = 4;
+let MEDIA_HDD_INSERT = 5;
+let MEDIA_HDD_EJECT = 6;
+
+// メニューで選ばれた出し入れを行う。新しいディスクから起動し直すべきなら true。
+fn apply_menu_media() -> bool {
+    var path: u8[520] = [0; 520];
+    var len: i32 = 0;
+    let request = c_gui_take_media_request(path[0], 520, len);
+    if request == MEDIA_FD0_INSERT { return disk::fd_load(0, path[..len]); }
+    if request == MEDIA_FD0_EJECT { disk::fd_eject(0); }
+    if request == MEDIA_FD1_INSERT { disk::fd_load(1, path[..len]); }
+    if request == MEDIA_FD1_EJECT { disk::fd_eject(1); }
+    if request == MEDIA_HDD_INSERT && disk::hdd_load(path[..len]) {
+        // IPL は SASI より先にフロッピーから起動するので、フロッピーは抜いておく。
+        disk::fd_eject(0);
+        disk::fd_eject(1);
+        return true;
+    }
+    if request == MEDIA_HDD_EJECT { disk::hdd_eject(); }
+    return false;
+}
+
+// リセットの操作 (メニュー / F5) か、起動し直しの要るディスクの出し入れがあったか。
+fn reset_requested() -> bool {
+    let command = win32_ui_get_command();
+    return apply_menu_media() || command == UI_COMMAND_RESET;
+}
+
 // ARCL MCP を標準入出力で受ける。C 版と同じく resume まで止めておき、stdin は待たずに見る。
 fn run_mcp(emu: X68kEmulator&, want_window: bool, screen_w: i32, screen_h: i32, scale: i32) {
     emu.is_paused = true;
@@ -99,7 +133,7 @@ fn run_mcp(emu: X68kEmulator&, want_window: bool, screen_w: i32, screen_h: i32, 
         if window_ok && win32_ui_is_open() {
             win32_ui_poll();
             pump_host_keys(emu);
-            if win32_ui_get_command() == UI_COMMAND_RESET { mcp::reset(emu); }
+            if reset_requested() { mcp::reset(emu); }
         }
 
         let wait_ms: i32 = if emu.is_paused { 20 } else { 0 };
@@ -136,7 +170,7 @@ fn run_gui(emu: X68kEmulator&, screen_w: i32, screen_h: i32, scale: i32, max_fra
         pump_host_keys(emu);
         emu.mmu.joy1 = c_host_joy_byte() as u8;
 
-        if win32_ui_get_command() == UI_COMMAND_RESET {
+        if reset_requested() {
             session::reset(emu);
             win32_ui_render_fb();
             session::resume(emu, win32_ui_get_ticks_ms()); // GUI resumes; MCP stays paused.
@@ -308,20 +342,26 @@ fn main() {
     }
 
     var sys_buf: u8[>..] = []; sys_buf.append(sys_dir); sys_buf.push('\0');
-    var cnt_buf: u8[>..] = []; cnt_buf.append(content_path); cnt_buf.push('\0');
 
-    // ハードウェアメモリ (RAM 12MB, ROM, VRAM, FDD) の初期化
-    let mem_ok = x68k_mem_init(sys_buf[0], sys_buf.len as i32, cnt_buf[0], cnt_buf.len as i32);
+    // ハードウェアメモリ (RAM 12MB, ROM, VRAM) の初期化
+    let mem_ok = x68k_mem_init(sys_buf[0], sys_buf.len as i32);
     if mem_ok == 0 {
         write_stderr(str("Could not initialize BIOS/memory from: ", sys_dir, " (iplrom.dat 128 KiB, cgrom.dat 768 KiB required)\n"));
         if !mcp_mode && !no_window { c_startup_error(); }
         exit(1);
     }
-    if content_path.len > 0 && !c_fdd_is_loaded(0) && !c_hdd_is_loaded(0) {
-        x68k_mem_destroy();
-        launch_error("disk image could not be loaded\n");
+    if gui_preferences && !content_set {
+        gui_mount_saved_media();
+    } else {
+        disk::power_on();
+        if content_path.len > 0 {
+            let loaded = if disk::path_is_hdd(content_path[..]) { disk::hdd_load(content_path[..]) } else { disk::fd_load(0, content_path[..]) };
+            if !loaded {
+                x68k_mem_destroy();
+                launch_error("disk image could not be loaded\n");
+            }
+        }
     }
-    if gui_preferences && !content_set { gui_mount_saved_media(); }
 
     // Goose ネイティブ X68000 エミュレータ本体の初期化
     var emu = X68kEmulator {};

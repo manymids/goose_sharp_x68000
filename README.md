@@ -260,13 +260,14 @@ Gooseがソースと同じフォルダの [src/main.build](src/main.build) を�
 | [src/main.goose](src/main.goose) | 起動引数・GUI/ARCLのイベントループ |
 | `src/m68k_*` | CPU命令・MMU |
 | `src/x68k_mfp/fdc/dmac/sasi/rtc.goose` | 周辺機器 |
+| [src/x68k_disk.goose](src/x68k_disk.goose) | FD（XDF・D88・DIM）とHDDのイメージ |
 | [src/x68k_ppu.goose](src/x68k_ppu.goose) | 走査線・描画合成 |
 | [src/x68k_emu.goose](src/x68k_emu.goose) | フレーム進行と共通リセット |
-| [src/x68k_state.goose](src/x68k_state.goose) | 通常保存・snapshot・rewindの共通保存 |
+| [src/x68k_state.goose](src/x68k_state.goose) | 通常保存・snapshot・rewindの共通保存（RAM・ディスクイメージの写しを含む） |
 | [src/x68k_session.goose](src/x68k_session.goose) / [src/x68k_input.goose](src/x68k_input.goose) | フロントエンド共通の実行制御と入力 |
 | [src/mcp_server.goose](src/mcp_server.goose) | JSON-RPCの解析・公開ツール・応答 |
 | [src/x68k_config.c](src/x68k_config.c) | GUI用INI。機械の保存状態とは独立 |
-| `src/x68k_bridge.c` / `src/sound/` | Win32・ファイル・音声デバイスと合成 |
+| `src/x68k_bridge.c` / `src/sound/` | Win32・ファイルを開く処理・音声デバイスと合成 |
 
 元の開発ツリーではrelease/debugのCPU・機器・保存・寿命管理・設定のテストと、超連射68K・Doomの起動および保存復帰を確認しています。設定については、ARCLとの分離、CLIの優先、初回空起動、書き込み失敗時の既存INI維持も検証しています。
 
@@ -279,7 +280,7 @@ goose build .\src\test_core.goose -o .\test_core.exe
 .\test_core.exe
 ```
 
-すべて通ると `276 / 276 checks passed` と表示し、失敗があれば内容を出して終了コード1で終わります。`--debug` を付けてビルドすると、桁あふれと範囲の検査も有効になります。
+すべて通ると `320 / 320 checks passed` と表示し、失敗があれば内容を出して終了コード1で終わります。`--debug` を付けてビルドすると、桁あふれと範囲の検査も有効になります。
 
 ## 困ったとき・既知の制限
 

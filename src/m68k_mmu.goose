@@ -767,7 +767,7 @@ fn io_write8(mmu: M68kMMU&, a: u32, val: u8) {
         if a == 0xE9C001 {
             mmu.ioc_int_stat &= 0xF0;
             mmu.ioc_int_stat |= (val & 0x0F);
-            c_fdd_set_media_enable(if (mmu.ioc_int_stat & 2) != 0 { 1 } else { 0 });
+            g_disk.media_enable = (mmu.ioc_int_stat & 2) != 0;
         } else if a == 0xE9C003 {
             mmu.ioc_int_vect = (val & 0xFC);
         }
