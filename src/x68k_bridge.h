@@ -25,7 +25,6 @@ uint64_t c_machine_bind(X68kByteView ram, X68kByteView ipl, X68kByteView cgrom, 
     X68kByteView tvram, X68kByteView gvram, X68kByteView pal, X68kByteView vc, X68kByteView sprite,
     X68kByteView bgreg, X68kByteView bgram, X68kByteView chr8, X68kByteView chr16, X68kPixelView fb,
     int32_t *ram_limit, int32_t *screen_w, int32_t *screen_h, int32_t *dma_vec);
-int c_machine_unbind(uint64_t epoch); // Stale epochs cannot detach a newer owner.
 uint64_t c_machine_epoch(void);
 void c_machine_reset_devices(void);
 
@@ -97,7 +96,6 @@ uint8_t c_mem_read_pal(int32_t off);
 void c_vcreg_bind(uint8_t *vcreg);
 
 // Sprite Registers (0x00EB0000 - 0x00EB07FF)
-void c_set_current_frame(int frame);
 uint8_t c_mem_read_sprite(int32_t off);
 
 // BG Control Registers (0x00EB0800 - 0x00EB081F)

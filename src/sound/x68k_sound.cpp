@@ -343,44 +343,70 @@ int x68k_sound_poll_irq(void) {
     return f;
 }
 
-#define SOUND_STATE_MAGIC 0x5336384Bu
+#define SOUND_STATE_MAGIC 0x5336384Cu
+
+// The state image: this header, the DMA registers, the OPM object, the ADPCM state.
+//
+// The OPM (fmgen) is saved as the bytes of the C++ object, which holds pointers: to its own
+// members (operator outputs, the chip), and to code and tables of this program (the vtable,
+// envelope tables). An image is often loaded by another process (a state file), where the
+// object and the program sit at other addresses, so the header records both addresses as they
+// were when the image was written, and loading moves every pointer by the difference.
+struct SoundStateHeader {
+    uint32_t magic;
+    uint32_t total;          // bytes of the whole image
+    int32_t irq;
+    int32_t dma_vec;
+    uint64_t opm_at;         // address of the OPM object when the image was written
+    uint64_t module_at;      // address this program was loaded at
+    uint64_t module_bytes;   // size of this program in memory; another build has another size
+    uint32_t opm_bytes;
+    uint32_t adpcm_bytes;
+};
+
+extern "C" void c_host_module_range(uint64_t *base, uint64_t *bytes);
 
 static int sound_opm_bytes(void) {
     return g_opm ? (int)sizeof(MyOPM) : 0;
 }
 
 int x68k_sound_state_size(void) {
-    return (int)(sizeof(uint32_t) * 4 + sizeof(int32_t) * 2 + sizeof(DMA)
+    return (int)(sizeof(SoundStateHeader) + sizeof(DMA)
         + (size_t)sound_opm_bytes() + (size_t)ADPCM_StateBytes());
 }
 
+// Copies the saved OPM object over the live one. A word that pointed into the saved object or
+// into the program as it was loaded then is moved to where that is now; any other word is data.
+static void opm_restore(const uint8_t *saved, const SoundStateHeader &h, uint64_t module_now) {
+    uint8_t *live = (uint8_t *)g_opm;
+    const uint64_t opm_now = (uint64_t)(uintptr_t)g_opm;
+    size_t at = 0;
+    for (; at + sizeof(uint64_t) <= h.opm_bytes; at += sizeof(uint64_t)) {
+        uint64_t word;
+        memcpy(&word, saved + at, sizeof(word));
+        if (word >= h.opm_at && word < h.opm_at + h.opm_bytes) word = word - h.opm_at + opm_now;
+        else if (word >= h.module_at && word < h.module_at + h.module_bytes) word = word - h.module_at + module_now;
+        memcpy(live + at, &word, sizeof(word));
+    }
+    if (at < h.opm_bytes) memcpy(live + at, saved + at, h.opm_bytes - at);
+}
+
 static int sound_apply(const uint8_t *src, int n, int apply) {
+    SoundStateHeader h;
+    uint64_t module_now = 0, module_bytes = 0;
     const uint8_t *p = src;
-    uint32_t magic = 0, total = 0, opm_n = 0, adpcm_n = 0;
-    int32_t irq = 0, vec = 0;
-    int need;
-    if (!src || n < x68k_sound_state_size()) return 0;
-    memcpy(&magic, p, 4); p += 4;
-    memcpy(&total, p, 4); p += 4;
-    memcpy(&irq, p, 4); p += 4;
-    memcpy(&vec, p, 4); p += 4;
-    if (magic != SOUND_STATE_MAGIC || (int)total != n) return 0;
-    p += sizeof(DMA);
-    memcpy(&opm_n, p, 4); p += 4;
-    if ((int)opm_n != sound_opm_bytes()) return 0;
-    p += opm_n;
-    memcpy(&adpcm_n, p, 4); p += 4;
-    if (adpcm_n != (uint32_t)ADPCM_StateBytes()) return 0;
-    need = (int)(sizeof(uint32_t) * 4 + sizeof(int32_t) * 2 + sizeof(DMA) + opm_n + adpcm_n);
-    if (need != n) return 0;
+    if (!src || n != x68k_sound_state_size()) return 0;
+    memcpy(&h, p, sizeof(h)); p += sizeof(h);
+    c_host_module_range(&module_now, &module_bytes);
+    if (h.magic != SOUND_STATE_MAGIC || (int)h.total != n) return 0;
+    if ((int)h.opm_bytes != sound_opm_bytes() || h.adpcm_bytes != (uint32_t)ADPCM_StateBytes()) return 0;
+    if (h.module_bytes != module_bytes) return 0;   // written by another build
     if (!apply) return 1;
-    g_opm_irq_flag = irq;
-    dma_vec_store(vec);
-    p = src + 16;
-    memcpy(DMA, p, sizeof(DMA));
-    p += sizeof(DMA) + 4;
-    if (opm_n && g_opm) memcpy(g_opm, p, opm_n);
-    p += opm_n + 4;
+    g_opm_irq_flag = h.irq;
+    dma_vec_store(h.dma_vec);
+    memcpy(DMA, p, sizeof(DMA)); p += sizeof(DMA);
+    if (h.opm_bytes && g_opm) opm_restore(p, h, module_now);
+    p += h.opm_bytes;
     ADPCM_StateLoad(p);
     return 1;
 }
@@ -388,20 +414,20 @@ static int sound_apply(const uint8_t *src, int n, int apply) {
 int x68k_sound_state_save(void *dst, int cap) {
     uint8_t *p = (uint8_t *)dst;
     int n = x68k_sound_state_size();
-    uint32_t magic = SOUND_STATE_MAGIC;
-    uint32_t total = (uint32_t)n;
-    uint32_t opm_n = (uint32_t)sound_opm_bytes();
-    uint32_t adpcm_n = (uint32_t)ADPCM_StateBytes();
-    int32_t irq = g_opm_irq_flag;
+    SoundStateHeader h;
     if (!dst || cap < n) return 0;
-    memcpy(p, &magic, 4); p += 4;
-    memcpy(p, &total, 4); p += 4;
-    memcpy(p, &irq, 4); p += 4;
-    memcpy(p, &g_dma_vec, 4); p += 4;
+    memset(&h, 0, sizeof(h));
+    h.magic = SOUND_STATE_MAGIC;
+    h.total = (uint32_t)n;
+    h.irq = g_opm_irq_flag;
+    h.dma_vec = g_dma_vec;
+    h.opm_at = (uint64_t)(uintptr_t)g_opm;
+    c_host_module_range(&h.module_at, &h.module_bytes);
+    h.opm_bytes = (uint32_t)sound_opm_bytes();
+    h.adpcm_bytes = (uint32_t)ADPCM_StateBytes();
+    memcpy(p, &h, sizeof(h)); p += sizeof(h);
     memcpy(p, DMA, sizeof(DMA)); p += sizeof(DMA);
-    memcpy(p, &opm_n, 4); p += 4;
-    if (opm_n) { memcpy(p, g_opm, opm_n); p += opm_n; }
-    memcpy(p, &adpcm_n, 4); p += 4;
+    if (h.opm_bytes) { memcpy(p, g_opm, h.opm_bytes); p += h.opm_bytes; }
     ADPCM_StateSave(p);
     return 1;
 }

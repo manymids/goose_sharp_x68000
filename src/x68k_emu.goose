@@ -51,11 +51,6 @@ fn active(emu: X68kEmulator&) -> bool {
     return emu.binding_epoch != 0 && emu.binding_epoch == c_machine_epoch();
 }
 
-fn unbind(emu: X68kEmulator&) {
-    c_machine_unbind(emu.binding_epoch);
-    emu.binding_epoch = 0;
-}
-
 fn init(emu: X68kEmulator&) {
     emu.session = X68kSession {};
     assert(emu.bind());
@@ -209,7 +204,6 @@ fn nominal_fps(mmu: M68kMMU&) -> i32 {
 // 1フレーム分のエミュレーション実行 (px68k WinX68k_Exec 走査線駆動準拠)
 fn run_frame(emu: X68kEmulator&) {
     assert(emu.active());
-    c_set_current_frame(emu.total_frames as i32);
     // bit4 が立っているのは 31kHz（px68k VID_MODE = MODE_HIGH）。サイクル予算の数値はそのまま。
     let is_31k = (emu.mmu.crtc_regs[0x29] & 0x10) != 0;
     // 1 フレームの長さ (0.1 us 単位 = 10 MHz のクロック数)

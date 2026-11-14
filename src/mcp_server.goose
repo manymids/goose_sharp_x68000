@@ -796,7 +796,7 @@ fn macro_step(emu: X68kEmulator&, op: const u8[:], step: const u8[:], frames_use
         } else {
             var path_buf: u8[>..] = [];
             if !extract_json_str(step, "path", path_buf) { path_buf.append("x68k_screenshot.bmp"); }
-            if c_save_fb_bmp(path_buf[..]) == 0 {
+            if !save_frame(path_buf[..]) {
                 step_ok = false;
                 err.append("failed to write screenshot");
             }
@@ -1150,7 +1150,7 @@ fn tools_list(id_buf: const u8[:]) {
         "{\"name\":\"arcl_save_state\",\"description\":\"Save emulator state in slot; with path, also write a state file\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"slot\":{\"type\":\"integer\"},\"path\":{\"type\":\"string\"}}}},",
         "{\"name\":\"arcl_load_state\",\"description\":\"Restore emulator state from slot; with path, also read it from a state file\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"slot\":{\"type\":\"integer\"},\"path\":{\"type\":\"string\"}}}}");
     if (g_mcp_layers & MCP_LAYER_L0) != 0 {
-        resp.append(",{\"name\":\"arcl_screenshot\",\"description\":\"Capture framebuffer screenshot\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\"}}}}");
+        resp.append(",{\"name\":\"arcl_screenshot\",\"description\":\"Save the current frame to a file: PNG if the path ends in .png, otherwise BMP\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\"}}}}");
         resp.append(",{\"name\":\"arcl_key\",\"description\":\"Press, release, or tap one keyboard key\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"key\":{\"type\":\"string\"},\"action\":{\"type\":\"string\"}}}}");
         resp.append(",{\"name\":\"arcl_type\",\"description\":\"Type an ASCII string\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"text\":{\"type\":\"string\"},\"frames\":{\"type\":\"integer\"}},\"required\":[\"text\"]}}");
         resp.append(",{\"name\":\"arcl_clear_input\",\"description\":\"Release held keys and joypad buttons\",\"inputSchema\":{\"type\":\"object\",\"properties\":{}}}");
@@ -1191,6 +1191,19 @@ fn tools_list(id_buf: const u8[:]) {
     }
     resp.append("]}}");
     c_io_write_line(resp[0], resp.len as i32);
+}
+
+// 画面をファイルに書く。名前が .png で終わっていれば PNG、それ以外は BMP。
+fn save_frame(path: const u8[:]) -> bool {
+    var ext: u8[4] = [0; 4];
+    if path.len >= 4 {
+        for i in 4 {
+            let c = path[path.len - 4 + i];
+            ext[i] = if c >= 'A' && c <= 'Z' { c + 32 } else { c };
+        }
+    }
+    if ext == ".png" { return c_save_fb_png(path) != 0; }
+    return c_save_fb_bmp(path) != 0;
 }
 
 fn tool_screenshot(emu: X68kEmulator&, args: const u8[:], id_buf: const u8[:]) {
@@ -1248,7 +1261,7 @@ fn tool_screenshot(emu: X68kEmulator&, args: const u8[:], id_buf: const u8[:]) {
     if !extract_json_str(args, "path", path_buf) {
         path_buf.append("x68k_screenshot.bmp");
     }
-    if c_save_fb_bmp(path_buf[..]) == 0 {
+    if !save_frame(path_buf[..]) {
         write_text(id_buf, "failed to write screenshot", true);
         return;
     }

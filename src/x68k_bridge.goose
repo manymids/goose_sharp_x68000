@@ -4,12 +4,11 @@
 let HOST_PATH_BYTES = 800; // room for the longest path C hands back (PATH_CAP in x68k_path.h)
 
 // Slices cross as pointer/64-bit count pairs. Counts are bytes except fb.
-// Borrowed until machine_unbind/destroy; no reference-containing struct crosses.
+// Borrowed until x68k_mem_destroy; no reference-containing struct crosses.
 extern fn c_machine_bind(ram: u8[:], ipl: u8[:], cgrom: u8[:], sram: u8[:],
     tvram: u8[:], gvram: u8[:], pal: u8[:], vc: u8[:], sprite: u8[:],
     bgreg: u8[:], bgram: u8[:], chr8: u8[:], chr16: u8[:], fb: u32[:],
     ram_limit: i32&, screen_w: i32&, screen_h: i32&, dma_vec: i32&) -> u64;
-extern fn c_machine_unbind(epoch: u64) -> i32;
 extern fn c_machine_epoch() -> u64;
 extern fn c_machine_reset_devices();
 extern fn c_gui_settings_open(enabled: i32);
@@ -74,7 +73,6 @@ extern fn c_mem_read_gvram(off: i32) -> u8;
 
 extern fn c_mem_read_pal(off: i32) -> u8;
 
-extern fn c_set_current_frame(frame: i32);
 extern fn c_mem_read_sprite(off: i32) -> u8;
 
 extern fn c_mem_read_bg_reg(off: i32) -> u8;

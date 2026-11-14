@@ -21,10 +21,11 @@ namespace state;
 let ::STATE_SLOT = 0;
 let ::STATE_SNAPSHOT = 1;
 let ::STATE_REWIND = 2;
+// v6: 音源の状態に、書いたときの番地を入れた (別のプロセスで読んでもポインタを直せる)。
 // v5: 8255 ポート C と OPM の控えを MMU へ移した。C 側に残る状態は音源だけ。
 // v4: ディスクの状態とイメージの置き場所を Goose 側へ移した。v3: FDC の相が enum。
 // 版の違う記録は読めない。
-let ::STATE_VERSION = 5;
+let ::STATE_VERSION = 6;
 
 let SOUND_MAX_BYTES = 67108864; // 音源の状態の上限 (64 MB)。壊れた記録を弾くための値
 

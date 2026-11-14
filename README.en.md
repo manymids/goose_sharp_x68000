@@ -290,7 +290,9 @@ It prints `361 / 361 checks passed` when everything passes, and reports each fai
 - If the BIOS can't be found, check the current directory, the location of `keropi`, and the file names/sizes. Specifying an absolute path with `--system-dir` can also help narrow down the issue. There is no automatic fallback to ROMs from another project or next to the exe.
 - If the GUI starts with an unintended disk, either launch with `--no-disk` or move the INI file aside after quitting. ARCL does not read the INI.
 - If no audio device is available, the emulator warns and runs silently.
-- The current file dialog and path handling have Win32 character-encoding and `MAX_PATH` constraints. If you run into path issues, try testing with a short, alphanumeric folder name.
+- Paths are handled as UTF-8, so non-ASCII names open, but their length is limited by Win32 `MAX_PATH` (260 characters).
+- `arcl_screenshot` writes PNG when the path ends in `.png` and BMP otherwise. Scaling, cropping and inline results are not supported.
+- `arcl_console_read` reads half-width characters only; kanji and kana come back as `?`.
 - The emulator assumes a single registered machine instance. Core sharing across multiple instances, a mouse, and full compatibility with every VRAM mode/piece of software are unsupported or unverified.
 - CPU tracing (the T bit in SR) takes a trace exception after each instruction. When the instruction itself enters an exception, such as TRAP, no trace exception follows, unlike the real CPU.
 

@@ -120,7 +120,6 @@ void c_io_write_line(const void *data, int len) {
     fflush(stdout);
 }
 
-static int g_last_path_len;
 
 int64_t c_host_local_seconds(void) {
     time_t now = time(NULL);
@@ -135,7 +134,6 @@ static void bind_path(const uint8_t *p, int len, char *dst, int cap) {
     if (!dst || cap < 1) return;
     if (len < 0) len = 0;
     if (!p) len = 0;
-    g_last_path_len = len;
     n = len;
     if (n >= cap) n = cap - 1;
     if (n > 0) memcpy(dst, p, (size_t)n);
@@ -201,7 +199,6 @@ static int g_fb_bound = 0;
 static uint8_t *g_pal = NULL;
 static uint8_t *g_vcreg = NULL;
 static int g_vcreg_bound = 0;
-static int s_current_frame = 0;
 static uint8_t *g_sprite = NULL;
 static uint8_t *g_bgreg = NULL;
 static uint8_t *g_bgram = NULL;
@@ -485,17 +482,6 @@ uint8_t c_mem_read_gvram(int32_t off) {
     return 0;
 }
 
-/* px68k gvram.c. Pages share the 512KB array. R20 selects the packing. */
-static int gvram_type(uint8_t r20) {
-    if (r20 & 8) return 4;
-    if (r20 & 4) return 0;
-    return (r20 & 3) + 1;
-}
-
-static uint32_t gvram_addr1024(uint32_t adr) {
-    return ((adr & 0xff800u) >> 1) + (adr & 0x3ffu);
-}
-
 void c_video_bind(uint8_t *pal, uint8_t *sprite, uint8_t *bgreg, uint8_t *bgram, uint8_t *chr8, uint8_t *chr16) {
     if (!pal || !sprite || !bgreg || !bgram || !chr8 || !chr16) return;
     if (!g_video_bound) {
@@ -536,9 +522,6 @@ uint8_t c_mem_read_sprite(int32_t off) {
     return 0xFF;
 }
 
-void c_set_current_frame(int frame) {
-    s_current_frame = frame;
-}
 uint8_t c_mem_read_bg_reg(int32_t off) {
     if (g_bgreg && off >= 0 && off < BGREG_SIZE) return g_bgreg[off];
     return 0xFF;
@@ -632,22 +615,6 @@ uint64_t c_machine_bind(X68kByteView ram, X68kByteView ipl, X68kByteView cgrom, 
     return machine_bind_views(&views);
 }
 
-int c_machine_unbind(uint64_t epoch) {
-    if (!epoch || epoch != g_machine_epoch) return 0;
-    c_dma_vec_bind(NULL);
-    g_ram_limit_slot = NULL;
-    g_screen_w_slot = g_screen_h_slot = NULL;
-    // These are borrowed from the active emulator, never freed by C.
-    g_tvram = g_gvram = g_pal = g_vcreg = g_sprite = g_bgreg = g_bgram = NULL;
-    g_bg_chr8 = g_bg_chr16 = NULL;
-    g_fb = NULL;
-    g_tvram_bound = g_gvram_bound = g_video_bound = g_vcreg_bound = g_fb_bound = 0;
-    g_frame_ready = 0;
-    g_machine_epoch = 0;
-    // RAM/ROM/SRAM are process-lifetime Goose globals; destroy releases views.
-    return 1;
-}
-
 void c_set_screen_mode(int32_t w, int32_t h) {
     if (w <= 0 || h <= 0) return;
     if (g_src_w == w && g_src_h == h && g_hwnd) return;
@@ -682,23 +649,8 @@ void c_clear_framebuffer(uint32_t argb) {
     }
 }
 
-static void tvram_store(uint32_t adr, uint8_t data) {
-    if (adr < TVRAM_SIZE) g_tvram[adr] = data;
-}
-
-/* R23: bit 1 in the mask keeps the old bit. Even CPU address uses 0x2E. */
-static void tvram_store_mask(uint32_t adr, uint8_t data, uint8_t r2e, uint8_t r2f) {
-    if (adr >= TVRAM_SIZE) return;
-    uint8_t m = (adr & 1) ? r2f : r2e;
-    uint8_t cur = g_tvram[adr];
-    g_tvram[adr] = (uint8_t)((cur & m) | (data & (uint8_t)~m));
-}
-
 // Keyboard input FIFO
 #define KEY_BUF_SIZE 256
-static char g_key_fifo[KEY_BUF_SIZE];
-static int g_key_head = 0;
-static int g_key_tail = 0;
 
 static uint8_t g_scancode_fifo[KEY_BUF_SIZE];
 static int g_scan_head = 0;
@@ -837,14 +789,6 @@ int c_host_joy_byte(void) {
     return j;
 }
 
-static void push_char(char ch) {
-    int next = (g_key_head + 1) % KEY_BUF_SIZE;
-    if (next != g_key_tail) {
-        g_key_fifo[g_key_head] = ch;
-        g_key_head = next;
-    }
-}
-
 static void win32_set_scale(int scale) {
     if (scale < 1 || scale > 4 || !g_hwnd) return;
     g_scale = scale;
@@ -978,13 +922,8 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
             g_is_open = false;
             PostQuitMessage(0);
             return 0;
-        case WM_CHAR: {
-            char ch = (char)wParam;
-            if (ch >= 0x20 || ch == '\r' || ch == '\b' || ch == '\t') {
-                push_char(ch);
-            }
-            return 0;
-        }
+        case WM_CHAR:
+            return 0; // keys reach the machine as scan codes (WM_KEYDOWN / WM_KEYUP)
         case WM_KILLFOCUS:
             c_host_joy_reset();
             return 0;
@@ -1559,6 +1498,16 @@ int c_save_fb_png(X68kByteView path_bytes) {
 // flat image. x68k_state.goose keeps the image next to the RAM and disk images and owns
 // the slots; nothing is retained here.
 // -----------------------------------------------------------------------------
+// Where this program is loaded and how large it is in memory (from its PE header). The sound
+// state uses it to move pointers when an image is loaded by another process.
+void c_host_module_range(uint64_t *base, uint64_t *bytes) {
+    const uint8_t *image = (const uint8_t *)GetModuleHandleW(NULL);
+    const IMAGE_DOS_HEADER *dos = (const IMAGE_DOS_HEADER *)image;
+    const IMAGE_NT_HEADERS *nt = (const IMAGE_NT_HEADERS *)(image + dos->e_lfanew);
+    *base = (uint64_t)(uintptr_t)image;
+    *bytes = nt->OptionalHeader.SizeOfImage;
+}
+
 int64_t c_sound_state_size(void) {
     int n = x68k_sound_state_size();
     return n > 0 ? n : 0;
@@ -1681,13 +1630,8 @@ void c_sound_cleanup(void) {
     x68k_sound_cleanup();
 }
 
-static uint32_t s_opm_w_count = 0;
-static uint32_t s_adpcm_w_count = 0;
-static int32_t s_peak_sample = 0;
-static uint32_t s_total_rendered_samples = 0;
 
 void c_sound_opm_write(uint32_t addr, uint8_t val) {
-    s_opm_w_count++;
     x68k_sound_opm_write(addr, val);
 }
 
@@ -1696,7 +1640,6 @@ uint8_t c_sound_opm_read(uint32_t addr) {
 }
 
 void c_sound_adpcm_write(uint32_t addr, uint8_t val) {
-    s_adpcm_w_count++;
     x68k_sound_adpcm_write(addr, val);
 }
 
@@ -1716,7 +1659,7 @@ void c_machine_reset_devices(void) {
 
 void c_host_input_discard(void) {
     c_host_joy_reset();
-    g_key_head = g_key_tail = g_scan_head = g_scan_tail = 0;
+    g_scan_head = g_scan_tail = 0;
     g_keys = 0;
     g_pending_cmd = 0;
 }
@@ -1739,12 +1682,6 @@ void c_sound_frame_update(int samples) {
     int render_samples = samples > 2048 ? 2048 : samples;
     x68k_sound_render(s_render_buf, render_samples);
     cap_push(s_render_buf, render_samples);
-    for (int i = 0; i < render_samples * 2; i++) {
-        int val = s_render_buf[i];
-        if (val < 0) val = -val;
-        if (val > s_peak_sample) s_peak_sample = val;
-    }
-    s_total_rendered_samples += (uint32_t)render_samples;
     win32_audio_push(s_render_buf, render_samples * 2);
 }
 
