@@ -193,7 +193,7 @@ fn run_gui(emu: X68kEmulator&, screen_w: i32, screen_h: i32, scale: i32, max_fra
         if reset_requested() {
             session::reset(emu);
             win32_ui_render_fb();
-            session::resume(emu, win32_ui_get_ticks_ms()); // GUI resumes; MCP stays paused.
+            session::resume(emu, win32_ui_get_ticks_ms()); // GUI は再開する。MCP は止めたまま。
             target_time_us = win32_ui_get_time_us();
         }
 
@@ -220,7 +220,7 @@ fn run_gui(emu: X68kEmulator&, screen_w: i32, screen_h: i32, scale: i32, max_fra
             win32_ui_render_fb();
         }
 
-        // The frame the CRTC programs (768x512 31 kHz: about 18031 us, 55.46 Hz).
+        // CRTC の設定から決まる 1 フレーム (768x512 31 kHz で約 18031 us、55.46 Hz)。
         let frame_period_us: u64 = (emu::frame_cycles10(emu.mmu) / 10) as u64;
         if !emu.is_paused {
             let before = pace.frames;
@@ -322,8 +322,8 @@ fn main() {
     // Goose ネイティブ X68000 エミュレータ本体の初期化
     var emu = X68kEmulator {};
     emu.init();
-    // The GUI clock follows the host; ARCL and headless runs start at XEiJ's fixed 2026-01-01
-    // so that runs replay identically.
+    // GUI の時計はホストに合わせる。ARCL とヘッドレスは XEiJ と同じ 2026-01-01 固定から始め、
+    // 毎回同じように再生できるようにする。
     if !mcp_mode && !no_window { emu.mmu.rtc.init(c_host_local_seconds()); }
 
     if mcp_mode {
@@ -333,7 +333,7 @@ fn main() {
         run_gui(emu, screen_w, screen_h, scale, opt.max_frames, opt.dump_path[..], opt.dump_after);
     } else {
         print_banner(content_path, sys_dir);
-        // Without --frames the earlier check guarantees --dump-frame.
+        // --frames がなければ、前の検査で --dump-frame があることが分かっている。
         run_headless(emu, if opt.frames_set { opt.max_frames } else { opt.dump_after }, opt.dump_path[..], run_ahead);
     }
     // 終了処理はどの起動の形でも同じ。win32_ui_destroy は開いているものだけを閉じる

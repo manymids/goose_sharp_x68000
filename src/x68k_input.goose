@@ -1,11 +1,11 @@
-// Keyboard/joypad operations independent of transport.
+// キーボードとジョイパッドの操作 (受け取り方には依らない)。
 import std;
 import .x68k_emu;
 import .x68k_mfp;
 import .x68k_bridge;
 namespace input;
 
-// Explicit key events emit repeats; text composition uses input::type_set_key.
+// 明示したキーのイベントはリピートを出す。文字の入力は input::type_set_key を使う。
 fn key(emu: X68kEmulator&, code: i32, down: bool) {
     if code < 0 || code >= 128 { return; }
     let sc = if down { code as u8 } else { (code as u8) | 0x80 };
@@ -28,7 +28,7 @@ fn joy(emu: X68kEmulator&, port: i32, mask: u8, down: bool) -> bool {
     return true;
 }
 
-// No synthetic releases into a restored MFP queue; joystick bytes stay saved.
+// 復元した MFP のキューへ作りものの離す操作は入れない。ジョイスティックのバイトは保存したまま。
 fn discard(emu: X68kEmulator&) {
     emu.session.keys = [false; 128];
     c_host_input_discard();

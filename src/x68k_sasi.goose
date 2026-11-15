@@ -1,11 +1,11 @@
-// SASI (0xE96000). Phase and command bytes live here.
-// Sector bytes are in x68k_disk (hdd_read / hdd_write).
+// SASI (0xE96000)。相とコマンドのバイトはここに置く。
+// セクタの中身は x68k_disk にある (hdd_read / hdd_write)。
 
 import .x68k_bridge;
 import .x68k_disk;
 namespace sasi;
 
-// Tags are internal; their order is not the hardware bus status encoding.
+// タグはこの中だけのもので、並びは実機のバスのステータスの符号とは違う。
 enum SasiPhase { BusFree, Selected, Command, Data, Status, Message, Sense, Specify }
 enum SasiDirection { HostToDisk, DiskToHost }
 

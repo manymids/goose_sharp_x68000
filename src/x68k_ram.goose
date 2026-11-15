@@ -1,10 +1,10 @@
-// 12 MB main RAM. One array for the process. Callers index it; they do not
-// take the array by value (that would copy it).
+// 12 MB のメイン RAM。プロセスで 1 つの配列。呼ぶ側は添字で使い、
+// 配列を値で受け取らない (受け取ると写しができる)。
 
 let RAM_BYTES = 12582912; // 12 MB
 
 var g_x68k_ram: u8[RAM_BYTES] = [0; RAM_BYTES];
-// C starts at 2 MB. c_mem_set_ram_mb writes this through the bound pointer.
+// C は 2 MB から始める。c_mem_set_ram_mb が結び付けたポインタを通して書く。
 var g_ram_limit: i32 = 2097152;
 
 fn x68k_ram_limit() -> i32 {

@@ -1,0 +1,5 @@
+# Git stores text as LF; Windows working trees get CRLF (MSVC and the editors expect it).
+* text=auto eol=crlf
+*.png binary
+*.bmp binary
+*.wav binary

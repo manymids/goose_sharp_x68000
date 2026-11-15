@@ -194,12 +194,12 @@ fn restore(emu: X68kEmulator&, bank: i32, idx: i32) -> bool {
     c_set_cpu_mhz(slot.clock_mhz); // ウィンドウのメニューの印もここで合う
     emu.clock_mhz = slot.clock_mhz;
     emu.is_paused = true;
-    // Discard host events only after commit; keep restored MFP/joy machine data.
+    // ホストのイベントは、確定してから捨てる。復元した MFP やジョイスティックの機械の状態は残す。
     input::discard(emu);
     c_audio_discard();
     emu.session.speed_live = false;
     emu.session.speed_have = false;
-    // The framebuffer is derived, not saved. Do not publish stale pixels.
+    // フレームバッファは保存せず作り直すもの。古い画素は出さない。
     emu.ppu.frame_ready = false;
     return true;
 }

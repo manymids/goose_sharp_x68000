@@ -127,8 +127,8 @@ fn exec_cmd(fdc: X68kFDC&) {
             let us = (fdc.prm_buf[1] & 7);
             fdc.st0 = us;
             var st3: u8 = us;
-            if fdc.cyl == 0 { st3 |= 0x10; } // Track 0
-            if disk::fd_loaded(fdc.drv) { st3 |= 0x20; } // Ready
+            if fdc.cyl == 0 { st3 |= 0x10; } // トラック 0
+            if disk::fd_loaded(fdc.drv) { st3 |= 0x20; } // レディ
             fdc.rsp_buf[0] = st3;
         },
         FDC_RECALIBRATE => {
@@ -137,9 +137,9 @@ fn exec_cmd(fdc: X68kFDC&) {
             if !disk::fd_loaded(fdc.drv) {
                 fdc.st0 |= 0x48; // no FD
             } else if fdc.drv >= 0 && fdc.drv < 2 {
-                fdc.st0 |= 0x20; // with FD and drive
+                fdc.st0 |= 0x20; // ディスクとドライブあり
             } else {
-                fdc.st0 |= 0x50; // no drive
+                fdc.st0 |= 0x50; // ドライブなし
             }
             fdc.int_pending = true;
         },
@@ -167,8 +167,8 @@ fn exec_cmd(fdc: X68kFDC&) {
                 fdc.rsp_buf[2] = fdc.st2;
                 fdc.rsp_buf[3] = fdc.cyl as u8;
                 fdc.rsp_buf[4] = hd;
-                fdc.rsp_buf[5] = 1; // 1-based sector
-                fdc.rsp_buf[6] = 3; // 1024 bytes (2HD)
+                fdc.rsp_buf[5] = 1; // セクタ番号は 1 から
+                fdc.rsp_buf[6] = 3; // 1024 バイト (2HD)
             } else {
                 fdc.st0 |= 0x48;
                 fdc.rsp_buf[0] = fdc.st0;
@@ -217,8 +217,8 @@ fn exec_cmd(fdc: X68kFDC&) {
                     fdc.phase = FdcPhase.Exec { len: sec_size, writing: false };
                     fdc.read_pos = 0;
                 } else {
-                    fdc.st0 |= 0x40; // Abnormal termination
-                    fdc.st1 |= 0x04; // No data
+                    fdc.st0 |= 0x40; // 異常終了
+                    fdc.st1 |= 0x04; // データなし
                     fdc.ephase_end();
                 }
             } else {
@@ -228,7 +228,7 @@ fn exec_cmd(fdc: X68kFDC&) {
         },
         _ => {
             // 未サポートコマンド
-            fdc.st0 |= 0x80; // Invalid command
+            fdc.st0 |= 0x80; // 無効なコマンド
         },
     }
 }
@@ -258,7 +258,7 @@ fn next_track(fdc: X68kFDC&) {
 
 // FDC レジスタ読み込み (0x00E94001 .. 0x00E94007)
 fn read(fdc: X68kFDC&, reg: i32) -> u8 {
-    if reg == 1 { // 0x00E94001: Main Status Register (MSR)
+    if reg == 1 { // 0x00E94001: メインステータスレジスタ (MSR)
         // bit7 RQM (常に受け付け可)、bit6 DIO (1 = FDC → CPU)、bit4 CB (コマンド処理中)
         match fdc.phase {
             Idle => { return 0x80; },
@@ -274,7 +274,7 @@ fn read(fdc: X68kFDC&, reg: i32) -> u8 {
                 return 0xD0;
             },
         }
-    } else if reg == 3 { // 0x00E94003: Data Register (FIFO)
+    } else if reg == 3 { // 0x00E94003: データレジスタ (FIFO)
         match fdc.phase {
             Exec e => {
                 let ret = fdc.data_buf[fdc.read_pos];
@@ -294,13 +294,13 @@ fn read(fdc: X68kFDC&, reg: i32) -> u8 {
             Idle => { return 0; },
             Command c => { return 0; },
         }
-    } else if reg == 5 { // 0x00E94005: Control / Status
+    } else if reg == 5 { // 0x00E94005: コントロール / ステータス
         var ret: u8 = 0;
         if (fdc.ctrl & 1) != 0 && disk::fd_loaded(0) {
-            ret |= 0x80; // Drive 0 ready
+            ret |= 0x80; // ドライブ 0 がレディ
         }
         if (fdc.ctrl & 2) != 0 && disk::fd_loaded(1) {
-            ret |= 0x80; // Drive 1 ready
+            ret |= 0x80; // ドライブ 1 がレディ
         }
         return ret;
     }
@@ -353,7 +353,7 @@ fn run_command(fdc: X68kFDC&) {
 }
 
 fn write(fdc: X68kFDC&, reg: i32, val: u8) {
-    if reg == 3 { // 0x00E94003: Data Register (FIFO)
+    if reg == 3 { // 0x00E94003: データレジスタ (FIFO)
         match fdc.phase {
             Exec e => {
                 fdc.data_buf[fdc.write_pos] = val;
@@ -386,9 +386,9 @@ fn write(fdc: X68kFDC&, reg: i32, val: u8) {
                 }
             },
         }
-    } else if reg == 5 { // 0x00E94005: Control
+    } else if reg == 5 { // 0x00E94005: コントロール
         fdc.ctrl = val;
-    } else if reg == 7 { // 0x00E94007: Drive Select
+    } else if reg == 7 { // 0x00E94007: ドライブの選択
         if (val & 0x80) != 0 {
             fdc.drv = (val & 3);
         } else {

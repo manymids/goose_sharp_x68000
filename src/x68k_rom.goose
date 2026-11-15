@@ -1,6 +1,6 @@
-// IPL ROM (128 KB), CGROM (768 KB), and SRAM (16 KB). One array each
-// for the process. Callers index them. Passing an array by value would copy it.
-// SRAM bytes 8-11 are the RAM-size stamp, written by C through the bound pointer.
+// IPL ROM (128 KB)、CGROM (768 KB)、SRAM (16 KB)。どれもプロセスで 1 つの配列。
+// 呼ぶ側は添字で使う。配列を値で渡すと写しができる。
+// SRAM の 8〜11 バイト目は RAM の大きさの印で、C が結び付けたポインタを通して書く。
 
 let IPL_BYTES = 131072;   // 128 KB
 let CGROM_BYTES = 786432; // 768 KB

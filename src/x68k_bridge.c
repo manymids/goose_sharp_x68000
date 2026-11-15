@@ -268,7 +268,7 @@ int x68k_mem_init(X68kByteView sys_bytes) {
 
 
 
-// GUI だけが sram.dat を書き戻す。ARCL とヘッドレス実行は再現性のために書かない。
+// Only the GUI writes sram.dat back. ARCL and headless runs leave it alone so that they replay identically.
 static int g_sram_persist = 1;
 void c_sram_set_persist(int enabled) { g_sram_persist = enabled != 0; }
 
@@ -606,7 +606,7 @@ static uint8_t vk_to_x68k_code(WPARAM vk, LPARAM lp) {
     }
 }
 
-/* Held host keys that also drive joy1. 超連射68K reads this port for start and shot.
+/* Held host keys that also drive joy1. Cho Ren Sha 68K reads this port for start and shot.
    Bits are active-low and match arcl_joypad: up 0x01, down 0x02, left 0x04, right 0x08,
    A 0x20 (Z / Space / Enter), B 0x40 (X). Opposite directions cancel. */
 static uint8_t g_hold_up, g_hold_down, g_hold_left, g_hold_right;
@@ -913,7 +913,7 @@ static int audio_find_free(void) {
 static void audio_flush(void) {
     while (g_audio_hold_n >= 2) {
         int frames = g_audio_hold_n / 2;
-        /* 再生中のバッファが足りているときは溜めて、短いバッファの継ぎ目を減らす */
+        /* While enough is queued, keep collecting so that short buffers make fewer seams */
         if (audio_queued() >= 3 && frames < 1024)
             return;
         int idx = audio_find_free();
@@ -1109,7 +1109,7 @@ uint32_t win32_ui_poll(void) {
         TranslateMessage(&msg);
         DispatchMessage(&msg);
     }
-    // SOCD Cleaner: 左右同時押し、上下同時押しをニュートラル化して超連射68k等の誤ポーズを防止
+    // SOCD cleaner: left+right or up+down together count as neither, so games such as Cho Ren Sha 68K do not pause by mistake
     uint32_t cleaned = g_keys;
     if ((cleaned & 0x03) == 0x03) cleaned &= ~0x03; // Left + Right cancel
     if ((cleaned & 0x0C) == 0x0C) cleaned &= ~0x0C; // Up + Down cancel

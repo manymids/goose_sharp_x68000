@@ -1,13 +1,13 @@
 // Motorola 68000 & Sharp X68000 基本定数・型定義
 
 // M68000 SR (Status Register) フラグビット
-let SR_C = 0x0001; // Carry
-let SR_V = 0x0002; // Overflow
-let SR_Z = 0x0004; // Zero
-let SR_N = 0x0008; // Negative
-let SR_X = 0x0010; // Extend
-let SR_S = 0x2000; // Supervisor Mode
-let SR_T = 0x8000; // Trace Mode
+let SR_C = 0x0001; // キャリー
+let SR_V = 0x0002; // オーバーフロー
+let SR_Z = 0x0004; // ゼロ
+let SR_N = 0x0008; // ネガティブ
+let SR_X = 0x0010; // エクステンド
+let SR_S = 0x2000; // スーパーバイザモード
+let SR_T = 0x8000; // トレースモード
 
 // アドレスレジスタのインデックス (cpu.a[])
 let REG_A0 = 0;

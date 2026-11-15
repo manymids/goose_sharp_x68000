@@ -49,30 +49,30 @@ struct M68kMMU {
     sysport_contrast: u8 = 0,
     sysport_monitor: u8 = 0,
     sysport_keyctrl: u8 = 0,
-    sysport_cputype: u8 = 0xFF, // 68000, 10MHz (px68k sysport.c)
+    sysport_cputype: u8 = 0xFF, // 68000、10 MHz (px68k sysport.c)
     joy1: u8 = 0xFF,
     joy2: u8 = 0xFF,
     pia_c: u8 = 0x0B,           // 8255 ポート C。bit 0-3 が ADPCM のパンとサンプリング周波数
     opm: OpmShadow = OpmShadow {},
     adpcm: X68kADPCM = X68kADPCM {},
     fm: X68kOPM = X68kOPM {},   // YM2151。本体のリセットでは作り直さず、チップのリセットをかける
-    // 68000 group 0 exceptions. Checks apply only while the CPU runs an instruction.
+    // 68000 のグループ 0 例外。検査するのは CPU が命令を実行している間だけ。
     cpu_access: bool = false,
     user_mode: bool = false,
-    fault: i32 = 0,              // 0 none, 2 bus error, 3 address error
+    fault: i32 = 0,              // 0 なし、2 バスエラー、3 アドレスエラー
     fault_addr: u32 = 0,
     fault_write: bool = false,
     cur_ir: u16 = 0,
-    // Bus wait of the current instruction in 1/40 cycles (m68k::step adds whole cycles).
+    // 今の命令のバスウェイト (1/40 サイクル単位。m68k::step が整数のサイクルを足す)。
     wait40: i32 = 0,
-    // Main RAM below this is supervisor-only ($E86001, 8 KB units).
+    // メイン RAM のこの番地未満はスーパーバイザ専用 ($E86001、8 KB 単位)。
     svs_limit: u32 = 0x2000,
-    // $EAFF81-$EAFF89: supervisor-only 256 KB blocks from $200000 (index = address >> 18).
+    // $EAFF81-$EAFF89: $200000 から 256 KB ごとのスーパーバイザ専用ブロック (添字 = 番地 >> 18)。
     ram_super: u8[48] = [0; 48],
     xb2_area: u8[16] = [0; 16],
-    // Address of the instruction being executed (stacked by group 0 exceptions).
+    // 実行中の命令の番地 (グループ 0 例外で積む)。
     inst_pc: u32 = 0,
-    // Battery-backed: mmu::init leaves it running across machine resets.
+    // 電池で保持される: mmu::init は機械のリセットをまたいで動かし続ける。
     rtc: X68kRTC = X68kRTC {},
 }
 type ::M68kMMU = mmu::M68kMMU;
@@ -334,30 +334,30 @@ fn raise_fault(mmu: M68kMMU&, kind: i32, a: u32, write: bool) {
     }
 }
 
-// User mode reaches only main RAM above the supervisor area.
+// ユーザーモードで届くのは、スーパーバイザ領域より上のメイン RAM だけ。
 fn user_denied(mmu: M68kMMU&, a: u32) -> bool {
     if a >= 0xC00000 || a < mmu.svs_limit { return true; }
     return a >= 0x200000 && mmu.ram_super[(a >> 18) as i64] != 0;
 }
 
-// 8-bit I/O ports ($E86000-$E9DFFF): a word access touches only the odd byte.
+// 8 ビットの I/O ポート ($E86000-$E9DFFF): ワードのアクセスは奇数番地のバイトだけに届く。
 fn byte_port(a: u32) -> bool {
     return a >= 0xE86000 && a < 0xE9E000;
 }
 
-// Sprite RAM and registers do not answer at dot clocks of 25 MHz and above (R20 %1xx1x).
+// ドットクロックが 25 MHz 以上 (R20 %1xx1x) のとき、スプライトの RAM とレジスタは応答しない。
 fn sprite_absent(mmu: M68kMMU&, a: u32) -> bool {
     if (mmu.crtc_regs[0x29] & 0x12) != 0x12 { return false; }
     return a < 0xEB0800 || (a >= 0xEB0840 && a < 0xEB4000) || a >= 0xEB8000;
 }
 
-// X68000 (EXPERT, no expansion boards) byte accesses that end in a bus error, as in XEiJ.
+// X68000 (EXPERT、拡張ボードなし) でバスエラーになるバイトのアクセス (XEiJ と同じ)。
 fn bus_error8(mmu: M68kMMU&, a: u32, write: bool) -> bool {
     if mmu.user_mode && mmu.user_denied(a) { return true; }
     if a < 0xE86000 { return false; }
-    if a < 0xE88000 { return !write || (a & 1) == 0; } // area set: write-only odd port
+    if a < 0xE88000 { return !write || (a & 1) == 0; } // エリアセット: 書き込み専用の奇数番地のポート
     if a < 0xE9E000 {
-        if a >= 0xE8C000 && a < 0xE90000 { return false; } // printer, system port
+        if a >= 0xE8C000 && a < 0xE90000 { return false; } // プリンタ、システムポート
         return (a & 1) == 0;
     }
     if a < 0xEB0000 {
@@ -370,7 +370,7 @@ fn bus_error8(mmu: M68kMMU&, a: u32, write: bool) -> bool {
     return write; // CGROM, IPLROM
 }
 
-// True when the byte access must not reach the device.
+// バイトのアクセスを機器へ届けてはいけないとき true。
 fn check8(mmu: M68kMMU&, a: u32, write: bool) -> bool {
     if mmu.fault != 0 { return true; }
     if mmu.bus_error8(a, write) {
@@ -380,7 +380,7 @@ fn check8(mmu: M68kMMU&, a: u32, write: bool) -> bool {
     return false;
 }
 
-// Checks shared by word and long accesses: pending fault, odd address, user area.
+// ワードとロングのアクセスで共通の検査: 失敗の保留、奇数番地、ユーザー領域。
 fn check_wide(mmu: M68kMMU&, a: u32, write: bool) -> bool {
     if mmu.fault != 0 { return true; }
     if (a & 1) != 0 {
@@ -394,9 +394,9 @@ fn check_wide(mmu: M68kMMU&, a: u32, write: bool) -> bool {
     return false;
 }
 
-// Wait per CPU bus access on a 68000 X68000, in 1/40 cycles (XEiJ mpuSetWait, measured on
-// hardware): DRAM refresh 1/8, video controller 0.6, CRTC/ports/sprites/SRAM/ROM 1, GVRAM 1.1,
-// RTC/OPM/ADPCM/FDC/HDC/PPI/IOI 1.7, TVRAM 2, SRAM 2, palette 2.6, MFP 4.3, SCC 6, DMAC 15.
+// 68000 の X68000 で CPU のバスアクセス 1 回ごとのウェイト (1/40 サイクル単位。XEiJ mpuSetWait、
+// 実機で測った値): DRAM のリフレッシュ 1/8、ビデオコントローラ 0.6、CRTC/ポート/スプライト/SRAM/ROM 1、GVRAM 1.1、
+// RTC/OPM/ADPCM/FDC/HDC/PPI/IOI 1.7、TVRAM 2、SRAM 2、パレット 2.6、MFP 4.3、SCC 6、DMAC 15。
 fn bus_wait40(a: u32) -> i32 {
     if a < 0xC00000 { return 5; }
     if a < 0xE00000 { return 44; }
@@ -412,11 +412,35 @@ fn bus_wait40(a: u32) -> i32 {
     if a < 0xE98000 { return 68; }
     if a < 0xE9A000 { return 240; }
     if a < 0xE9E000 { return 68; }
-    if a >= 0xED0000 && a < 0xED4000 { return 80; } // SRAM: XEiJ charges its wait twice
+    if a >= 0xED0000 && a < 0xED4000 { return 80; } // SRAM: XEiJ はウェイトを 2 回数える
     return 40;
 }
 
-// 0xE80000 以上からの 8 bit 読み出し。番地順。応答しない番地は 0。
+// I/O 領域 ($E80000-$EBFFFF) は 8 KB ごとに 1 つの機器が受け持つ。番地を 13 ビット右へずらした
+// 値 (区画の番号) で振り分ける。区画の中で応答する範囲は、機器ごとの腕で確かめる。
+let PAGE_CRTC: u32 = 0x740;      // $E80000 CRTC (R00-R23 と操作ポート $E80481)
+let PAGE_VIDEO: u32 = 0x741;     // $E82000 パレット ($E82000-$E823FF) とビデオコントローラ ($E82400-$E827FF)
+let PAGE_DMAC: u32 = 0x742;      // $E84000 DMAC (HD63450)
+let PAGE_AREA: u32 = 0x743;      // $E86000 スーパーバイザ領域の設定 (書き込みだけ)
+let PAGE_MFP: u32 = 0x744;       // $E88000 MFP (MC68901)
+let PAGE_RTC: u32 = 0x745;       // $E8A000 RTC (RP5C15)
+let PAGE_SYSPORT: u32 = 0x747;   // $E8E000 システムポート
+let PAGE_OPM: u32 = 0x748;       // $E90000 OPM (YM2151)
+let PAGE_ADPCM: u32 = 0x749;     // $E92000 ADPCM (MSM6258)
+let PAGE_FDC: u32 = 0x74A;       // $E94000 FDC (uPD72065)
+let PAGE_SASI: u32 = 0x74B;      // $E96000 SASI
+let PAGE_SCC: u32 = 0x74C;       // $E98000 SCC (Z85C30: マウス、RS-232C)
+let PAGE_PIA: u32 = 0x74D;       // $E9A000 8255 (ジョイスティック、ADPCM の設定)
+let PAGE_IOC: u32 = 0x74E;       // $E9C000 IOC (割り込みの状態とベクタ)
+let PAGE_XAREA: u32 = 0x757;     // $EAE000 拡張 RAM のエリアセット ($EAFF81-$EAFF89)
+let PAGE_SPRITE: u32 = 0x758;    // $EB0000 スプライト ($EB0000-$EB07FF) と BG レジスタ ($EB0800-$EB081F)
+
+// 区画の先頭から 256 バイトだけで応答する機器かどうか。
+fn in_first_256(a: u32) -> bool {
+    return (a & 0x1F00) == 0;
+}
+
+// 0xE80000 以上からの 8 bit 読み出し。応答しない番地は 0。
 // CRTC の読み出し。読めるのは R20-R21 (0x28-0x2B) と操作ポートだけ。
 fn read_crtc(mmu: M68kMMU&, a: u32) -> u8 {
     if a == 0xE80481 {
@@ -433,7 +457,7 @@ fn read_mfp(mmu: M68kMMU&, a: u32) -> u8 {
     if (a & 1) == 0 { return 0xFF; }
     let reg = ((a & 0x3F) >> 1) as i32;
     let v = mmu.mfp.read(reg);
-    // GPIP0 is the RTC ALARM output.
+    // GPIP0 は RTC の ALARM 出力。
     if reg == 0 { return (v & 0xFE) | (if mmu.rtc.alarm_pin() { 1 } else { 0 }); }
     return v;
 }
@@ -450,120 +474,53 @@ fn read_sysport(mmu: M68kMMU&, a: u32) -> u8 {
 }
 
 fn io_read8(mmu: M68kMMU&, a: u32) -> u8 {
-    // 0x00E80000 - 0x00E804FF: CRTC
-    // 0xE80400 未満は下位 6 ビットのミラー。0xE80481 だけが操作ポート。
-    if a >= 0xE80000 && a < 0xE80500 { return mmu.read_crtc(a); }
-
-    // 0x00E82000 - 0x00E823FF: Palette RAM (1024 bytes)
-    if a >= 0xE82000 && a < 0xE82400 {
-        return mmu.pal[a & 0x3FF];
+    match a >> 13 {
+        // $E80400 未満は下位 6 ビットのミラー。$E80481 だけが操作ポート。
+        PAGE_CRTC => { return if a < 0xE80500 { mmu.read_crtc(a) } else { 0 }; },
+        PAGE_VIDEO => {
+            if a < 0xE82400 { return mmu.pal[a & 0x3FF]; }
+            if a < 0xE82800 { return mmu.vcreg[a & 0x3FF]; }
+            return 0;
+        },
+        PAGE_DMAC => { return if in_first_256(a) { mmu.dmac.read(a) } else { 0 }; },
+        PAGE_MFP => { return if (a & 0x1FC0) == 0 { mmu.read_mfp(a) } else { 0 }; },
+        PAGE_RTC => { return mmu.rtc.read((a & 31) as i32); },
+        PAGE_SYSPORT => { return if (a & 0x1FF0) == 0 { mmu.read_sysport(a) } else { 0 }; },
+        PAGE_OPM => { return if in_first_256(a) && (a & 3) == 3 { mmu.fm.read_status() } else { 0 }; },
+        PAGE_ADPCM => { return if in_first_256(a) { mmu.adpcm.read(a) } else { 0 }; },
+        PAGE_FDC => { return if in_first_256(a) { mmu.fdc.read((a & 0x07) as i32) } else { 0 }; },
+        PAGE_SASI => {
+            let v = mmu.sasi.read(a);
+            mmu.sasi_note();
+            return v;
+        },
+        // チャネル A のコントロールは送信バッファが空 (bit 2) とだけ答える
+        PAGE_SCC => { return if in_first_256(a) && (a & 7) == 5 { 4 } else { 0 }; },
+        PAGE_PIA => {
+            if !in_first_256(a) { return 0; }
+            if a == 0xE9A001 { return mmu.joy1; }
+            if a == 0xE9A003 { return mmu.joy2; }
+            if a == 0xE9A005 { return mmu.pia_c; }
+            return 0xFF;
+        },
+        PAGE_IOC => {
+            if !in_first_256(a) { return 0; }
+            return if a == 0xE9C001 { mmu.ioc_int_stat } else { 0xFF };
+        },
+        // 書き込み専用だが、XEiJ と同じく書いた値を読み返せる
+        PAGE_XAREA => { return if a >= 0xEAFF80 && a < 0xEAFF90 { mmu.xb2_area[(a & 0x0F) as i64] } else { 0 }; },
+        PAGE_SPRITE => {
+            if a < 0xEB0800 { return mmu.sprite[a & 0x7FF]; }
+            if a < 0xEB0820 { return mmu.bgreg[a & 0x1F]; }
+            return 0;
+        },
+        _ => {},
     }
-
-    // 0x00E82400 - 0x00E827FF: Video Controller Registers
-    if a >= 0xE82400 && a < 0xE82800 {
-        return mmu.vcreg[a & 0x3FF];
-    }
-
-    // 0x00E84000: DMAC
-    if (a & 0xFFFF00) == 0xE84000 {
-        return mmu.dmac.read(a);
-    }
-
-    // 0x00E88000 - 0x00E8803F: MFP (MC68901)
-    if (a & 0xFFFFC0) == 0xE88000 { return mmu.read_mfp(a); }
-
-    // 0x00E8A000 - 0x00E8BFFF: RTC (RP5C15)
-    if (a & 0xFFE000) == 0xE8A000 {
-        return mmu.rtc.read((a & 31) as i32);
-    }
-
-    // 0x00E8E000 - 0x00E8E00F: SysPort
-    if (a & 0xFFFFF0) == 0xE8E000 { return mmu.read_sysport(a); }
-
-    // 0x00E90000 - 0x00E90003: OPM (YM2151)
-    if (a & 0xFFFF00) == 0xE90000 {
-        if (a & 3) == 3 {
-            return mmu.fm.read_status();
-        }
-        return 0;
-    }
-
-    // 0x00E92000 - 0x00E92003: ADPCM (MSM6258)
-    if (a & 0xFFFF00) == 0xE92000 {
-        return mmu.adpcm.read(a);
-    }
-
-    // 0x00E94000 - 0x00E94007: FDC (uPD72065)
-    if (a & 0xFFFF00) == 0xE94000 {
-        let reg = (a & 0x07) as i32;
-        return mmu.fdc.read(reg);
-    }
-
-    // 0x00E96000 - 0x00E97FFF: SASI
-    if (a & 0x00FFE000) == 0x00E96000 {
-        let v = mmu.sasi.read(a);
-        mmu.sasi_note();
-        return v;
-    }
-
-    // 0x00E98000 - 0x00E98007: SCC (Z85C30: Mouse / RS-232C)
-    if (a & 0xFFFF00) == 0xE98000 {
-        let reg = (a & 0x07) as i32;
-        if reg == 5 { return 4; } // Ch A Control: Tx Empty
-        return 0;
-    }
-
-    // 0x00E9A000 - 0x00E9A007: JoyPort (8255 PPI)
-    if (a & 0xFFFF00) == 0xE9A000 {
-        if a == 0xE9A001 { return mmu.joy1; }
-        if a == 0xE9A003 { return mmu.joy2; }
-        if a == 0xE9A005 { return mmu.pia_c; }
-        return 0xFF;
-    }
-
-    // 0x00E9C000 - 0x00E9C003: IOC (I/O Controller)
-    if (a & 0xFFFF00) == 0xE9C000 {
-        if a == 0xE9C001 {
-            return mmu.ioc_int_stat;
-        }
-        return 0xFF;
-    }
-
-    // $EAFF81-$EAFF89: expansion RAM supervisor area (write-only; XEiJ reads back the value)
-    if a >= 0xEAFF80 && a < 0xEAFF90 {
-        return mmu.xb2_area[(a & 0x0F) as i64];
-    }
-
-    // 0x00EB0000 - 0x00EB07FF: Sprite Registers
-    if a >= 0xEB0000 && a < 0xEB0800 {
-        return mmu.sprite[a & 0x7FF];
-    }
-
-    // 0x00EB0800 - 0x00EB081F: BG Control Registers
-    if a >= 0xEB0800 && a < 0xEB0820 {
-        return mmu.bgreg[a & 0x1F];
-    }
-
-    // 0x00EB8000 - 0x00EBFFFF: BG / PCG RAM
-    if a >= 0xEB8000 && a < 0xEC0000 {
-        return mmu.bgram[a & 0x7FFF];
-    }
-
-    // 0xED0000 - 0xED3FFF: SRAM (16KB)
-    if a >= 0xED0000 && a < 0xED4000 {
-        return x68k_sram_read((a - 0xED0000) as i32);
-    }
-
-    // 0xF00000 - 0xFBFFFF: CGROM (768KB)
-    if a >= 0xF00000 && a < 0xFC0000 {
-        return x68k_cgrom_read((a - 0xF00000) as i32);
-    }
-
-    // 0xFE0000 - 0xFFFFFF: IPLROM (128KB)
-    if a >= 0xFE0000 && a <= 0xFFFFFF {
-        return x68k_ipl_read((a - 0xFE0000) as i32);
-    }
-
+    // I/O の区画の外: BG / PCG RAM、SRAM、CGROM、IPL ROM
+    if a >= 0xEB8000 && a < 0xEC0000 { return mmu.bgram[a & 0x7FFF]; }
+    if a >= 0xED0000 && a < 0xED4000 { return x68k_sram_read((a - 0xED0000) as i32); }
+    if a >= 0xF00000 && a < 0xFC0000 { return x68k_cgrom_read((a - 0xF00000) as i32); }
+    if a >= 0xFE0000 { return x68k_ipl_read((a - 0xFE0000) as i32); }
     return 0;
 }
 
@@ -575,18 +532,18 @@ fn read8(mmu: M68kMMU&, addr: u32) -> u8 {
         mmu.wait40 += bus_wait40(a);
     }
 
-    // Reset overlay for vector table (0x000000 - 0x000007)
+    // リセット直後のベクタテーブル (0x000000-0x000007) の重ね合わせ
     if mmu.reset_overlay && a < 8 {
-        // Return initial vector from IPLROM at 0x10000
+        // IPL ROM の 0x10000 にある初期ベクタを返す
         return x68k_ipl_read((0x10000 + (a as i32)));
     }
 
-    // 0x000000 - 0xBFFFFF: Main RAM (upto 12MB)
+    // 0x000000-0xBFFFFF: メイン RAM (最大 12 MB)
     if a < 0xC00000 {
         return x68k_ram_read(a as i32);
     }
 
-    // 0xC00000 - 0xDFFFFF: GVRAM (up to 2MB plane addressing)
+    // 0xC00000-0xDFFFFF: GVRAM (プレーンの番地付けで最大 2 MB)
     if a < 0xE00000 {
         return mmu.gvram_cpu_read((a - 0xC00000) as i32, mmu.crtc_regs[0x28]);
     }
@@ -684,7 +641,7 @@ fn fdc_dma(dmac: X68kDMAC&, fdc: X68kFDC&, mmu: M68kMMU&) -> bool {
 
         if dmac.ch[0].mtc == 0 {
             if (dmac.ch[0].ocr & 8) != 0 {
-                // Next block in chain
+                // チェーンの次のブロック
                 if (dmac.ch[0].ocr & 4) != 0 {
                     if dmac.ch[0].bar != 0 {
                         dmac.ch[0].mar = dmac::readmem24_dword(dmac.ch[0].bar) & ADDR_MASK;
@@ -706,7 +663,7 @@ fn fdc_dma(dmac: X68kDMAC&, fdc: X68kFDC&, mmu: M68kMMU&) -> bool {
 
         if dmac.ch[0].mtc == 0 {
             // DMAC 転送完了フラグ
-            dmac.ch[0].csr |= 0x80; // COC (Channel Operation Complete)
+            dmac.ch[0].csr |= 0x80; // COC (チャネル動作完了)
             dmac.ch[0].csr &= 0xF7; // ACT = 0
             dmac.ch[0].ccr &= 0x7F; // STR = 0
             // px68k DMAINT。CCR bit3 が許可のときだけ。ch3 は C 側の経路のまま。
@@ -788,136 +745,56 @@ fn write_area_set(mmu: M68kMMU&, a: u32, val: u8) {
 }
 
 fn io_write8(mmu: M68kMMU&, a: u32, val: u8) {
-    // 0x00E80000 - 0x00E804FF: CRTC
-    if a >= 0xE80000 && a < 0xE80500 {
-        mmu.write_crtc(a, val);
-        return;
-    }
-
-    // 0x00E82000 - 0x00E823FF: Palette RAM (1024 bytes)
-    if a >= 0xE82000 && a < 0xE82400 {
-        mmu.pal[a & 0x3FF] = val;
-        return;
-    }
-
-    // 0x00E82400 - 0x00E827FF: Video Controller Registers
-    if a >= 0xE82400 && a < 0xE82800 {
-        mmu.vcreg[a & 0x3FF] = val;
-        return;
-    }
-
-    // 0x00E84000 - 0x00E840FF: DMAC (HD63450)
-    if (a & 0xFFFF00) == 0xE84000 {
-        mmu.dmac.write(a, val);
-        mmu.fdc_service();
-        return;
-    }
-
-    // $E86001: main RAM below (n + 1) * 8 KB is supervisor-only
-    if a >= 0xE86000 && a < 0xE88000 {
-        if (a & 1) != 0 { mmu.svs_limit = ((val as u32) + 1) << 13; }
-        return;
-    }
-
-    // 0x00E88000 - 0x00E8803F: MFP (MC68901)
-    if (a & 0xFFFFC0) == 0xE88000 {
-        if (a & 1) != 0 {
-            let reg = ((a & 0x3F) >> 1) as i32;
-            mmu.mfp.write(reg, val);
-        }
-        return;
-    }
-
-    // 0x00E8A000 - 0x00E8BFFF: RTC (RP5C15)
-    if (a & 0xFFE000) == 0xE8A000 {
-        mmu.rtc.write((a & 31) as i32, val);
-        return;
-    }
-
-    // 0x00E8E000 - 0x00E8E00F: SysPort
-    if (a & 0xFFFFF0) == 0xE8E000 {
-        mmu.write_sysport(a, val);
-        return;
-    }
-
-    // 0x00E90000 - 0x00E90003: OPM (YM2151)
-    if (a & 0xFFFF00) == 0xE90000 {
-        mmu.write_opm(a, val);
-        return;
-    }
-
-    // 0x00E92000 - 0x00E92003: ADPCM (MSM6258)
-    if (a & 0xFFFF00) == 0xE92000 {
-        mmu.adpcm.write(a, val);
-        return;
-    }
-
-    // 0x00E94000 - 0x00E94007: FDC (uPD72065)
-    if (a & 0xFFFF00) == 0xE94000 {
-        let reg = (a & 0x07) as i32;
-        mmu.fdc.write(reg, val);
-        mmu.fdc_service();
-        return;
-    }
-
-    // 0x00E96000 - 0x00E97FFF: SASI
-    if (a & 0x00FFE000) == 0x00E96000 {
-        mmu.sasi.write(a, val);
-        mmu.sasi_note();
-        return;
-    }
-
-    // 0x00E98000 - 0x00E98007: SCC (Z85C30)
-    if (a & 0xFFFF00) == 0xE98000 {
-        return;
-    }
-
-    // 0x00E9A000 - 0x00E9A007: JoyPort / PIA (8255)
-    if (a & 0xFFFF00) == 0xE9A000 {
-        mmu.write_pia(a, val);
-        return;
-    }
-
-    // 0x00E9C000 - 0x00E9C003: IOC (I/O Controller)
-    if (a & 0xFFFF00) == 0xE9C000 {
-        if a == 0xE9C001 {
-            mmu.ioc_int_stat &= 0xF0;
-            mmu.ioc_int_stat |= (val & 0x0F);
-            g_disk.media_enable = (mmu.ioc_int_stat & 2) != 0;
-        } else if a == 0xE9C003 {
-            mmu.ioc_int_vect = (val & 0xFC);
-        }
-        return;
-    }
-
-    // $EAFF81-$EAFF89 (odd): one bit per 256 KB block, 2 MB per port starting at $200000
-    if a >= 0xEAFF81 && a <= 0xEAFF89 && (a & 1) != 0 {
-        mmu.write_area_set(a, val);
-        return;
-    }
-
-    // 0x00EB0000 - 0x00EB07FF: Sprite Registers
-    if a >= 0xEB0000 && a < 0xEB0800 {
-        mmu.sprite[a & 0x7FF] = val;
-        return;
-    }
-
-    // 0x00EB0800 - 0x00EB081F: BG Control Registers
-    if a >= 0xEB0800 && a < 0xEB0820 {
-        mmu.bgreg[a & 0x1F] = val;
-        return;
-    }
-
-    // 0x00EB8000 - 0x00EBFFFF: BG / PCG RAM
-    if a >= 0xEB8000 && a < 0xEC0000 {
-        mmu.write_bgram((a - 0xEB8000) as i32, val);
-        return;
-    }
-
-    // 0xED0000 - 0xED3FFF: SRAM (16KB)
-    if a >= 0xED0000 && a < 0xED4000 {
-        x68k_sram_write((a - 0xED0000) as i32, val);
-        return;
+    match a >> 13 {
+        PAGE_CRTC => { if a < 0xE80500 { mmu.write_crtc(a, val); } },
+        PAGE_VIDEO => {
+            if a < 0xE82400 { mmu.pal[a & 0x3FF] = val; }
+            else if a < 0xE82800 { mmu.vcreg[a & 0x3FF] = val; }
+        },
+        PAGE_DMAC => {
+            if in_first_256(a) {
+                mmu.dmac.write(a, val);
+                mmu.fdc_service();
+            }
+        },
+        // $E86001: メイン RAM の (n + 1) * 8 KB 未満をスーパーバイザ専用にする
+        PAGE_AREA => { if (a & 1) != 0 { mmu.svs_limit = ((val as u32) + 1) << 13; } },
+        PAGE_MFP => { if (a & 0x1FC0) == 0 && (a & 1) != 0 { mmu.mfp.write(((a & 0x3F) >> 1) as i32, val); } },
+        PAGE_RTC => { mmu.rtc.write((a & 31) as i32, val); },
+        PAGE_SYSPORT => { if (a & 0x1FF0) == 0 { mmu.write_sysport(a, val); } },
+        PAGE_OPM => { if in_first_256(a) { mmu.write_opm(a, val); } },
+        PAGE_ADPCM => { if in_first_256(a) { mmu.adpcm.write(a, val); } },
+        PAGE_FDC => {
+            if in_first_256(a) {
+                mmu.fdc.write((a & 0x07) as i32, val);
+                mmu.fdc_service();
+            }
+        },
+        PAGE_SASI => {
+            mmu.sasi.write(a, val);
+            mmu.sasi_note();
+        },
+        PAGE_SCC => {},   // マウスと RS-232C は未実装。書き込みは捨てる
+        PAGE_PIA => { if in_first_256(a) { mmu.write_pia(a, val); } },
+        PAGE_IOC => {
+            if a == 0xE9C001 {
+                mmu.ioc_int_stat &= 0xF0;
+                mmu.ioc_int_stat |= val & 0x0F;
+                g_disk.media_enable = (mmu.ioc_int_stat & 2) != 0;
+            } else if a == 0xE9C003 {
+                mmu.ioc_int_vect = val & 0xFC;
+            }
+        },
+        // $EAFF81-$EAFF89 の奇数番地: 256 KB ごとに 1 ビット、1 ポートで 2 MB ぶん ($200000 から)
+        PAGE_XAREA => { if a >= 0xEAFF81 && a <= 0xEAFF89 && (a & 1) != 0 { mmu.write_area_set(a, val); } },
+        PAGE_SPRITE => {
+            if a < 0xEB0800 { mmu.sprite[a & 0x7FF] = val; }
+            else if a < 0xEB0820 { mmu.bgreg[a & 0x1F] = val; }
+        },
+        _ => {
+            if a >= 0xEB8000 && a < 0xEC0000 { mmu.write_bgram((a - 0xEB8000) as i32, val); }
+            else if a >= 0xED0000 && a < 0xED4000 { x68k_sram_write((a - 0xED0000) as i32, val); }
+        },
     }
 }
 
@@ -929,14 +806,14 @@ fn write8(mmu: M68kMMU&, addr: u32, val: u8) {
         mmu.wait40 += bus_wait40(a);
     }
 
-    // Reset overlay is disabled on any write to RAM
+    // RAM へ書くとリセット直後の重ね合わせは外れる
     if a < 0xC00000 {
         mmu.reset_overlay = false;
         x68k_ram_write(a as i32, val);
         return;
     }
 
-    // 0xC00000 - 0xDFFFFF: GVRAM
+    // 0xC00000-0xDFFFFF: GVRAM
     if a < 0xE00000 {
         mmu.gvram_cpu_write((a - 0xC00000) as i32, val, mmu.crtc_regs[0x28]);
         return;
@@ -953,7 +830,7 @@ fn write8(mmu: M68kMMU&, addr: u32, val: u8) {
     mmu.io_write8(a, val);
 }
 
-// Both bytes sit in the RAM window (through 0xBFFFFF). The last byte stays on the byte path.
+// 2 バイトとも RAM の窓 (0xBFFFFF まで) にある。最後のバイトはバイトの経路のまま。
 fn ram16(addr: u32) -> bool {
     let a = addr & ADDR_MASK;
     return a < 0xBFFFFF;
@@ -964,7 +841,7 @@ fn ram32(addr: u32) -> bool {
     return a < 0xBFFFFD;
 }
 
-// 16-bit Big-Endian Read
+// 16 ビット、ビッグエンディアンの読み出し
 fn read16(mmu: M68kMMU&, addr: u32) -> u16 {
     let a = addr & ADDR_MASK;
     if mmu.cpu_access && (mmu.fault != 0 || (a & 1) != 0 || mmu.user_mode) && mmu.check_wide(a, false) { return 0xFFFF; }
@@ -985,7 +862,7 @@ fn read16(mmu: M68kMMU&, addr: u32) -> u16 {
     return v;
 }
 
-// 16-bit Big-Endian Write
+// 16 ビット、ビッグエンディアンの書き込み
 fn write16(mmu: M68kMMU&, addr: u32, val: u16) {
     let a = addr & ADDR_MASK;
     if mmu.cpu_access && (mmu.fault != 0 || (a & 1) != 0 || mmu.user_mode) && mmu.check_wide(a, true) { return; }
@@ -1005,7 +882,7 @@ fn write16(mmu: M68kMMU&, addr: u32, val: u16) {
     if mmu.cpu_access { mmu.wait40 = wait; }
 }
 
-// 32-bit Big-Endian Read
+// 32 ビット、ビッグエンディアンの読み出し
 fn read32(mmu: M68kMMU&, addr: u32) -> u32 {
     let a = addr & ADDR_MASK;
     if mmu.cpu_access && (mmu.fault != 0 || (a & 1) != 0 || mmu.user_mode) && mmu.check_wide(a, false) { return 0xFFFFFFFF; }
@@ -1018,7 +895,7 @@ fn read32(mmu: M68kMMU&, addr: u32) -> u32 {
     return (hi << 16) | lo;
 }
 
-// 32-bit Big-Endian Write
+// 32 ビット、ビッグエンディアンの書き込み
 fn write32(mmu: M68kMMU&, addr: u32, val: u32) {
     let a = addr & ADDR_MASK;
     if mmu.cpu_access && (mmu.fault != 0 || (a & 1) != 0 || mmu.user_mode) && mmu.check_wide(a, true) { return; }

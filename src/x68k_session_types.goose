@@ -1,5 +1,5 @@
-// Host control metadata. Not part of an emulated-machine checkpoint.
-// Owned by the emulator; no borrowed references and no transport state.
+// ホストが制御に使う情報。エミュレートした機械のチェックポイントには入らない。
+// エミュレータが持つ。借りた参照も、受け取り方の状態も持たない。
 let SNAPSHOT_NAME_MAX = 63; // スナップショット名の最大バイト数
 
 struct X68kSession {

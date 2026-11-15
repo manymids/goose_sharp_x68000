@@ -1,10 +1,10 @@
 // C 側 (Win32 のウィンドウ、入力、音声、ファイル選択) の関数の宣言
 //
-// Every path and file name that crosses here is UTF-8, in both directions.
-let HOST_PATH_BYTES = 800; // room for the longest path C hands back (PATH_CAP in x68k_path.h)
+// ここを通るパスとファイル名は、どちら向きもすべて UTF-8。
+let HOST_PATH_BYTES = 800; // C が返す最も長いパスが入る大きさ (x68k_path.h の PATH_CAP)
 
-// Slices cross as pointer/64-bit count pairs. Counts are bytes except fb.
-// Borrowed until x68k_mem_destroy; no reference-containing struct crosses.
+// スライスはポインタと 64 ビットの個数の組で渡る。個数は fb 以外はバイト数。
+// x68k_mem_destroy まで借りたまま。参照を含む構造体は渡さない。
 extern fn c_machine_bind(ram: u8[:], ipl: u8[:], cgrom: u8[:], sram: u8[:], fb: u32[:], ram_limit: i32&) -> u64;
 extern fn c_machine_epoch() -> u64;
 extern fn c_machine_reset_devices();
@@ -31,15 +31,15 @@ extern fn c_host_joy_byte() -> i32;
 extern fn c_set_cpu_mhz(mhz: i32) -> i32;
 extern fn c_get_cpu_mhz() -> i32;
 extern fn c_get_scale() -> i32;
-// The window's run-ahead setting (0-4 frames). The Run-Ahead menu changes it.
+// ウィンドウの先読みの設定 (0〜4 フレーム)。Run-Ahead メニューで変わる。
 extern fn c_set_run_ahead(frames: i32) -> i32;
 extern fn c_get_run_ahead() -> i32;
-// The window menu changed a setting since the last call: returns 1, and the initial screen width the
-// menu chose (0 if it did not choose one). The settings themselves live in x68k_config.goose.
+// 前回の呼び出しからウィンドウのメニューで設定が変わったら 1 を返し、メニューで選んだ初期の画面幅も返す
+// (選んでいなければ 0)。設定そのものは x68k_config.goose が持つ。
 extern fn c_gui_take_settings_changes(width: i32&) -> i32;
-// The absolute form of a UTF-8 path (GetFullPathNameW), as UTF-8 in out. Returns its length, 0 on failure.
+// UTF-8 のパスの絶対パス (GetFullPathNameW) を UTF-8 で out に入れる。長さを返し、失敗なら 0。
 extern fn c_full_path(path: const u8[:], out: u8&, cap: i32) -> i32;
-// Text in the ANSI code page converted to UTF-8 in out. Returns its length, 0 on failure.
+// ANSI コードページの文字列を UTF-8 にして out に入れる。長さを返し、失敗なら 0。
 extern fn c_ansi_to_utf8(text: const u8[:], out: u8&, cap: i32) -> i32;
 extern fn c_cpu_mhz_ok(mhz: i32) -> i32;
 
@@ -47,11 +47,10 @@ extern fn c_host_local_seconds() -> i64;
 
 extern fn c_host_list_dir(path: const u8[:], out: u8&, cap: i32) -> i32;
 
-// Native-only compatibility/test helpers. Machine callers use x68k_state.
-// In particular, these do not snapshot Goose MMU/video or CPU metadata.
+// メモリの準備 (BIOS の読み込み)、メニューで選んだディスク、RAM の大きさ。
 
 extern fn x68k_mem_init(sys_dir: const u8[:]) -> i32;
-// A disk the user picked from the window menu: one of MEDIA_*, with the path for an insert. 0 = none.
+// ユーザーがウィンドウのメニューで選んだディスク: MEDIA_* のどれかで、挿入ならパスも。0 はなし。
 extern fn c_gui_take_media_request(path: u8&, cap: i32, path_len: i32&) -> i32;
 extern fn c_mem_set_ram_mb(mb: i32) -> i32;
 extern fn x68k_mem_destroy();
@@ -68,6 +67,6 @@ extern fn c_set_screen_mode(w: i32, h: i32);
 extern fn c_get_screen_width() -> i32;
 extern fn c_get_screen_height() -> i32;
 
-// Audio / Sound API
-// One frame of finished interleaved stereo samples, for the audio device.
+// 音声
+// でき上がった 1 フレーム分のステレオのサンプル (左右交互)。音声デバイスへ渡す。
 extern fn c_audio_output(samples: const i16[:]);

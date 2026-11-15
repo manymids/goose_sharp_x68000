@@ -62,7 +62,7 @@ fn init(emu: X68kEmulator&) {
 
 fn reset(emu: X68kEmulator&) {
     assert(emu.active());
-    // Machine reset does not allocate resources, reload files or rebind views.
+    // 機械のリセットは資源を確保せず、ファイルを読み直さず、ビューも結び直さない。
     emu.cpu = M68kCPU {};
     emu.mmu.init();
     x68k_sram_set_write_enable(0);
@@ -103,7 +103,7 @@ fn step(emu: X68kEmulator&) -> i32 {
     return emu.step_core();
 }
 
-// The frame loop checks the binding once, outside this instruction hot path.
+// 結び付けの確認はフレームのループで 1 回だけ行い、この命令ごとの経路ではしない。
 fn step_core(emu: X68kEmulator&) -> i32 {
     // DMA の ch1 (SASI) と ch2 は、動作中 (CSR の ACT) のときだけ進める。どちらも止まっていれば
     // 何もしないので、1 命令ごとの呼び出しを省く。
@@ -192,15 +192,15 @@ fn take_interrupt(emu: X68kEmulator&) {
     }
 }
 
-// Lines per frame: R04 + 1.
+// 1 フレームのライン数: R04 + 1。
 fn frame_lines(mmu: M68kMMU&) -> i32 {
     let v = (mmu.crtc_word(CRTC_VTOTAL) & 1023) + 1;
     return if v > 1 { v } else { 568 };
 }
 
-// Frame length in 0.1 us (10 MHz clocks) from the CRTC, as XEiJ derives it: the oscillator and
-// divider chosen by HRL ($E8E007 bit 1) and R20 (bit 4 high resolution, bits 1-0 horizontal),
-// times 8 dots, R00 + 1 columns and R04 + 1 lines.
+// CRTC から求めた 1 フレームの長さ (0.1 us = 10 MHz のクロック単位、XEiJ と同じ求め方): HRL ($E8E007 bit 1) と
+// R20 (bit 4 は高解像度、bit 1-0 は水平) が選ぶ発振器と分周比に、8 ドット、R00 + 1 桁、
+// R04 + 1 ラインを掛ける。
 fn frame_cycles10(mmu: M68kMMU&) -> i64 {
     let oscs: i64[3] = [38863632, 69551900, 50349800];
     let osc_of: i32[16] = [0, 0, 0, 0, 1, 1, 1, 2, 0, 0, 0, 0, 1, 1, 1, 2];
@@ -359,7 +359,7 @@ fn run_frame(emu: X68kEmulator&) {
 
     let hsync_clk = clk_total / vline_total;
     let htotal = if emu.mmu.crtc_regs[0x01] > 0 { emu.mmu.crtc_regs[0x01] as i32 } else { 137 };
-    // GPIP7 is high during the horizontal sync pulse only (XEiJ): R01 + 1 of R00 + 1 columns.
+    // GPIP7 は水平同期パルスの間だけ high (XEiJ): R00 + 1 桁のうち R01 + 1 桁。
     emu.mmu.mfp.hsync_clk = hsync_clk;
     emu.mmu.mfp.hsync_start = (((emu.mmu.crtc_regs[0x03] as i32) + 1) * hsync_clk) / (htotal + 1);
     emu.mmu.mfp.hsync_end = hsync_clk;

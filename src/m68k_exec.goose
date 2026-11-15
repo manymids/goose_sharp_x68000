@@ -202,7 +202,7 @@ fn ea_read(cpu: M68kCPU&, mmu: M68kMMU&, mode: i32, reg: i32, size: i32) -> u32 
         if size == 2 { return ((cpu.a[reg] as! i16)) as! u32; }
         return cpu.a[reg];
     }
-    if mode == 7 && reg == 4 { // Immediate #<data>
+    if mode == 7 && reg == 4 { // 即値 #<data>
         if size == 1 { return (fetch16(cpu, mmu) & 0xFF); }
         if size == 2 { return fetch16(cpu, mmu); }
         return fetch32(cpu, mmu);
@@ -245,7 +245,7 @@ fn ea_bw_extra(mode: i32, reg: i32) -> i32 {
     return 4;
 }
 
-// Effective address time; a long operand in memory (or a long immediate) adds 4.
+// 実効アドレスの時間。メモリ上のロングのオペランド (ロングの即値も) は 4 足す。
 fn ea_extra_cycles(mode: i32, reg: i32, size: i32) -> i32 {
     let bw = ea_bw_extra(mode, reg);
     if size == 4 && mode != 0 && mode != 1 { return bw + 4; }
@@ -282,14 +282,14 @@ fn alu_bin_cycles(size: i32, mode: i32, reg: i32, to_ea: bool) -> i32 {
     return alu_read_cycles(size, mode, reg);
 }
 
-// ADDA/SUBA: .W 8, .L 6 (8 from a register or immediate), plus EA.
+// ADDA/SUBA: .W は 8、.L は 6 (レジスタか即値からなら 8)、これに EA を足す。
 fn adda_cycles(is_long: bool, mode: i32, reg: i32) -> i32 {
     let size: i32 = if is_long { 4 } else { 2 };
     let base: i32 = if is_long && !ea_is_reg_or_imm(mode, reg) { 6 } else { 8 };
     return base + ea_extra_cycles(mode, reg, size);
 }
 
-// CMP <ea>,Dn: 4 (.L 6) plus EA, with no register/immediate surcharge.
+// CMP <ea>,Dn: 4 (.L は 6) に EA を足す。レジスタ / 即値の上乗せはない。
 fn cmp_cycles(size: i32, mode: i32, reg: i32) -> i32 {
     let base: i32 = if size == 4 { 6 } else { 4 };
     return base + ea_extra_cycles(mode, reg, size);
@@ -309,8 +309,8 @@ fn move_cycles(size: i32, src_mode: i32, src_reg: i32, dst_mode: i32, dst_reg: i
     return src + dst;
 }
 
-// MOVEM (XEiJ): to memory -(An) 8, else 4 (.L 0) + EA; to registers (An)+ 12 (.L 8),
-// else 8 (.L 4) + EA; plus 4 (.L 8) per register.
+// MOVEM (XEiJ): メモリへは -(An) が 8、それ以外は 4 (.L は 0) + EA。レジスタへは (An)+ が 12 (.L は 8)、
+// それ以外は 8 (.L は 4) + EA。レジスタ 1 つごとに 4 (.L は 8) を足す。
 fn movem_cycles(is_long: bool, nregs: i32, mode: i32, to_mem: bool, reg: i32) -> i32 {
     let size: i32 = if is_long { 4 } else { 2 };
     let per: i32 = if is_long { 8 } else { 4 };
@@ -325,7 +325,7 @@ fn movem_cycles(is_long: bool, nregs: i32, mode: i32, to_mem: bool, reg: i32) ->
     return base + per * nregs;
 }
 
-// LEA/PEA address time: (An) 4, d16 8, index 12, abs.W 8, abs.L 12, PC 8 / 12.
+// LEA/PEA のアドレス計算の時間: (An) 4、d16 8、インデックス 12、abs.W 8、abs.L 12、PC 8 / 12。
 fn lea_cycles(mode: i32, reg: i32) -> i32 {
     if mode == 2 { return 4; }
     if mode == 6 || (mode == 7 && reg == 3) { return 12; }
@@ -333,7 +333,7 @@ fn lea_cycles(mode: i32, reg: i32) -> i32 {
     return 8;
 }
 
-// JMP address time: (An) 8, d16 10, index 14, abs.W 10, abs.L 12, PC 10 / 14. JSR adds 8.
+// JMP のアドレス計算の時間: (An) 8、d16 10、インデックス 14、abs.W 10、abs.L 12、PC 10 / 14。JSR は 8 足す。
 fn jmp_cycles(mode: i32, reg: i32) -> i32 {
     if mode == 2 { return 8; }
     if mode == 6 || (mode == 7 && reg == 3) { return 14; }
@@ -341,8 +341,8 @@ fn jmp_cycles(mode: i32, reg: i32) -> i32 {
     return 10;
 }
 
-// MULU: 38 + 2 per one bit of the source. MULS: 38 + 2 per one bit in the low 16 bits of
-// source ^ (source << 1), i.e. 01/10 pairs with a 0 appended (XEiJ irpMulsWord).
+// MULU: 38 + ソースの 1 のビット 1 つにつき 2。MULS: 38 + 次の値の下位 16 ビットにある 1 のビット 1 つにつき 2:
+// source ^ (source << 1)。つまり末尾に 0 を足したときの 01 / 10 の組の数 (XEiJ irpMulsWord)。
 fn mul_cycles(mode: i32, reg: i32, src: u32, signed: bool) -> i32 {
     var t = src & 0xFFFF;
     if signed { t = (t ^ (t << 1)) & 0xFFFF; }
@@ -354,8 +354,8 @@ fn mul_cycles(mode: i32, reg: i32, src: u32, signed: bool) -> i32 {
     return 38 + 2 * n + ea_extra_cycles(mode, reg, 2);
 }
 
-// BTST/BCHG/BCLR/BSET (XEiJ). Register: dynamic BTST 6, BCHG/BSET 6/8, BCLR 8/10 (bit < 16 /
-// above); static adds 4. Memory: dynamic BTST 4, others 8; static adds 4; plus EA.
+// BTST/BCHG/BCLR/BSET (XEiJ)。レジスタ: 動的 BTST 6、BCHG/BSET 6/8、BCLR 8/10 (ビット番号が 16 未満 /
+// それ以上)。静的は 4 足す。メモリ: 動的 BTST 4、ほかは 8。静的は 4 足し、EA も足す。
 fn bit_cycles(op_type: i32, is_static: bool, mode: i32, reg: i32, bit: u32) -> i32 {
     let st: i32 = if is_static { 4 } else { 0 };
     if mode == 0 {
@@ -377,8 +377,8 @@ fn shift_mem_cycles(mode: i32, reg: i32) -> i32 {
     return 8 + ea_bw_extra(mode, reg);
 }
 
-// DIVU/DIVS cycles from the 68000's shift-subtract loop (XEiJ irpDivuCyclesModified /
-// irpDivsCycles), plus the effective address time. Zero divide keeps the old count.
+// DIVU/DIVS のサイクルは 68000 のシフトと引き算の繰り返しから求める (XEiJ irpDivuCyclesModified /
+// irpDivsCycles)。これに実効アドレスの時間を足す。ゼロ除算は前の数え方のまま。
 fn divu_cycles(mode: i32, reg: i32, x: u32, y: u32) -> i32 {
     let extra = ea_extra_cycles(mode, reg, 2);
     let d = y & 0xFFFF;
@@ -433,7 +433,7 @@ fn imm_alu_cycles(size: i32, mode: i32, reg: i32) -> i32 {
     return clr_cycles(size, mode, reg) + add;
 }
 
-// CMPI (XEiJ): Dn 8 (.L 14); memory 8 (.L 12) plus EA.
+// CMPI (XEiJ): Dn は 8 (.L は 14)、メモリは 8 (.L は 12) に EA を足す。
 fn cmpi_cycles(size: i32, mode: i32, reg: i32) -> i32 {
     if mode == 0 { return if size == 4 { 14 } else { 8 }; }
     return (if size == 4 { 12 } else { 8 }) + ea_extra_cycles(mode, reg, size);
@@ -469,8 +469,8 @@ fn raise_illegal(cpu: M68kCPU&, mmu: M68kMMU&) -> i32 {
 }
 
 // ABCD/SBCD/NBCD。Z は結果が 0 以外のときだけクリアする。keep_z のときは Z を変えない。V は変えない。
-// 68000 BCD flags as XEiJ computes them: X/C carry, Z cleared on a non-zero result,
-// N the result's top bit, V overflow from adding the decimal correction.
+// 68000 の BCD のフラグ (XEiJ と同じ求め方): X/C は桁上がり、Z は結果が 0 でなければ落とす、
+// N は結果の最上位ビット、V は 10 進補正を足したときのオーバーフロー。
 fn bcd_flags(cpu: M68kCPU&, t: i32, z: i32, carry: bool) {
     if carry { cpu.sr |= SR_C | SR_X; } else { cpu.sr &= ~(SR_C | SR_X); }
     if z != 0 { cpu.sr &= ~(SR_Z as! u16); }
@@ -831,7 +831,7 @@ fn op4_movem_ext(cpu: M68kCPU&, mmu: M68kMMU&, op: u16) -> i32, bool {
         }
 
         if is_to_mem {
-            if mode == 4 { // -(An): predecrement (bit 0=A7..bit 7=A0, bit 8=D7..bit 15=D0)
+            if mode == 4 { // -(An): プリデクリメント (bit 0 = A7 … bit 7 = A0、bit 8 = D7 … bit 15 = D0)
                 var addr = cpu.a[reg];
                 for i in 16 {
                     if (mask & ((1 as! u16) << i)) != 0 {
@@ -878,7 +878,7 @@ fn op4_movem_ext(cpu: M68kCPU&, mmu: M68kMMU&, op: u16) -> i32, bool {
                     }
                 }
             }
-            if mode == 3 && mmu.fault == 0 { // (An)+ postincrement
+            if mode == 3 && mmu.fault == 0 { // (An)+: ポストインクリメント
                 cpu.a[reg] = addr;
             }
             return movem_cycles(is_long, nregs, mode, false, reg), true;
@@ -991,7 +991,7 @@ fn op4_unary(cpu: M68kCPU&, mmu: M68kMMU&, op: u16) -> i32, bool {
         return 4 + ea_extra_cycles(mode, reg, size), true;
     }
 
-    // NBCD (0100 1000 00 eee eee): 0 - <ea> - X with SBCD's flags.
+    // NBCD (0100 1000 00 eee eee): 0 - <ea> - X。フラグは SBCD と同じ。
     if (op & 0xFFC0) == 0x4800 {
         if !ea_is_alterable(mode, reg) { return raise_illegal(cpu, mmu), true; }
         let ea_res = ea_read_for_rmw(cpu, mmu, mode, reg, 1);
@@ -1001,7 +1001,7 @@ fn op4_unary(cpu: M68kCPU&, mmu: M68kMMU&, op: u16) -> i32, bool {
         return 8 + ea_bw_extra(mode, reg), true;
     }
 
-    // CHK.W (0100 rrr1 10 eee eee): signed bounds. N/Z from Dn, V/C from bound - Dn (XEiJ).
+    // CHK.W (0100 rrr1 10 eee eee): 符号付きの範囲検査。N/Z は Dn から、V/C は 上限 - Dn から (XEiJ)。
     if (op & 0xF1C0) == 0x4180 {
         if !ea_is_data(mode, reg) { return raise_illegal(cpu, mmu), true; }
         let dn: i32 = (op >> 9) & 0x07;
@@ -1085,7 +1085,7 @@ fn exec_op8_or_div(cpu: M68kCPU&, mmu: M68kMMU&, op: u16) -> i32 {
         let src = ea_read(cpu, mmu, mode, reg, 2);
         let x = cpu.d[dreg];
         let cycles = divu_cycles(mode, reg, x, src);
-        // Zero divide and overflow leave Dq; N/Z/V as the 68000 sets them (XEiJ).
+        // ゼロ除算とオーバーフローでは Dq を変えない。N/Z/V は 68000 と同じに立てる (XEiJ)。
         if src == 0 {
             var ccr = (cpu.sr & SR_X) | SR_V;
             if (x & 0x80000000) != 0 { ccr |= SR_N; }
@@ -1110,7 +1110,7 @@ fn exec_op8_or_div(cpu: M68kCPU&, mmu: M68kMMU&, op: u16) -> i32 {
         let src: i32 = ea_read(cpu, mmu, mode, reg, 2) as! i16;
         let dst = cpu.d[dreg] as! i32;
         let cycles = divs_cycles(mode, reg, dst, src);
-        // Zero divide and overflow leave Dq; N/Z/V as the 68000 sets them (XEiJ).
+        // ゼロ除算とオーバーフローでは Dq を変えない。N/Z/V は 68000 と同じに立てる (XEiJ)。
         if src == 0 {
             let x = cpu.d[dreg];
             var v = (cpu.sr & SR_V) != 0;
@@ -1122,7 +1122,7 @@ fn exec_op8_or_div(cpu: M68kCPU&, mmu: M68kMMU&, op: u16) -> i32 {
             trigger_exception(cpu, mmu, 5, cpu.pc);
             return cycles;
         }
-        // 64-bit so that $80000000 / -1 is an overflow, not a trap.
+        // 64 ビットで計算し、$80000000 / -1 をトラップではなくオーバーフローにする。
         let q64 = (dst as! i64) / (src);
         if q64 > 32767 || q64 < -32768 {
             let z = (q64 as! i32) as! u32;
@@ -1473,7 +1473,7 @@ fn exec_move(cpu: M68kCPU&, mmu: M68kMMU&, op: u16) -> i32 {
     let val = ea_read(cpu, mmu, src_mode, src_reg, size);
     ea_write(cpu, mmu, dst_mode, dst_reg, size, val);
 
-    if dst_mode != 1 { // MOVEA does not affect flags
+    if dst_mode != 1 { // MOVEA はフラグを変えない
         cpu.set_nz(size, val);
     }
     return move_cycles(size, src_mode, src_reg, dst_mode, dst_reg);
@@ -1518,7 +1518,7 @@ fn exec_op5(cpu: M68kCPU&, mmu: M68kMMU&, op: u16) -> i32 {
     let reg: i32 = op & 0x07;
     let size: i32 = if sz_code == 0 { 1 } else if sz_code == 1 { 2 } else { 4 };
 
-    if mode == 1 { // An: ADDQ.W or ADDQ.L to address register does not affect flags
+    if mode == 1 { // An: アドレスレジスタへの ADDQ.W / ADDQ.L はフラグを変えない
         let cur = cpu.a[reg];
         cpu.a[reg] = if is_sub { cur - q } else { cur + q };
         return addq_cycles(size, mode, reg);
@@ -1578,9 +1578,9 @@ fn exec_moveq(cpu: M68kCPU&, op: u16) -> i32 {
 // 1命令を実行して消費サイクル数を返す
 // -------------------------------------------------------------
 fn step_core(cpu: M68kCPU&, mmu: M68kMMU&) -> i32 {
-    // The 68000 keeps all 32 PC bits even though it drives 24 address lines. The IPL
-    // exception handlers rely on it: vectors such as $02FF0540 carry the vector number
-    // in the top byte, which BSR then pushes for the handler to read.
+    // 68000 はアドレス線が 24 本でも PC の 32 ビットをすべて持つ。IPL の例外処理はこれに頼っている:
+    // $02FF0540 のようなベクタは最上位バイトにベクタ番号を持ち、BSR がそれを積んで
+    // 処理ルーチンが読む。
     if cpu.halted {
         return 4;
     }
@@ -1604,11 +1604,11 @@ fn step_core(cpu: M68kCPU&, mmu: M68kMMU&) -> i32 {
         4 => {
             return exec_op4(cpu, mmu, op);
         },
-        // Op 5: ADDQ, SUBQ, Scc, DBcc
+        // Op 5: ADDQ、SUBQ、Scc、DBcc
         5 => {
             return exec_op5(cpu, mmu, op);
         },
-        // Op 6: BRA (disp8/16), BSR, Bcc
+        // Op 6: BRA (disp8/16)、BSR、Bcc
         6 => {
             return exec_branch(cpu, mmu, op);
         },
@@ -1640,12 +1640,12 @@ fn step_core(cpu: M68kCPU&, mmu: M68kMMU&) -> i32 {
         0x0E => {
             return exec_opE_shift_rotate(cpu, mmu, op);
         },
-        // Op A: Line 1010 Emulator Exception (Vector 10)
+        // Op A: Line 1010 エミュレータ例外 (Vector 10)
         0x0A => {
             trigger_exception(cpu, mmu, 10, inst_pc);
             return 34;
         },
-        // Op F: Line 1111 Emulator Exception (Vector 11, Human68k DOS call)
+        // Op F: Line 1111 エミュレータ例外 (Vector 11、Human68k の DOS コール)
         _ => {
             trigger_exception(cpu, mmu, 11, inst_pc);
             return 34;
@@ -1653,9 +1653,9 @@ fn step_core(cpu: M68kCPU&, mmu: M68kMMU&) -> i32 {
     }
 }
 
-// Group 0 exception (2 = bus error, 3 = address error) after a faulted instruction.
-// Matches XEiJ: data registers and SR are rolled back, address register updates made
-// before the fault stay, and the frame holds the opcode and the instruction address.
+// 命令が失敗したあとのグループ 0 例外 (2 = バスエラー、3 = アドレスエラー)。
+// XEiJ と同じく、データレジスタと SR は元に戻し、失敗の前にしたアドレスレジスタの更新は
+// 残す。スタックフレームには命令コードと命令の番地を積む。
 fn group0(cpu: M68kCPU&, mmu: M68kMMU&, d: u32[8], sr: u16) {
     let vector = mmu.fault;
     let addr = mmu.fault_addr;
@@ -1673,7 +1673,7 @@ fn group0(cpu: M68kCPU&, mmu: M68kMMU&, d: u32[8], sr: u16) {
     push16(cpu, mmu, mmu.cur_ir);
     push32(cpu, mmu, addr);
     push16(cpu, mmu, if write { 0 } else { 0x10 });
-    if mmu.fault != 0 { // fault while stacking: the 68000 halts
+    if mmu.fault != 0 { // スタックに積む途中で失敗した: 68000 は停止する
         mmu.fault = 0;
         cpu.halted = true;
         return;
@@ -1692,7 +1692,7 @@ fn step(cpu: M68kCPU&, mmu: M68kMMU&) -> i32 {
     mmu.user_mode = !cpu.is_supervisor();
     mmu.cpu_access = true;
     var cycles = step_core(cpu, mmu);
-    // A jump to an odd address faults in the jumping instruction.
+    // 奇数番地へのジャンプは、ジャンプした命令で失敗する。
     if mmu.fault == 0 && (cpu.pc & 1) != 0 && !cpu.halted {
         mmu.raise_fault(3, cpu.pc & ADDR_MASK, false);
     }

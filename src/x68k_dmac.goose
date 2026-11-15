@@ -106,7 +106,7 @@ fn write_ccr(c: X68kDMAChannel&, data: u8) {
     let old = c.ccr;
     c.ccr = (data & 0xEF) | (old & 0x80);
     if (data & 0x10) != 0 && (old & 0x80) != 0 {
-        // Software Abort
+        // ソフトウェアアボート
         c.cer = 0x11;
         c.csr |= 0x10;
         c.csr &= 0xF7;
@@ -114,11 +114,11 @@ fn write_ccr(c: X68kDMAChannel&, data: u8) {
         return;
     }
     if (data & 0x80) != 0 {
-        // Start DMA
+        // DMA 開始
         c.csr |= 0x08; // ACT bit
         c.cer = 0x00;
         if (c.ocr & 8) != 0 {
-            // Array/Link Array Chain
+            // アレイ / リンクアレイのチェーン
             c.mar = readmem24_dword(c.bar) & ADDR_MASK;
             c.mtc = readmem24_word(c.bar + 4);
             if (c.ocr & 4) != 0 {

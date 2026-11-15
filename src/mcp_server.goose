@@ -34,7 +34,7 @@ fn bad_key(args: const u8[:], key: const u8[:], bad: u8[>..]&) -> bool {
     return true;
 }
 
-// Every argument read with mcp::extract_json_addr. A bad value fails the whole call up front.
+// 引数はすべて mcp::extract_json_addr で読む。おかしな値があれば、呼び出し全体を最初に失敗させる。
 fn bad_number(args: const u8[:], bad: u8[>..]&) -> bool {
     return bad_key(args, "address", bad) ||
         bad_key(args, "pc", bad) ||
@@ -227,7 +227,7 @@ fn tv_ink(tv: const u8[:], x: i32, y: i32) -> bool {
     let row = y & 1023;
     let col_byte = (x & 1023) >> 3;
     let bit = 7 - (x & 7);
-    // TVRAM is stored in bus order, so byte x/8 of a raster is at offset x/8.
+    // TVRAM はバスの順に並んでいるので、ラスタの x/8 バイト目はオフセット x/8 にある。
     let addr = (row * 128 + col_byte);
     // 4 枚のプレーンのどれかに点があればインク
     let mask = (1 << bit) as u8;
@@ -292,8 +292,8 @@ fn console_decode(emu: X68kEmulator&, text: u8[>..]&) -> i32 {
             }
             var code = match_ank(glyph);
             if code < 0 && !blank {
-                // Human68k draws the cursor by inverting the whole cell, so
-                // read a cursor cell as the character underneath it.
+                // Human68k はセル全体を反転してカーソルを描くので、
+                // カーソルのセルは下にある文字として読む。
                 var inv: u8[>..] = [];
                 var inv_blank = true;
                 for gy in 16 {
@@ -442,7 +442,7 @@ fn control_call(emu: X68kEmulator&, tool_name: const u8[:], args: const u8[:], i
         var after_str: u8[>..] = []; hex_u32(emu.cpu.pc, after_str);
         var sr_str: u8[>..] = []; hex_u16(emu.cpu.sr, sr_str);
         var obj: u8[>..] = [];
-        // cycles: CPU clocks the instruction took, bus waits included.
+        // cycles: 命令にかかった CPU のクロック数 (バスウェイトを含む)。
         format(obj, "{\"pc_before\":\"", before_str, "\",\"pc\":\"", after_str, "\",\"sr\":\"", sr_str, "\",\"cycles\":", cycles);
         append_machine(obj, emu, 0, false, true);
         obj.append("}");
@@ -1594,7 +1594,7 @@ fn tool_write_registers(emu: X68kEmulator&, args: const u8[:], id_buf: const u8[
     var wrote = false;
     if json_has(args, "pc") { emu.cpu.pc = extract_json_addr(args, "pc", emu.cpu.pc); wrote = true; }
     if json_has(args, "sr") { emu.cpu.set_sr(extract_json_addr(args, "sr", emu.cpu.sr) as u16); wrote = true; }
-    // A7 is the stack pointer of the current mode; USP and SSP name one stack each.
+    // A7 は今のモードのスタックポインタ。USP と SSP はそれぞれ片方のスタックを指す。
     let sup = emu.cpu.is_supervisor();
     if json_has(args, "usp") {
         let v = extract_json_addr(args, "usp", 0);
@@ -1873,7 +1873,7 @@ fn tool_irq(emu: X68kEmulator&, args: const u8[:], id_buf: const u8[:]) {
     let crtc_line = emu.mmu.crtc_word(CRTC_RASTER) & 1023;
     var obj: u8[>..] = [];
     obj.append("{\"mfp\":{\"gpip\":");
-    // The live input lines as the CPU reads them (V-DISP, H-SYNC, raster, RTC ALARM).
+    // CPU が読む今の入力線 (V-DISP、H-SYNC、ラスタ、RTC の ALARM)。
     push_hex_byte(obj, emu.mmu.read8(0xE88001));
     obj.append(",\"aer\":");
     push_hex_byte(obj, emu.mmu.mfp.regs[MFP_AER]);
@@ -2082,7 +2082,7 @@ fn inspect_call(emu: X68kEmulator&, tool_name: const u8[:], args: const u8[:], i
 fn tool_arguments(params: const u8[:], tool_name: const u8[:]) -> const u8[:] {
     let args, found = json_member(params, "arguments");
     if !found || args[0] != '{' { return "{}"; }
-    // XEiJ takes the registers as {"registers": {...}}; accept that as well as flat keys.
+    // XEiJ はレジスタを {"registers": {...}} の形で受け取る。それと平らなキーの両方を受け付ける。
     let inner, nested = json_member(args, "registers");
     if tool_name == "arcl_write_registers" && nested && inner[0] == '{' { return inner; }
     return args;

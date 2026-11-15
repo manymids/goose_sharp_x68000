@@ -5,11 +5,11 @@ namespace cpu;
 
 struct M68kCPU {
     d: u32[8] = [0; 8],     // D0 - D7
-    a: u32[8] = [0; 8],     // A0 - A7 (A7 is current SP)
-    pc: u32 = 0,            // Program Counter
-    sr: u16 = 0x2700,       // Status Register (Supervisor Mode, Interrupt level 7)
-    usp: u32 = 0,           // User Stack Pointer
-    ssp: u32 = 0,           // Supervisor Stack Pointer
+    a: u32[8] = [0; 8],     // A0〜A7 (A7 は今のモードの SP)
+    pc: u32 = 0,            // プログラムカウンタ
+    sr: u16 = 0x2700,       // ステータスレジスタ (スーパーバイザモード、割り込みレベル 7)
+    usp: u32 = 0,           // ユーザースタックポインタ
+    ssp: u32 = 0,           // スーパーバイザスタックポインタ
     halted: bool = false,
     // この命令の実行中に例外処理へ入った (トレース例外を重ねないための印)
     took_exception: bool = false,

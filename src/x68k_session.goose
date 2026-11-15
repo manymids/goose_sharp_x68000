@@ -1,5 +1,5 @@
-// Application services shared by frontends. JSON parsing and response formatting
-// belong to the adapter. Machine checkpoints remain in x68k_state.
+// フロントエンドが共有する操作。JSON の解析と応答の組み立ては、受け取る側 (アダプタ) が持つ。
+// 機械のチェックポイントは x68k_state にある。
 import .x68k_emu;
 import .x68k_state;
 import .x68k_input;
@@ -130,7 +130,7 @@ fn snapshot_create(emu: X68kEmulator&, name: const u8[:]) -> i32 {
     }
     if idx < 0 { return SNAPSHOT_FULL; }
     if !state::capture(emu, STATE_SNAPSHOT, idx) { return SNAPSHOT_CAPTURE_FAILED; }
-    // Commit metadata only after capture succeeds, including failed overwrites.
+    // 取り込みに成功してから情報を書き込む (上書きに失敗した場合も含む)。
     emu.session.snapshot_names[idx] = name;
     emu.is_paused = true;
     return idx;
@@ -175,7 +175,7 @@ fn rewind_restore(emu: X68kEmulator&, steps: i32) -> bool {
     return true;
 }
 
-// Character scheduling is shared by type/exec/macro adapters.
+// 文字の送り出しの予定は、type / exec / macro のアダプタで共有する。
 fn type_char(emu: X68kEmulator&, ch: u8, hold: i32) -> i32 {
     let code, shift, ok = input::type_scancode(ch);
     if hold < 1 || hold > 3600 || !ok { return 0; }
