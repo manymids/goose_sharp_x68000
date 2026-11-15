@@ -206,25 +206,15 @@ fn clear_front(ppu: X68kPPU&) {
 
 fn bg_line_clear(ppu: X68kPPU&, mmu: M68kMMU&, width: i32, opaq: bool) {
     assert(width >= 0 && width <= 1024);
-    let fill = pal_text_idx(mmu, 0);
-    var i: i32 = LINE_PAD;
-    let end = width + LINE_PAD;
-    while i < end && i < LINE_BUF_W {
-        ppu.line_bpri[i as i64] = 0xFFFF;
-        if opaq { ppu.line_bg[i as i64] = fill; }
-        i += 1;
-    }
+    let end = min(width + LINE_PAD, LINE_BUF_W);
+    fill(ppu.line_bpri[LINE_PAD..end], 0xFFFF);
+    if opaq { fill(ppu.line_bg[LINE_PAD..end], pal_text_idx(mmu, 0)); }
 }
 
 fn bg_fill_pal0(ppu: X68kPPU&, mmu: M68kMMU&, width: i32) {
     assert(width >= 0 && width <= 1024);
-    let fill = pal_text_idx(mmu, 0);
-    var i: i32 = LINE_PAD;
-    let end = width + LINE_PAD;
-    while i < end && i < LINE_BUF_W {
-        ppu.line_bg[i as i64] = fill;
-        i += 1;
-    }
+    let end = min(width + LINE_PAD, LINE_BUF_W);
+    fill(ppu.line_bg[LINE_PAD..end], pal_text_idx(mmu, 0));
 }
 
 fn bg_draw_line(ppu: X68kPPU&, mmu: M68kMMU&, width: i32, sy: i32, opaq: bool, ng: bool) {
@@ -286,6 +276,16 @@ fn pal_to_argb(pal_val: u16) -> u32 {
     let g = (g6 * scale) >> 20;
     let b = (b6 * scale) >> 20;
     return 0xFF000000 | (r << 16) | (g << 8) | b;
+}
+
+// pal_to_argb の答えを 65536 通りすべて並べた表。合成の最後で画素ごとに引く (掛け算 3 回の代わり)。
+// 最初のフレームで 1 度だけ作る。
+var g_argb: u32[65536] = [0; 65536];
+var g_argb_built = false;
+
+fn build_argb_table() {
+    for v in 65536 { g_argb[v] = pal_to_argb(v as u16); }
+    g_argb_built = true;
 }
 
 fn argb_avg(a: u32, b: u32) -> u32 {
@@ -806,10 +806,8 @@ fn text_one_line(ppu: X68kPPU&, mmu: M68kMMU&, width: i32, sy: i32, opaq: bool) 
 
 fn compose_back(ppu: X68kPPU&, sy: i32, screen_w: i32, width: i32, gon: bool, ton: bool, bgon: bool, tron: bool, pron: bool, vc1_0: i32, vc2_0: i32) {
     assert(width >= 0 && width <= 1024);
-    for i: i32 in width {
-        ppu.scr[i] = 0;
-        ppu.scr_mix[i] = 0;
-    }
+    fill(ppu.scr[..width], 0);
+    fill(ppu.scr_mix[..width], 0);
     var tdrawed = false;
     var opaq = true;
     if (vc1_0 & 0x02) != 0 && gon {
@@ -912,13 +910,11 @@ fn compose_back(ppu: X68kPPU&, sy: i32, screen_w: i32, width: i32, gon: bool, to
         }
     }
     if opaq {
-        for k: i32 in width {
-            ppu.scr[k] = 0;
-            ppu.scr_mix[k] = 0;
-        }
+        fill(ppu.scr[..width], 0);
+        fill(ppu.scr_mix[..width], 0);
     }
     for x: i32 in width {
-        let c = if ppu.scr_mix[x] != 0 { ppu.scr_argb[x] } else { pal_to_argb(ppu.scr[x]) };
+        let c = if ppu.scr_mix[x] != 0 { ppu.scr_argb[x] } else { g_argb[ppu.scr[x]] };
         ppu.fb[sy * screen_w + x] = c;
     }
 }
@@ -948,6 +944,7 @@ fn apply_screen(ppu: X68kPPU&, mmu: M68kMMU&) {
 }
 
 fn begin_frame(ppu: X68kPPU&, mmu: M68kMMU&) {
+    if !g_argb_built { build_argb_table(); }
     ppu.apply_screen(mmu);
     ppu.clear(0xFF000000);
     ppu.frame_ready = true;
