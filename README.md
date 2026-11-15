@@ -17,7 +17,7 @@ goose_sharp_x68000/
   .gitignore
   src/
     main.goose           起動・GUI・ARCLの入口
-    main.build           C/C++ソースとWin32ライブラリの指定
+    main.build           CソースとWin32ライブラリの指定
     m68k_*.goose          CPU・MMU・逆アセンブラ
     mcp_server.goose      ARCL MCP
     mcp_args.goose        MCPの引数の取り出し
@@ -27,7 +27,7 @@ goose_sharp_x68000/
     x68k_bridge.c/.h      Win32・ファイル・音声出力
     x68k_config.c/.h      GUI設定の読込・保存
     x68k_path.h           パスのUTF-8とWin32のワイド文字の変換
-    sound/               FMGEN・ADPCM・音源接続
+    sound/fmgen-readme.txt FMGEN（x68k_opm.goose の元のコード）の説明・条件の原文
 ```
 
 以下の起動例は、プロジェクトのルートにexeをビルドし、このルートをカレントディレクトリにする前提です。`src` はソースの配置先であり、通常の実行用ディレクトリにはしません。
@@ -250,7 +250,7 @@ goose build .\src\main.goose -o .\arcl_windows_x68k_goose.exe
 goose build .\src\main.goose --debug -o .\arcl_windows_x68k_goose_debug.exe
 ```
 
-Gooseがソースと同じフォルダの [src/main.build](src/main.build) を使用します。`c_sources` と `c_include` の相対パスはこの配置を前提としているため、`src` 内のファイルと `sound` フォルダはまとめて維持してください。C/C++部分は `src/x68k_bridge.c`、`src/x68k_config.c`、`src/sound/` です。
+Gooseがソースと同じフォルダの [src/main.build](src/main.build) を使用します。`c_sources` と `c_include` の相対パスはこの配置を前提としているため、`src` 内のファイルはまとめて維持してください。C部分は `src/x68k_bridge.c` と `src/x68k_config.c` で、Win32（ウィンドウ、入力、音声の再生）とファイルの書き出しだけを受け持ちます。機械（CPU・周辺機器・音源）はすべてGooseです。
 
 `-o` でexeをプロジェクトのルートへ出力することで、実行時の `keropi` とINIの場所も分かりやすくなります。`src` 内にexeを置いた場合でも、BIOSやINIの基準はexeの場所ではなく、起動時のカレントディレクトリです。
 
@@ -263,7 +263,7 @@ Gooseがソースと同じフォルダの [src/main.build](src/main.build) を�
 | [src/main.goose](src/main.goose) / [src/launch_args.goose](src/launch_args.goose) | 起動・GUI/ARCLのイベントループ / 起動引数の解釈 |
 | `src/m68k_*` | CPU命令・MMU |
 | `src/x68k_mfp/fdc/dmac/sasi/rtc.goose` | 周辺機器 |
-| [src/x68k_adpcm.goose](src/x68k_adpcm.goose) | ADPCM（MSM6258）。OPM（FM音源）は `src/sound/` のfmgen |
+| [src/x68k_adpcm.goose](src/x68k_adpcm.goose) / [src/x68k_opm.goose](src/x68k_opm.goose) | ADPCM（MSM6258） / FM音源（YM2151。fmgenを書き直したもの） |
 | [src/x68k_disk.goose](src/x68k_disk.goose) | FD（XDF・D88・DIM）とHDDのイメージ |
 | [src/x68k_ppu.goose](src/x68k_ppu.goose) | 走査線・描画合成 |
 | [src/x68k_emu.goose](src/x68k_emu.goose) | フレーム進行と共通リセット |
@@ -271,7 +271,7 @@ Gooseがソースと同じフォルダの [src/main.build](src/main.build) を�
 | [src/x68k_session.goose](src/x68k_session.goose) / [src/x68k_input.goose](src/x68k_input.goose) | フロントエンド共通の実行制御と入力 |
 | [src/mcp_server.goose](src/mcp_server.goose) / [src/mcp_args.goose](src/mcp_args.goose) | JSON-RPCの解析・公開ツール・応答 / 引数の取り出し |
 | [src/x68k_config.c](src/x68k_config.c) | GUI用INI。機械の保存状態とは独立 |
-| `src/x68k_bridge.c` / `src/sound/` | Win32・ファイルを開く処理・音声デバイスと合成 |
+| `src/x68k_bridge.c` | Win32・画像と音声のファイル書き出し・音声デバイス |
 
 元の開発ツリーではrelease/debugのCPU・機器・保存・寿命管理・設定のテストと、超連射68K・Doomの起動および保存復帰を確認しています。設定については、ARCLとの分離、CLIの優先、初回空起動、書き込み失敗時の既存INI維持も検証しています。
 
@@ -284,7 +284,7 @@ goose build .\src\test_core.goose -o .\test_core.exe
 .\test_core.exe
 ```
 
-すべて通ると `398 / 398 checks passed` と表示し、失敗があれば内容を出して終了コード1で終わります。`--debug` を付けてビルドすると、桁あふれと範囲の検査も有効になります。
+すべて通ると `409 / 409 checks passed` と表示し、失敗があれば内容を出して終了コード1で終わります。`--debug` を付けてビルドすると、桁あふれと範囲の検査も有効になります。
 
 ## 困ったとき・既知の制限
 
@@ -301,6 +301,6 @@ goose build .\src\test_core.goose -o .\test_core.exe
 
 ## 由来・権利情報
 
-移植元と音源コードの由来は [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)、同梱のFMGEN説明・条件の原文は [src/sound/fmgen-readme.txt](src/sound/fmgen-readme.txt) を参照してください。Gooseコンパイラ自体のライセンスと、エミュレータに含まれる移植元・第三者コードの条件は区別してください。
+移植元と音源コードの由来は [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)、同梱のFMGEN説明・条件の原文は [src/sound/fmgen-readme.txt](src/sound/fmgen-readme.txt) を参照してください。`src/x68k_opm.goose` はFMGENのOPMをGooseに書き直したもので、FMGENの条件が及びます。Gooseコンパイラ自体のライセンスと、エミュレータに含まれる移植元・第三者コードの条件は区別してください。
 
 BIOS・CG-ROM・OS・ゲーム・ディスクイメージの権利は各権利者に帰属します。ソースコードの配布物にはこれらの実データや個人のSRAM・設定を含めません。

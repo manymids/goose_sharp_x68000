@@ -64,12 +64,6 @@ int64_t c_host_local_seconds(void);
 // BMP screenshot saver
 int c_save_fb_bmp(X68kByteView path);
 int c_save_fb_png(X68kByteView path);
-/* The sound chips' state as one flat image. x68k_state.goose stores it; load either
- * applies all of it or changes nothing. */
-int64_t c_sound_state_size(void);
-int c_sound_state_save(X68kByteView out);
-int c_sound_state_check(X68kByteView in);
-int c_sound_state_load(X68kByteView in);
 void c_audio_capture_start(void);
 void c_audio_capture_status(int *active, int *frames, int *truncated);
 int c_audio_capture_stop(X68kByteView path, int *frames, int *truncated, int *peak, int *silent);
@@ -130,17 +124,9 @@ void c_fb_bind(uint32_t *fb);
 void c_mem_write_tvram_concurrent(int32_t off, uint8_t val, uint8_t plane_mask);
 
 
-// Audio / Sound System
-void c_sound_init(void);
-void c_sound_reset(void);
-void c_sound_cleanup(void);
-void c_sound_opm_write(uint32_t addr, uint8_t val);
-uint8_t c_sound_opm_read(uint32_t addr);
-void c_sound_scanline_timer(uint32_t cycles);
-void c_sound_frame_mix(X68kSampleView frame);
-int c_sound_poll_irq(void);
-
-/* ADPCM uses DMAC channel 3. The sound core runs the transfer. */
+// Audio output. The sound chips (x68k_opm.goose, x68k_adpcm.goose) make the samples; C only plays
+// and captures them.
+void c_audio_output(X68kSampleView frame);
 
 #ifdef __cplusplus
 }

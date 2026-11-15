@@ -10,7 +10,6 @@
 #include <time.h>
 #include "x68k_bridge.h"
 #include "x68k_path.h"
-#include "sound/x68k_sound.h"
 
 /* Palette, TVRAM and GVRAM live in the Goose emulator struct, which is a
  * local. 1MB is not enough once those arrays are there. */
@@ -333,7 +332,6 @@ void x68k_mem_destroy(void) {
     g_screen_w_slot = g_screen_h_slot = NULL;
     g_machine_epoch = 0;
     g_mem_ready = 0;
-    c_sound_cleanup();
     if (!g_ram_bound && g_ram) free(g_ram);
     g_ram = NULL;
     g_ram_bound = 0;
@@ -1489,44 +1487,6 @@ int c_save_fb_png(X68kByteView path_bytes) {
     return 1;
 }
 
-// -----------------------------------------------------------------------------
-// The part of a checkpoint that lives in C++: the sound chips (fmgen OPM, ADPCM), as one
-// flat image. x68k_state.goose keeps the image next to the RAM and disk images and owns
-// the slots; nothing is retained here.
-// -----------------------------------------------------------------------------
-// Where this program is loaded and how large it is in memory (from its PE header). The sound
-// state uses it to move pointers when an image is loaded by another process.
-void c_host_module_range(uint64_t *base, uint64_t *bytes) {
-    const uint8_t *image = (const uint8_t *)GetModuleHandleW(NULL);
-    const IMAGE_DOS_HEADER *dos = (const IMAGE_DOS_HEADER *)image;
-    const IMAGE_NT_HEADERS *nt = (const IMAGE_NT_HEADERS *)(image + dos->e_lfanew);
-    *base = (uint64_t)(uintptr_t)image;
-    *bytes = nt->OptionalHeader.SizeOfImage;
-}
-
-int64_t c_sound_state_size(void) {
-    int n = x68k_sound_state_size();
-    return n > 0 ? n : 0;
-}
-
-// Fills out, which must be exactly c_sound_state_size() bytes. Returns 1 on success.
-int c_sound_state_save(X68kByteView out) {
-    int n = x68k_sound_state_size();
-    if (n <= 0 || !out.data || out.len != n) return 0;
-    return x68k_sound_state_save(out.data, n) ? 1 : 0;
-}
-
-int c_sound_state_check(X68kByteView in) {
-    if (!in.data || in.len <= 0 || in.len > INT32_MAX) return 0;
-    return x68k_sound_state_check(in.data, (int)in.len) ? 1 : 0;
-}
-
-// Either applies the whole image or changes nothing.
-int c_sound_state_load(X68kByteView in) {
-    if (!c_sound_state_check(in)) return 0;
-    return x68k_sound_state_load(in.data, (int)in.len) ? 1 : 0;
-}
-
 #define AUDIO_CAP_RATE 44100
 #define AUDIO_CAP_SECONDS 60
 #define AUDIO_SILENCE_PEAK 256
@@ -1613,30 +1573,7 @@ int c_audio_capture_stop(X68kByteView path_bytes, int *frames, int *truncated, i
     return 1;
 }
 
-// Audio / Sound API
-void c_sound_init(void) {
-    x68k_sound_init();
-}
-
-void c_sound_reset(void) {
-    x68k_sound_reset();
-}
-
-void c_sound_cleanup(void) {
-    x68k_sound_cleanup();
-}
-
-
-void c_sound_opm_write(uint32_t addr, uint8_t val) {
-    x68k_sound_opm_write(addr, val);
-}
-
-uint8_t c_sound_opm_read(uint32_t addr) {
-    return x68k_sound_opm_read(addr);
-}
-
 void c_machine_reset_devices(void) {
-    c_sound_reset();
     c_host_input_discard();
     c_audio_discard();
 }
@@ -1656,22 +1593,13 @@ void c_audio_discard(void) {
     g_cur_buf = 0;
 }
 
-void c_sound_scanline_timer(uint32_t cycles) {
-    x68k_sound_scanline_timer(cycles);
-}
-
-// One frame of interleaved stereo samples that already hold the ADPCM output. The OPM is added
-// in place, then the frame goes to the capture buffer and the audio device.
-void c_sound_frame_mix(X68kSampleView frame) {
+// One frame of finished interleaved stereo samples (the ADPCM and the OPM, mixed in Goose).
+// It goes to the capture buffer and to the audio device.
+void c_audio_output(X68kSampleView frame) {
     int samples = (int)(frame.len / 2);
     if (!frame.data || samples <= 0) return;
-    x68k_sound_mix(frame.data, samples);
     cap_push(frame.data, samples);
     win32_audio_push(frame.data, samples * 2);
-}
-
-int c_sound_poll_irq(void) {
-    return x68k_sound_poll_irq();
 }
 
 int c_host_list_dir(X68kByteView path_bytes, char *out, int cap) {

@@ -18,7 +18,7 @@ goose_sharp_x68000/
   .gitignore
   src/
     main.goose           Entry point for startup, GUI, and ARCL
-    main.build            C/C++ source and Win32 library specification
+    main.build            C source and Win32 library specification
     m68k_*.goose          CPU, MMU, disassembler
     mcp_server.goose      ARCL MCP
     mcp_args.goose        Reading MCP tool arguments
@@ -28,7 +28,7 @@ goose_sharp_x68000/
     x68k_bridge.c/.h      Win32, file I/O, audio output
     x68k_config.c/.h      Loading/saving GUI settings
     x68k_path.h           Conversion between UTF-8 paths and Win32 wide strings
-    sound/                FMGEN, ADPCM, sound source wiring
+    sound/fmgen-readme.txt Original notes and terms of FMGEN, the code x68k_opm.goose was rewritten from
 ```
 
 The startup examples below assume you build the exe at the project root and run it with that root as the current directory. `src` is where the source lives and is not normally used as the working directory for running the emulator.
@@ -251,7 +251,7 @@ Use a different output name for debug builds.
 goose build .\src\main.goose --debug -o .\arcl_windows_x68k_goose_debug.exe
 ```
 
-Goose uses [src/main.build](src/main.build), located in the same folder as the source. The relative paths in `c_sources` and `c_include` assume this layout, so keep the files under `src` and the `sound` folder together. The C/C++ parts are `src/x68k_bridge.c`, `src/x68k_config.c`, and `src/sound/`.
+Goose uses [src/main.build](src/main.build), located in the same folder as the source. The relative paths in `c_sources` and `c_include` assume this layout, so keep the files under `src` together. The C parts are `src/x68k_bridge.c` and `src/x68k_config.c`; they handle only Win32 (window, input, audio playback) and writing files. The machine (CPU, peripherals, sound chips) is all Goose.
 
 Using `-o` to output the exe at the project root also keeps the locations of `keropi` and the INI file clear at runtime. Even if you place the exe inside `src`, the reference point for the BIOS and INI files is the current directory at launch time, not the exe's own location.
 
@@ -264,7 +264,7 @@ This public-distribution layout does not include `tools/architecture/build.ps1` 
 | [src/main.goose](src/main.goose) / [src/launch_args.goose](src/launch_args.goose) | Startup, GUI/ARCL event loop / parsing launch arguments |
 | `src/m68k_*` | CPU instructions, MMU |
 | `src/x68k_mfp/fdc/dmac/sasi/rtc.goose` | Peripherals |
-| [src/x68k_adpcm.goose](src/x68k_adpcm.goose) | ADPCM (MSM6258). The OPM (FM synthesis) is fmgen in `src/sound/` |
+| [src/x68k_adpcm.goose](src/x68k_adpcm.goose) / [src/x68k_opm.goose](src/x68k_opm.goose) | ADPCM (MSM6258) / FM synthesis (YM2151, rewritten from fmgen) |
 | [src/x68k_disk.goose](src/x68k_disk.goose) | FD (XDF, D88, DIM) and HDD images |
 | [src/x68k_ppu.goose](src/x68k_ppu.goose) | Scanline processing and rendering composition |
 | [src/x68k_emu.goose](src/x68k_emu.goose) | Frame progression and shared reset logic |
@@ -272,7 +272,7 @@ This public-distribution layout does not include `tools/architecture/build.ps1` 
 | [src/x68k_session.goose](src/x68k_session.goose) / [src/x68k_input.goose](src/x68k_input.goose) | Shared execution control and input handling across frontends |
 | [src/mcp_server.goose](src/mcp_server.goose) / [src/mcp_args.goose](src/mcp_args.goose) | JSON-RPC parsing, exposed tools, responses / reading tool arguments |
 | [src/x68k_config.c](src/x68k_config.c) | GUI INI handling. Independent of machine save states |
-| `src/x68k_bridge.c` / `src/sound/` | Win32, opening files, audio device and mixing |
+| `src/x68k_bridge.c` | Win32, writing image and audio files, audio device |
 
 In the original development tree, release/debug CPU, device, save, lifecycle-management, and configuration tests have been run, along with confirming boot and save/restore for Chourenjin 68K and Doom. For configuration, separation from ARCL, CLI priority, the initial empty boot, and retaining the existing INI on a failed write have also been verified.
 
@@ -285,7 +285,7 @@ goose build .\src\test_core.goose -o .\test_core.exe
 .\test_core.exe
 ```
 
-It prints `398 / 398 checks passed` when everything passes, and reports each failure and exits with status 1 otherwise. Building with `--debug` also enables the overflow and range checks.
+It prints `409 / 409 checks passed` when everything passes, and reports each failure and exits with status 1 otherwise. Building with `--debug` also enables the overflow and range checks.
 
 ## Troubleshooting and known limitations
 
@@ -302,6 +302,6 @@ When reporting a bug, please include the build type, Windows environment, launch
 
 ## Provenance and rights information
 
-See [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) for the provenance of the original port and the sound code, and [src/sound/fmgen-readme.txt](src/sound/fmgen-readme.txt) for the original text of the bundled FMGEN notes and terms. Note the distinction between the Goose compiler's own license and the terms of the ported/third-party code included in the emulator.
+See [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) for the provenance of the original port and the sound code, and [src/sound/fmgen-readme.txt](src/sound/fmgen-readme.txt) for the original text of the bundled FMGEN notes and terms. `src/x68k_opm.goose` is FMGEN's OPM rewritten in Goose, and FMGEN's terms apply to it. Note the distinction between the Goose compiler's own license and the terms of the ported/third-party code included in the emulator.
 
 Rights to the BIOS, CG-ROM, OS, games, and disk images belong to their respective rights holders. The source distribution does not include this actual data, nor any personal SRAM or configuration files.

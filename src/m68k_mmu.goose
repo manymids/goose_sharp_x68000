@@ -9,6 +9,7 @@ import .x68k_ram;
 import .x68k_rom;
 import .x68k_rtc;
 import .x68k_adpcm;
+import .x68k_opm;
 namespace mmu;
 
 let ::ADDR_MASK = 0x00FFFFFF; // 68000 のアドレスバスは 24 bit
@@ -17,8 +18,7 @@ let ::PCG8_BYTES = 16384;    // 8x8 パターンを 1 ドット 1 バイトに�
 let ::PCG16_BYTES = 65536;   // 16x16 パターンを 1 ドット 1 バイトに展開したもの
 let ::VRAM_BYTES = 524288;    // TVRAM と GVRAM はそれぞれ 512 KB
 
-// YM2151 に書いた値の控え。音源そのものは C++ (fmgen) にあり、状態を読み返す手段が無いので、
-// ツール (arcl_opm) が見るぶんをここに残す。
+// YM2151 に書いた値の控え。ツール (arcl_opm) が見る。音源そのものは fm (x68k_opm)。
 struct OpmShadow {
     addr: u8 = 0,              // $E90001 に最後に書いたレジスタ番号
     regs: u8[256] = [0; 256],  // レジスタごとの最後の書き込み値
@@ -55,6 +55,7 @@ struct M68kMMU {
     pia_c: u8 = 0x0B,           // 8255 ポート C。bit 0-3 が ADPCM のパンとサンプリング周波数
     opm: OpmShadow = OpmShadow {},
     adpcm: X68kADPCM = X68kADPCM {},
+    fm: X68kOPM = X68kOPM {},   // YM2151。本体のリセットでは作り直さず、チップのリセットをかける
     // 68000 group 0 exceptions. Checks apply only while the CPU runs an instruction.
     cpu_access: bool = false,
     user_mode: bool = false,
@@ -102,7 +103,7 @@ fn set_pia_c(mmu: M68kMMU&, next: u8) {
 }
 
 fn init(mmu: M68kMMU&) {
-    mmu = M68kMMU { rtc: mmu.rtc, .. };
+    mmu = M68kMMU { rtc: mmu.rtc, fm: mmu.fm, .. };
     mmu.mfp.init(); // MFP のレジスタは 0 ではない初期値を持つ
 }
 
@@ -500,7 +501,7 @@ fn io_read8(mmu: M68kMMU&, a: u32) -> u8 {
     // 0x00E90000 - 0x00E90003: OPM (YM2151)
     if (a & 0xFFFF00) == 0xE90000 {
         if (a & 3) == 3 {
-            return c_sound_opm_read(0);
+            return mmu.fm.read_status();
         }
         return 0;
     }
@@ -681,13 +682,13 @@ fn write_sysport(mmu: M68kMMU&, a: u32, val: u8) {
 fn write_opm(mmu: M68kMMU&, a: u32, val: u8) {
     if a == 0xE90001 {
         mmu.opm.addr = val;
-        c_sound_opm_write(0, val);
+        mmu.fm.write_io(0, val);
     } else if a == 0xE90003 {
         mmu.opm.regs[mmu.opm.addr] = val;
         if mmu.opm.addr == 0x08 { mmu.opm.key_on[val & 7] = (val >> 3) & 15; }
         // レジスタ $1B の bit 7 (CT1) は ADPCM のクロックの切り替えにつながっている
         if mmu.opm.addr == 0x1B { mmu.adpcm.set_clock((val >> 5) & 4); }
-        c_sound_opm_write(1, val);
+        mmu.fm.write_io(1, val);
     }
 }
 

@@ -46,11 +46,6 @@ extern fn c_host_local_seconds() -> i64;
 
 extern fn c_save_fb_bmp(path: const u8[:]) -> i32;
 extern fn c_save_fb_png(path: const u8[:]) -> i32;
-// The sound chips' state as one flat image. Only the build that wrote an image can read it.
-extern fn c_sound_state_size() -> i64;
-extern fn c_sound_state_save(out: u8[:]) -> i32;
-extern fn c_sound_state_check(image: const u8[:]) -> i32;
-extern fn c_sound_state_load(image: const u8[:]) -> i32;
 extern fn c_audio_capture_start();
 extern fn c_audio_capture_status(active: i32&, frames: i32&, truncated: i32&);
 extern fn c_audio_capture_stop(path: const u8[:], frames: i32&, truncated: i32&, peak: i32&, silent: i32&) -> i32;
@@ -86,10 +81,5 @@ extern fn c_clear_framebuffer(argb: u32);
 extern fn c_set_frame_ready(ready: i32);
 
 // Audio / Sound API
-extern fn c_sound_init();
-extern fn c_sound_opm_write(addr: u32, val: u8);
-extern fn c_sound_opm_read(addr: u32) -> u8;
-extern fn c_sound_scanline_timer(cycles: u32);
-// Adds the OPM to one frame of interleaved stereo samples and sends them to the audio output.
-extern fn c_sound_frame_mix(samples: i16[:]);
-extern fn c_sound_poll_irq() -> i32;
+// One frame of finished interleaved stereo samples, for the audio device and the capture buffer.
+extern fn c_audio_output(samples: const i16[:]);

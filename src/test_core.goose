@@ -18,6 +18,7 @@ import .x68k_disk;
 import .mcp_args;
 import .launch_args;
 import .x68k_adpcm;
+import .x68k_opm;
 
 var g_checks = 0;
 var g_failures = 0;
@@ -949,6 +950,64 @@ fn test_adpcm() {
     check("adpcm: an empty buffer asks once per unit of time", g_adpcm.pre_update(2000) > 0);
 }
 
+// YM2151 (x68k_opm)。fmgen と出力が一致することは別の突き合わせで確かめてあるので、
+// ここでは表と、レジスタから見える振る舞いを見る。
+var g_fm = X68kOPM {};
+
+fn fm_write(reg: u8, val: u8) {
+    g_fm.write_io(0, reg);
+    g_fm.write_io(1, val);
+}
+
+fn test_opm() {
+    g_fm.power_on();
+    g_fm.machine_reset();
+    // 表: 対数→線形の先頭は 2^13、正弦波の先頭は 1/4 周期の最小値。値は fmgen の表と同じ
+    check("opm: log table starts at 2^13", opm::g_cl[0] == 8192 && opm::g_cl[1] == -8192 && opm::g_cl[512] == 4096);
+    // sin(pi / 1024) の対数: 2138。下位ビットが符号 (後半は負)
+    check("opm: sine table", opm::g_sine[0] == 4276 && opm::g_sine[512] == 4277);
+    // 16384 * 10^(-16 / 40)。fmgen の音量は 0.5 dB 単位で、-16 が px68k の既定の -8 dB
+    check("opm: the default volume is -8 dB", g_fm.fmvolume == 6522);
+    check("opm: idle status", g_fm.read_status() == 0 && !g_fm.irq);
+
+    // 何も鳴っていなければ、渡したサンプルはそのまま
+    var buf: i16[512] = [100; 512];
+    g_fm.mix(buf[..]);
+    check("opm: silence leaves the samples alone", buf[0] == 100 && buf[511] == 100);
+
+    // チャンネル 0 に、OP4 だけを出すアルゴリズム 7 の音を作ってキーオンする
+    fm_write(0x20, 0xC7);       // 左右とも、FB 0、アルゴリズム 7
+    fm_write(0x28, 0x4A);       // KC: オクターブ 4、A
+    fm_write(0x78, 0x00);       // OP4 (C2) の TL = 0 (最大)
+    fm_write(0x98, 0x1F);       // AR 最大
+    fm_write(0xF8, 0x0F);       // D1L 0、RR 最大
+    fm_write(0x08, 0x40);       // チャンネル 0 の C2 をキーオン
+    buf = [0; 512];
+    g_fm.mix(buf[..]);
+    var peak: i32 = 0;
+    for v in buf { peak = max(peak, abs(v as i32)); }
+    check("opm: a keyed-on voice makes sound", peak > 1000);
+    check("opm: both sides get it", buf[100] == buf[101]);
+    fm_write(0x20, 0x47);       // 右だけ (bit 6)
+    buf = [0; 512];
+    g_fm.mix(buf[..]);
+    check("opm: pan to one side", buf[100] != 0 && buf[101] == 0);
+
+    // タイマー A: 周期 1024 - 1023 = 1 単位。動かして、割り込みを許すと要求が立つ
+    fm_write(0x10, 0xFF);
+    fm_write(0x11, 0x03);
+    fm_write(0x14, 0x05);       // タイマー A を動かし、満了でステータスを立てる
+    g_fm.count2(1000);
+    check("opm: timer A sets its status bit and raises the interrupt", (g_fm.read_status() & 1) != 0 && g_fm.irq);
+    fm_write(0x14, 0x15);       // bit 4 でステータスを落とす
+    check("opm: the status bit is cleared by register 0x14", (g_fm.read_status() & 1) == 0);
+
+    g_fm.machine_reset();
+    buf = [0; 512];
+    g_fm.mix(buf[..]);
+    check("opm: a reset silences every voice", buf[100] == 0 && g_fm.read_status() == 0);
+}
+
 fn main() {
     test_flag_helpers();
     test_conditions();
@@ -972,6 +1031,7 @@ fn main() {
     test_mcp_args();
     test_launch_args();
     test_adpcm();
+    test_opm();
     print(g_checks - g_failures, " / ", g_checks, " checks passed");
     if g_failures > 0 { exit(1); }
 }

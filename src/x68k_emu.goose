@@ -12,6 +12,7 @@ import .x68k_dmac;
 import .x68k_sasi;
 import .x68k_disk;
 import .x68k_adpcm;
+import .x68k_opm;
 import .x68k_ram;
 import .x68k_rom;
 import .x68k_session_types;
@@ -52,7 +53,7 @@ fn active(emu: X68kEmulator&) -> bool {
 fn init(emu: X68kEmulator&) {
     emu.session = X68kSession {};
     assert(emu.bind());
-    c_sound_init();
+    emu.mmu.fm.power_on();
     emu.reset();
     emu.is_paused = false;
 }
@@ -64,6 +65,7 @@ fn reset(emu: X68kEmulator&) {
     emu.mmu.init();
     x68k_sram_set_write_enable(0);
     c_machine_reset_devices();
+    emu.mmu.fm.machine_reset();
     disk::machine_reset();
     c_set_screen_mode(768, 512);
     c_clear_framebuffer(0xFF000000);
@@ -257,8 +259,9 @@ fn line_end(emu: X68kEmulator&, vline: i32, vline_total: i32, clk_line: i32) {
 
     // 音源を 1 ライン分進める。ADPCM は、たまっているデータが尽きる頃合いで DMA に次を運ばせる。
     for _ in emu.mmu.adpcm.pre_update(clk_line) { dmac::exec_adpcm(emu.mmu); }
-    c_sound_scanline_timer(clk_line as u32);
-    if c_sound_poll_irq() != 0 {
+    emu.mmu.fm.count2(clk_line as u32);
+    if emu.mmu.fm.irq {
+        emu.mmu.fm.irq = false;
         emu.mmu.mfp.trigger_int(MFP_IRQ_OPM);
     }
 
@@ -292,8 +295,7 @@ fn frame_samples(total_frames: i64, is_31k: bool) -> i32 {
     return (((total_frames + 1) * 4410000) / rate - (total_frames * 4410000) / rate) as i32;
 }
 
-// 1 フレームぶんの音を作って出力へ渡す。ADPCM をここで取り出し、OPM は C++ 側 (fmgen) が同じ
-// バッファへ足し込む。
+// 1 フレームぶんの音を作って出力へ渡す。ADPCM を取り出して、その上に OPM を足し込む。
 fn mix_audio(emu: X68kEmulator&, samples: i32) {
     if samples <= 0 { return; }
     var buf: i16[AUDIO_FRAME_MAX * 2] = [0; AUDIO_FRAME_MAX * 2]; // 右、左の順
@@ -306,7 +308,8 @@ fn mix_audio(emu: X68kEmulator&, samples: i32) {
         buf[i * 2 + 1] = l;
     }
     emu.mmu.adpcm.note_backlog();
-    c_sound_frame_mix(buf[..count * 2]);
+    emu.mmu.fm.mix(buf[..count * 2]);
+    c_audio_output(buf[..count * 2]);
 }
 
 // 1 フレーム分進める (px68k WinX68k_Exec と同じ走査線単位の進め方)。

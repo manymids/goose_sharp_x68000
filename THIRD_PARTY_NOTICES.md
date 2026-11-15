@@ -3,9 +3,9 @@
 このファイルは既存コードの由来と本文の所在をまとめたもので、新たにライセンスを設定・変更するものではありません。
 
 - **ARCL Windows X68000 / px68k-libretro**: 本移植の参照元。移植元 `arcl_windows_x68k/README.md` は、同コアとそれをリンクするフロントエンドにGPLv2の条件を案内しています。参照元に同梱されていた本文を [COPYING.px68k](COPYING.px68k) に、そのまま収録しています。各ソースの既存表示も維持しています。
-- **FM Sound Generator（FMGEN）**: `src/sound/fmgen*`、`src/sound/opm*`、`src/sound/fmtimer*` 等。Copyright (C) cisc 1998, 2001, 2003（各ソースの表示を参照）。参照元に同梱されていた説明・条件の原文を [src/sound/fmgen-readme.txt](src/sound/fmgen-readme.txt) にバイト列を変更せず収録しています。原文は日本語の旧来の文字コードです。
+- **FM Sound Generator（FMGEN）**: Copyright (C) cisc 1998, 2001, 2003。FMGEN の OPM（`fmgen.cpp`、`fmgeninl.h`、`opm.cpp`、`fmtimer.cpp`）を Goose に書き直したものが `src/x68k_opm.goose` です。元のソースは含めていません。改変内容（クラスを構造体と関数にしたこと、OPM が使わない機能を除いたこと、初期化されていなかったメンバを 0 から始めること、LFO のノイズを状態を持つ乱数にしたこと、符号付きのあふれを明示的な折り返しにしたことなど）は同ファイルの冒頭に記しています。FMGEN の条件（由来の明記、フリーソフトとしての配布、改変内容の明示、説明・条件の原文の添付）に従います。説明・条件の原文を [src/sound/fmgen-readme.txt](src/sound/fmgen-readme.txt) にバイト列を変更せず収録しています。原文は日本語の旧来の文字コードです。
 - **ADPCM（MSM6258）**: px68k の `adpcm.c` を Goose に書き直して `src/x68k_adpcm.goose` に、DMA チャンネル 3 の転送を `src/x68k_dmac.goose` に移しています。参照元の条件（上記の GPLv2）がそのまま及びます。
-- **移植側の変更**: Goose・現在のC/C++ビルドとの接続、YM2151/ADPCMとDMACの接続、機械状態の保存・復元、繰り返しリセット、ホスト資源の管理などに変更を加えています。FMGEN由来の著作権表示は残しています。
+- **移植側の変更**: Goose・現在のCビルドとの接続、YM2151/ADPCMとDMACの接続、機械状態の保存・復元、繰り返しリセット、ホスト資源の管理などに変更を加えています。FMGEN由来の著作権表示は `src/x68k_opm.goose` に残しています。
 - **Gooseコンパイラ**: 本エミュレータをビルドする別のプログラムです。Gooseコンパイラ側のライセンス本文にあるApache License 2.0本文は、エミュレータに含まれる第三者コードの条件を置き換えるものではありません。
 
 BIOS・CG-ROM・OS・ゲーム・ディスクイメージは、上記ソースコードとは別の権利を持つデータです。このプロジェクトの配布用ソースには含めません。
