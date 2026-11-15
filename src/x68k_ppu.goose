@@ -4,8 +4,6 @@ import .x68k_bridge;
 import .m68k_mmu;
 namespace ppu;
 
-var ::g_screen_w: i32 = 768;
-var ::g_screen_h: i32 = 512;
 
 // BG / スプライト / テキストの作業用ラインバッファは、左に LINE_PAD ドットの余白を持つ。
 // 画面の x は添字 x + LINE_PAD。スプライトが左端からはみ出しても添字が負にならない。
@@ -25,6 +23,10 @@ struct X68kPPU {
     scr_mix: u8[1024] = [0; 1024],
     scr_argb: u32[1024] = [0; 1024],
     fb: u32[393216] = [0; 393216],
+    // 画面の大きさ (フレームの始めと終わりに CRTC から決める)。ホストへは session が 1 フレームごとに伝える
+    screen_w: i32 = 768,
+    screen_h: i32 = 512,
+    frame_ready: bool = false,  // このフレームを描き始めた。リセットやステートの復元で落ちる
 }
 type ::X68kPPU = ppu::X68kPPU;
 
@@ -935,7 +937,7 @@ fn compose_back(ppu: X68kPPU&, sy: i32, screen_w: i32, width: i32, gon: bool, to
     }
 }
 
-fn apply_screen(mmu: M68kMMU&) {
+fn apply_screen(ppu: X68kPPU&, mmu: M68kMMU&) {
     var dot_x: i32 = 768;
     let hstart = mmu.crtc_word(CRTC_HSTART) & 1023;
     let hend = mmu.crtc_word(CRTC_HEND) & 1023;
@@ -955,21 +957,27 @@ fn apply_screen(mmu: M68kMMU&) {
         dot_x = 768;
         dot_y = 512;
     }
-    c_set_screen_mode(dot_x, dot_y);
+    ppu.screen_w = dot_x;
+    ppu.screen_h = dot_y;
 }
 
-fn begin_frame(mmu: M68kMMU&) {
-    apply_screen(mmu);
-    var black: u32 = 0xFF000000;
-    c_clear_framebuffer(black);
-    c_set_frame_ready(1);
+fn begin_frame(ppu: X68kPPU&, mmu: M68kMMU&) {
+    ppu.apply_screen(mmu);
+    ppu.clear(0xFF000000);
+    ppu.frame_ready = true;
+}
+
+// 画面の大きさの範囲を色 argb で塗る
+fn clear(ppu: X68kPPU&, argb: u32) {
+    let pixels = clamp(ppu.screen_w * ppu.screen_h, 0, 393216);
+    fill(ppu.fb[..pixels], argb);
 }
 
 // 画面の 1 ライン (sy) を描く。グラフィック、テキスト、BG、スプライトを面ごとに作り、
 // ビデオコントローラの優先順位で合成してフレームバッファへ書く。
 fn draw_line(ppu: X68kPPU&, mmu: M68kMMU&, sy: i32) {
-    if sy < 0 || sy >= g_screen_h { return; }
-    var width = g_screen_w;
+    if sy < 0 || sy >= ppu.screen_h { return; }
+    var width = ppu.screen_w;
     if width > 1024 { width = 1024; }
     if width < 1 { return; }
     ppu.clear_front();
@@ -1007,5 +1015,5 @@ fn draw_line(ppu: X68kPPU&, mmu: M68kMMU&, sy: i32) {
             ton = true;
         }
     }
-    ppu.compose_back(sy, g_screen_w, width, gon, ton, bgon, tron, pron, vc1_0, vc2_0);
+    ppu.compose_back(sy, ppu.screen_w, width, gon, ton, bgon, tron, pron, vc1_0, vc2_0);
 }

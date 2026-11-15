@@ -17,7 +17,7 @@ typedef struct {
     X68kByteView ram, ipl, cgrom, sram, tvram, gvram, pal, vc;
     X68kByteView sprite, bgreg, bgram, chr8, chr16;
     X68kPixelView fb;
-    int32_t *ram_limit, *screen_w, *screen_h;
+    int32_t *ram_limit;
 } X68kHostViews;
 // One active borrowed machine. Validate every view before changing registration.
 // Keep MMU/PPU owners at a stable address until replacement/unbind/destroy;
@@ -25,7 +25,7 @@ typedef struct {
 uint64_t c_machine_bind(X68kByteView ram, X68kByteView ipl, X68kByteView cgrom, X68kByteView sram,
     X68kByteView tvram, X68kByteView gvram, X68kByteView pal, X68kByteView vc, X68kByteView sprite,
     X68kByteView bgreg, X68kByteView bgram, X68kByteView chr8, X68kByteView chr16, X68kPixelView fb,
-    int32_t *ram_limit, int32_t *screen_w, int32_t *screen_h);
+    int32_t *ram_limit);
 uint64_t c_machine_epoch(void);
 void c_machine_reset_devices(void);
 
@@ -64,6 +64,7 @@ int64_t c_host_local_seconds(void);
 // BMP screenshot saver
 int c_save_fb_bmp(X68kByteView path);
 int c_save_fb_png(X68kByteView path);
+int c_save_pixels(X68kPixelView px, int32_t w, int32_t h, X68kByteView path, int32_t png);
 void c_audio_capture_start(void);
 void c_audio_capture_status(int *active, int *frames, int *truncated);
 int c_audio_capture_stop(X68kByteView path, int *frames, int *truncated, int *peak, int *silent);
@@ -112,11 +113,9 @@ void c_gvram_bind(uint8_t *gvram);
 void c_line_zero(uint16_t *grp, uint8_t *mix, uint16_t *sp, uint16_t *sp2, uint16_t *bg, uint8_t *tr);
 
 // Direct framebuffer operations
-void c_screen_bind(int32_t *w, int32_t *h);
 void c_set_screen_mode(int32_t w, int32_t h);
 int32_t c_get_screen_width(void);
 int32_t c_get_screen_height(void);
-void c_clear_framebuffer(uint32_t argb);
 void c_set_frame_ready(int32_t ready);
 void c_fb_bind(uint32_t *fb);
 

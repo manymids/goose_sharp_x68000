@@ -23,6 +23,7 @@ goose_sharp_x68000/
     mcp_server.goose      ARCL MCP
     mcp_args.goose        Reading MCP tool arguments
     launch_args.goose     Parsing launch arguments
+    x68k_ahead.goose      Running copies of the machine ahead on worker threads
     x68k_*.goose          Devices, rendering, save state, shared services
     test_core.goose/.build Unit tests of the core
     x68k_bridge.c/.h      Win32, file I/O, audio output
@@ -161,7 +162,7 @@ The layers exposed by default are L0 and L1. To use debugging, device observatio
 | Execution control | `arcl_status`, `arcl_run`, `arcl_pause`, `arcl_resume`, `arcl_reset` |
 | Input / Display (L0) | `arcl_key`, `arcl_type`, `arcl_joypad`, `arcl_clear_input`, `arcl_input_state`, `arcl_input_macro`, `arcl_screenshot` |
 | Console (L1) | `arcl_console_read`, `arcl_command`, `arcl_mount` |
-| Debugging (L2) | `arcl_registers`, `arcl_read_mem`, `arcl_write_mem`, `arcl_step`, `arcl_breakpoint`, `arcl_disasm` |
+| Debugging (L2) | `arcl_registers`, `arcl_read_mem`, `arcl_write_mem`, `arcl_step`, `arcl_breakpoint`, `arcl_disasm`, `arcl_run_ahead` |
 | Device observation (L3) | `arcl_video`, `arcl_irq`, `arcl_dma`, `arcl_vram`, `x68k_opm` |
 | Save state | `arcl_save_state`, `arcl_load_state` (with `path`, save to / restore from a file), `arcl_snapshot` / `arcl_rewind` (L4) |
 
@@ -181,6 +182,26 @@ A state file is about 16 MB plus the size of the inserted FD/HDD images (about 5
 | Other | `help`, `break`, `copy` |
 
 `f12` and `scrolllock` are bound to emulator functions, so they are refused with an error instead of being sent. Symbols can be entered as characters with `arcl_type`, which covers every printable ASCII character.
+
+### `arcl_run_ahead`
+
+Runs copies of the machine ahead on worker threads and returns only the results. The machine itself (registers, memory, screen, sound, frame number) does not change. With `variants`, copies holding different inputs run in parallel.
+
+| Argument | Meaning |
+|---|---|
+| `frames` | Frames to run (1-3600, required) |
+| `keys` | Key names to hold (the same names as `arcl_key`, up to 8) |
+| `buttons` | Joypad 1 buttons to hold (`up` `down` `left` `right` `a` `b`) |
+| `path` | Where to save the screen after the run. PNG if it ends in `.png`, otherwise BMP |
+| `variants` | An array of 1-8 objects with the `keys` / `buttons` / `path` above, each run on its own thread at the same time |
+
+Each entry of `results` gives the frame number after the run, PC, SR, the data and address registers, the screen size, the number of pixels that differ from the screen the machine is showing now (`changed_pixels`, `null` if the size differs), the loudest sample during the run (`audio_peak`) and where the screen was saved. A copy that hits the breakpoint stops there with `hit_break` set to `true`.
+
+```json
+{"frames":240,"variants":[{"path":"stay.png"},{"buttons":["a"],"path":"fire.png"},{"keys":["space"],"path":"space.png"}]}
+```
+
+Each copy takes a copy of the machine state (about 3 MB), the RAM (12 MB) and the inserted disk images (a few to a dozen ms per copy).
 
 ### `arcl_disasm`
 

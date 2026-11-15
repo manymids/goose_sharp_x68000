@@ -207,13 +207,7 @@ static int g_video_bound = 0;
 static int g_src_w = 768; // Default to 768x512 standard X68000 mode
 static int g_frame_ready = 0;
 static int g_src_h = 512;
-static int32_t *g_screen_w_slot = NULL;
-static int32_t *g_screen_h_slot = NULL;
 
-static void screen_publish(void) {
-    if (g_screen_w_slot) *g_screen_w_slot = g_src_w;
-    if (g_screen_h_slot) *g_screen_h_slot = g_src_h;
-}
 
 // Helper to find and load ROM file with multiple candidate directories
 static int load_rom_file(const char *filename, const char *sys_dir, void *buf, int size) {
@@ -329,7 +323,6 @@ void x68k_mem_destroy(void) {
     save_sram_file();
     // Stop publications before dropping any borrowed array or scalar view.
     g_ram_limit_slot = NULL;
-    g_screen_w_slot = g_screen_h_slot = NULL;
     g_machine_epoch = 0;
     g_mem_ready = 0;
     if (!g_ram_bound && g_ram) free(g_ram);
@@ -567,12 +560,6 @@ int c_gui_take_media_request(uint8_t *path, int cap, int32_t *path_len) {
 
 static void win32_set_scale(int scale);
 
-void c_screen_bind(int32_t *w, int32_t *h) {
-    g_screen_w_slot = w;
-    g_screen_h_slot = h;
-    screen_publish();
-}
-
 uint64_t c_machine_epoch(void) { return g_machine_epoch; }
 
 static uint64_t machine_bind_views(const X68kHostViews *v) {
@@ -583,7 +570,7 @@ static uint64_t machine_bind_views(const X68kHostViews *v) {
         !VIEW_OK(pal, PAL_SIZE) || !VIEW_OK(vc, VCREG_SIZE) || !VIEW_OK(sprite, SPRITE_SIZE) ||
         !VIEW_OK(bgreg, BGREG_SIZE) || !VIEW_OK(bgram, BGRAM_SIZE) ||
         !VIEW_OK(chr8, 8 * 8 * 256) || !VIEW_OK(chr16, 16 * 16 * 256) ||
-        !VIEW_OK(fb, FB_MAX_PIXELS) || !v->ram_limit || !v->screen_w || !v->screen_h) return 0;
+        !VIEW_OK(fb, FB_MAX_PIXELS) || !v->ram_limit) return 0;
 #undef VIEW_OK
     // All validation precedes registration. No allocation or callbacks here.
     if (!g_ram_bound) {
@@ -594,7 +581,7 @@ static uint64_t machine_bind_views(const X68kHostViews *v) {
     c_ipl_bind(v->ipl.data); c_cgrom_bind(v->cgrom.data); c_sram_bind(v->sram.data);
     c_video_bind(v->pal.data, v->sprite.data, v->bgreg.data, v->bgram.data, v->chr8.data, v->chr16.data);
     c_vcreg_bind(v->vc.data); c_tvram_bind(v->tvram.data); c_gvram_bind(v->gvram.data);
-    c_fb_bind(v->fb.data); c_screen_bind(v->screen_w, v->screen_h);
+    c_fb_bind(v->fb.data);
     if (++g_machine_epoch_next == 0) ++g_machine_epoch_next;
     g_machine_epoch = g_machine_epoch_next;
     return g_machine_epoch;
@@ -603,9 +590,9 @@ static uint64_t machine_bind_views(const X68kHostViews *v) {
 uint64_t c_machine_bind(X68kByteView ram, X68kByteView ipl, X68kByteView cgrom, X68kByteView sram,
     X68kByteView tvram, X68kByteView gvram, X68kByteView pal, X68kByteView vc, X68kByteView sprite,
     X68kByteView bgreg, X68kByteView bgram, X68kByteView chr8, X68kByteView chr16, X68kPixelView fb,
-    int32_t *ram_limit, int32_t *screen_w, int32_t *screen_h) {
+    int32_t *ram_limit) {
     X68kHostViews views = {ram, ipl, cgrom, sram, tvram, gvram, pal, vc, sprite,
-        bgreg, bgram, chr8, chr16, fb, ram_limit, screen_w, screen_h};
+        bgreg, bgram, chr8, chr16, fb, ram_limit};
     return machine_bind_views(&views);
 }
 
@@ -614,7 +601,6 @@ void c_set_screen_mode(int32_t w, int32_t h) {
     if (g_src_w == w && g_src_h == h && g_hwnd) return;
     g_src_w = w;
     g_src_h = h;
-    screen_publish();
     if (g_hwnd) {
         memset(&g_bmi, 0, sizeof(g_bmi));
         g_bmi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
@@ -633,14 +619,6 @@ int32_t c_get_screen_width(void) {
 
 int32_t c_get_screen_height(void) {
     return g_src_h;
-}
-
-void c_clear_framebuffer(uint32_t argb) {
-    if (!g_fb) return;
-    int total = g_src_w * g_src_h;
-    for (int i = 0; i < total; i++) {
-        g_fb[i] = argb;
-    }
 }
 
 // Keyboard input FIFO
@@ -1110,7 +1088,6 @@ bool win32_ui_init(X68kByteView title_bytes, int w, int h, int scale) {
     if (g_hwnd) return true;
     g_src_w = (w > 0 ? w : 512);
     g_src_h = (h > 0 ? h : 512);
-    screen_publish();
     g_scale = (scale >= 1 && scale <= 4 ? scale : 1);
 
     HINSTANCE hInstance = GetModuleHandle(NULL);
@@ -1333,15 +1310,11 @@ int win32_ui_get_command(void) {
 }
 
 // BMP screenshot saver
-int c_save_fb_bmp(X68kByteView path_bytes) {
-    char path[PATH_CAP];
-    bind_path(path_bytes.data, (int)path_bytes.len, path, PATH_CAP);
-    if (path[0] == 0 || !g_fb) return 0;
+static int save_bmp(const uint32_t *px, int w, int h, const char *path) {
+    if (path[0] == 0 || !px || w <= 0 || h <= 0 || w > FB_MAX_W || h > FB_MAX_H) return 0;
     FILE *f = path_fopen(path, L"wb");
     if (!f) return 0;
 
-    int w = g_src_w;
-    int h = g_src_h;
     int row_bytes = w * 4;
     int image_size = row_bytes * h;
     int file_size = 54 + image_size;
@@ -1371,7 +1344,7 @@ int c_save_fb_bmp(X68kByteView path_bytes) {
     fwrite(dib_hdr, 1, 40, f);
 
     for (int y = h - 1; y >= 0; y--) {
-        const uint32_t *row = &g_fb[y * w];
+        const uint32_t *row = &px[y * w];
         fwrite(row, 4, w, f);
     }
 
@@ -1412,19 +1385,15 @@ static int png_chunk(FILE *f, const char *type, const uint8_t *data, int n) {
     return fwrite(crcb, 1, 4, f) == 4;
 }
 
-int c_save_fb_png(X68kByteView path_bytes) {
-    char path[PATH_CAP];
+static int save_png(const uint32_t *px_in, int w, int h, const char *path) {
     static const uint8_t sig[8] = { 137, 80, 78, 71, 13, 10, 26, 10 };
-    int w, h, raw_n, zcap, zlen, y, x, pos, left;
+    int raw_n, zcap, zlen, y, x, pos, left;
     uint8_t ihdr[13];
     uint8_t *raw = NULL;
     uint8_t *z = NULL;
     uint32_t s1 = 1, s2 = 0, adler;
     FILE *f;
-    bind_path(path_bytes.data, (int)path_bytes.len, path, PATH_CAP);
-    if (path[0] == 0 || !g_fb) return 0;
-    w = g_src_w;
-    h = g_src_h;
+    if (path[0] == 0 || !px_in) return 0;
     if (w <= 0 || h <= 0 || w > FB_MAX_W || h > FB_MAX_H) return 0;
     raw_n = h * (1 + w * 3);
     raw = (uint8_t *)malloc((size_t)raw_n);
@@ -1433,7 +1402,7 @@ int c_save_fb_png(X68kByteView path_bytes) {
     for (y = 0; y < h; y++) {
         raw[pos++] = 0;
         for (x = 0; x < w; x++) {
-            uint32_t px = g_fb[y * w + x];
+            uint32_t px = px_in[y * w + x];
             raw[pos++] = (uint8_t)((px >> 16) & 0xFF);
             raw[pos++] = (uint8_t)((px >> 8) & 0xFF);
             raw[pos++] = (uint8_t)(px & 0xFF);
@@ -1485,6 +1454,26 @@ int c_save_fb_png(X68kByteView path_bytes) {
     fclose(f);
     free(z);
     return 1;
+}
+
+int c_save_fb_bmp(X68kByteView path_bytes) {
+    char path[PATH_CAP];
+    bind_path(path_bytes.data, (int)path_bytes.len, path, PATH_CAP);
+    return save_bmp(g_fb, g_src_w, g_src_h, path);
+}
+
+int c_save_fb_png(X68kByteView path_bytes) {
+    char path[PATH_CAP];
+    bind_path(path_bytes.data, (int)path_bytes.len, path, PATH_CAP);
+    return save_png(g_fb, g_src_w, g_src_h, path);
+}
+
+// w x h pixels from any buffer, for frames that are not on the screen (arcl_run_ahead).
+int c_save_pixels(X68kPixelView px, int32_t w, int32_t h, X68kByteView path_bytes, int32_t png) {
+    char path[PATH_CAP];
+    if (!px.data || w <= 0 || h <= 0 || (int64_t)w * h > px.len) return 0;
+    bind_path(path_bytes.data, (int)path_bytes.len, path, PATH_CAP);
+    return png ? save_png(px.data, w, h, path) : save_bmp(px.data, w, h, path);
 }
 
 #define AUDIO_CAP_RATE 44100

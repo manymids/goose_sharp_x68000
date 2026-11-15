@@ -8,7 +8,7 @@ let HOST_PATH_BYTES = 800; // room for the longest path C hands back (PATH_CAP i
 extern fn c_machine_bind(ram: u8[:], ipl: u8[:], cgrom: u8[:], sram: u8[:],
     tvram: u8[:], gvram: u8[:], pal: u8[:], vc: u8[:], sprite: u8[:],
     bgreg: u8[:], bgram: u8[:], chr8: u8[:], chr16: u8[:], fb: u32[:],
-    ram_limit: i32&, screen_w: i32&, screen_h: i32&) -> u64;
+    ram_limit: i32&) -> u64;
 extern fn c_machine_epoch() -> u64;
 extern fn c_machine_reset_devices();
 extern fn c_gui_settings_open(enabled: i32);
@@ -46,6 +46,8 @@ extern fn c_host_local_seconds() -> i64;
 
 extern fn c_save_fb_bmp(path: const u8[:]) -> i32;
 extern fn c_save_fb_png(path: const u8[:]) -> i32;
+// Writes w x h pixels from px (row by row) as a PNG (png = 1) or a BMP.
+extern fn c_save_pixels(px: const u32[:], w: i32, h: i32, path: const u8[:], png: i32) -> i32;
 extern fn c_audio_capture_start();
 extern fn c_audio_capture_status(active: i32&, frames: i32&, truncated: i32&);
 extern fn c_audio_capture_stop(path: const u8[:], frames: i32&, truncated: i32&, peak: i32&, silent: i32&) -> i32;
@@ -77,7 +79,6 @@ extern fn c_line_zero(grp: u16&, mix: u8&, sp: u16&, sp2: u16&, bg: u16&, tr: u8
 extern fn c_set_screen_mode(w: i32, h: i32);
 extern fn c_get_screen_width() -> i32;
 extern fn c_get_screen_height() -> i32;
-extern fn c_clear_framebuffer(argb: u32);
 extern fn c_set_frame_ready(ready: i32);
 
 // Audio / Sound API

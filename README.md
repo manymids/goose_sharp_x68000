@@ -22,6 +22,7 @@ goose_sharp_x68000/
     mcp_server.goose      ARCL MCP
     mcp_args.goose        MCPの引数の取り出し
     launch_args.goose     起動引数の解釈
+    x68k_ahead.goose      先読み（機械の写しを別スレッドで進める）
     x68k_*.goose          機器・描画・保存・共有サービス
     test_core.goose/.build コアの単体テスト
     x68k_bridge.c/.h      Win32・ファイル・音声出力
@@ -160,7 +161,7 @@ stdio対応のMCPクライアントから、次のように起動します。初
 | 実行制御 | `arcl_status`、`arcl_run`、`arcl_pause`、`arcl_resume`、`arcl_reset` |
 | 入力・画面（L0） | `arcl_key`、`arcl_type`、`arcl_joypad`、`arcl_clear_input`、`arcl_input_state`、`arcl_input_macro`、`arcl_screenshot` |
 | コンソール（L1） | `arcl_console_read`、`arcl_command`、`arcl_mount` |
-| デバッグ（L2） | `arcl_registers`、`arcl_read_mem`、`arcl_write_mem`、`arcl_step`、`arcl_breakpoint`、`arcl_disasm` |
+| デバッグ（L2） | `arcl_registers`、`arcl_read_mem`、`arcl_write_mem`、`arcl_step`、`arcl_breakpoint`、`arcl_disasm`、`arcl_run_ahead` |
 | 機器観測（L3） | `arcl_video`、`arcl_irq`、`arcl_dma`、`arcl_vram`、`x68k_opm` |
 | 保存 | `arcl_save_state`、`arcl_load_state`（`path` を付けるとファイルへ保存・ファイルから復元）、`arcl_snapshot` / `arcl_rewind`（L4） |
 
@@ -180,6 +181,26 @@ stdio対応のMCPクライアントから、次のように起動します。初
 | その他 | `help`、`break`、`copy` |
 
 `f12` と `scrolllock` はエミュレータ側の機能に割り当てているので、送らずにエラーを返します。記号は `arcl_type` で文字として入力できます（印字可能な ASCII はすべて対応）。
+
+### `arcl_run_ahead`
+
+機械の写しを別スレッドで先へ進め、結果だけを返します。本体の機械（レジスタ、メモリ、画面、音、フレーム番号）は変わりません。`variants` を渡すと、押しっぱなしにする入力の違う写しを並行して走らせます。
+
+| 引数 | 内容 |
+|---|---|
+| `frames` | 進めるフレーム数（1〜3600、必須） |
+| `keys` | 押しっぱなしにするキー名の配列（`arcl_key` と同じ名前、8 個まで） |
+| `buttons` | 押しっぱなしにするジョイパッド 1 のボタン名の配列（`up` `down` `left` `right` `a` `b`） |
+| `path` | 進めたあとの画面の保存先。`.png` なら PNG、それ以外は BMP |
+| `variants` | 上の `keys` / `buttons` / `path` を持つオブジェクトの配列（1〜8 本）。渡すと、それぞれを別スレッドで同時に進める |
+
+応答の `results` は写しごとの、進めたあとのフレーム番号、PC・SR・データレジスタ・アドレスレジスタ、画面の大きさ、本体が今表示している画面と違う画素の数（`changed_pixels`。大きさが違えば `null`）、進めた間の音の最大振幅（`audio_peak`）、保存した画面の場所です。ブレークポイントに当たった写しはそこで止まり、`hit_break` が `true` になります。
+
+```json
+{"frames":240,"variants":[{"path":"stay.png"},{"buttons":["a"],"path":"fire.png"},{"keys":["space"],"path":"space.png"}]}
+```
+
+写しを作るたびに、機械の状態（約 3 MB）と RAM（12 MB）、挿入中のディスクイメージが写されます（1 本あたり数 ms〜十数 ms）。
 
 ### `arcl_disasm`
 

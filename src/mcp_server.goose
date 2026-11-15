@@ -3,6 +3,7 @@
 import std;
 import json;
 import .mcp_args;
+import .x68k_ahead;
 import .x68k_bridge;
 import .m68k_types;
 import .x68k_types;
@@ -184,7 +185,7 @@ fn parse_layers(text: const u8[:]) -> i32 {
 fn tool_layer(name: const u8[:]) -> i32 {
     if name == "arcl_screenshot" || name == "arcl_joypad" || name == "arcl_key" || name == "arcl_clear_input" || name == "arcl_input_state" || name == "arcl_type" || name == "arcl_input_macro" || name == "arcl_audio_record" { return MCP_LAYER_L0; }
     if name == "arcl_console_read" || name == "arcl_mount" || name == "arcl_command" || name == "arcl_host_dir" { return MCP_LAYER_L1; }
-    if name == "arcl_registers" || name == "arcl_read_mem" || name == "arcl_write_mem" || name == "arcl_write_registers" || name == "arcl_step" || name == "arcl_disasm" || name == "arcl_breakpoint" || name == "arcl_stack" { return MCP_LAYER_L2; }
+    if name == "arcl_registers" || name == "arcl_run_ahead" || name == "arcl_read_mem" || name == "arcl_write_mem" || name == "arcl_write_registers" || name == "arcl_step" || name == "arcl_disasm" || name == "arcl_breakpoint" || name == "arcl_stack" { return MCP_LAYER_L2; }
     if name == "arcl_video" || name == "arcl_palette" || name == "arcl_sprites" || name == "arcl_dma" || name == "arcl_irq" || name == "arcl_vram" || name == "x68k_opm" { return MCP_LAYER_L3; }
     if name == "arcl_snapshot" || name == "arcl_rewind" || name == "arcl_speed" { return MCP_LAYER_L4; }
     return 0;
@@ -1173,6 +1174,7 @@ fn tools_list(id_buf: const u8[:]) {
         resp.append(",{\"name\":\"arcl_breakpoint\",\"description\":\"Set or clear one execution breakpoint\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"address\":{\"type\":\"string\"},\"action\":{\"type\":\"string\"}}}}");
         resp.append(",{\"name\":\"arcl_write_mem\",\"description\":\"Write hex bytes to memory\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"address\":{},\"data\":{\"type\":\"string\"}},\"required\":[\"address\",\"data\"]}}");
         resp.append(",{\"name\":\"arcl_write_registers\",\"description\":\"Set named CPU registers\",\"inputSchema\":{\"type\":\"object\",\"properties\":{}}}");
+        resp.append(",{\"name\":\"arcl_run_ahead\",\"description\":\"Run copies of the machine ahead on worker threads without changing it; variants run in parallel with different held keys or joypad buttons\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"frames\":{\"type\":\"integer\"},\"keys\":{\"type\":\"array\",\"items\":{\"type\":\"string\"}},\"buttons\":{\"type\":\"array\",\"items\":{\"type\":\"string\"}},\"path\":{\"type\":\"string\"},\"variants\":{\"type\":\"array\",\"items\":{\"type\":\"object\"}}},\"required\":[\"frames\"]}}");
         resp.append(",{\"name\":\"arcl_stack\",\"description\":\"Read words at the stack pointer\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"count\":{\"type\":\"integer\"}}}}");
     }
     if (g_mcp_layers & MCP_LAYER_L3) != 0 {
@@ -1194,7 +1196,7 @@ fn tools_list(id_buf: const u8[:]) {
 }
 
 // 画面をファイルに書く。名前が .png で終わっていれば PNG、それ以外は BMP。
-fn save_frame(path: const u8[:]) -> bool {
+fn is_png_path(path: const u8[:]) -> bool {
     var ext: u8[4] = [0; 4];
     if path.len >= 4 {
         for i in 4 {
@@ -1202,7 +1204,11 @@ fn save_frame(path: const u8[:]) -> bool {
             ext[i] = if c >= 'A' && c <= 'Z' { c + 32 } else { c };
         }
     }
-    if ext == ".png" { return c_save_fb_png(path) != 0; }
+    return ext == ".png";
+}
+
+fn save_frame(path: const u8[:]) -> bool {
+    if is_png_path(path) { return c_save_fb_png(path) != 0; }
     return c_save_fb_bmp(path) != 0;
 }
 
@@ -1674,7 +1680,140 @@ fn tool_stack(emu: X68kEmulator&, args: const u8[:], id_buf: const u8[:]) {
 }
 
 // CPU とメモリのデバッグ (L2)
+// 先読みの 1 本ぶんの指示を v (オブジェクト) から読む。問題があれば err に書いて false。
+fn ahead_job(v: const u8[:], frames: i64, job: AheadJob&, path: u8[>..]&, err: u8[>..]&) -> bool {
+    job = AheadJob { frames: frames, .. };
+    let keys, have_keys = json_member(v, "keys");
+    if have_keys {
+        var names: const u8[:][>..] = [];
+        if !json_elements(keys, names) || names.len > 8 {
+            err.append("'keys' must be an array of at most 8 key names");
+            return false;
+        }
+        for raw in names {
+            var name: u8[>..] = [];
+            let code = if json_string(raw, name) { input::key_code(name) } else { -1 };
+            if code < 0 {
+                err.append(str("unknown key name in 'keys': ", raw));
+                return false;
+            }
+            job.keys[job.key_count] = code;
+            job.key_count += 1;
+        }
+    }
+    let buttons, have_buttons = json_member(v, "buttons");
+    if have_buttons {
+        var names: const u8[:][>..] = [];
+        if !json_elements(buttons, names) {
+            err.append("'buttons' must be an array of joypad button names");
+            return false;
+        }
+        for raw in names {
+            var name: u8[>..] = [];
+            let mask = if json_string(raw, name) { input::joy_mask(name) } else { 0 };
+            if mask == 0 {
+                err.append(str("unknown joypad button in 'buttons': ", raw));
+                return false;
+            }
+            job.buttons |= mask;
+        }
+    }
+    extract_json_str(v, "path", path);
+    return true;
+}
+
+// 機械の写しを別スレッドで先へ進め、本体はそのままにして結果を返す。variants を渡すと、
+// 入力の違う写しを並行して走らせる。
+fn tool_run_ahead(emu: X68kEmulator&, args: const u8[:], id_buf: const u8[:]) {
+    let frames = extract_json_int(args, "frames", 0);
+    if frames < 1 || frames > AHEAD_MAX_FRAMES {
+        write_text(id_buf, "'frames' must be between 1 and 3600", true);
+        return;
+    }
+    var objects: const u8[:][>..] = [];
+    let list, have_list = json_member(args, "variants");
+    if have_list {
+        if !json_elements(list, objects) || objects.len == 0 || objects.len > AHEAD_MAX_VARIANTS {
+            write_text(id_buf, "'variants' must be an array of 1 to 8 objects", true);
+            return;
+        }
+    } else {
+        objects.push(args);
+    }
+    var jobs: AheadJob[>..] = [];
+    var paths: u8[..520][>..] = [];
+    for v in objects {
+        if v.len == 0 || v[0] != '{' {
+            write_text(id_buf, "each variant must be a JSON object", true);
+            return;
+        }
+        var job = AheadJob {};
+        var path: u8[>..] = [];
+        var err: u8[>..] = [];
+        if !ahead_job(v, frames, job, path, err) {
+            write_text(id_buf, err, true);
+            return;
+        }
+        if path.len > 520 {
+            write_text(id_buf, "'path' is too long", true);
+            return;
+        }
+        jobs.push(job);
+        var p: u8[..520] = [];
+        p.append(path);
+        paths.push(p);
+    }
+
+    let started = clock_ns();
+    var results: AheadResult[>..] = [];
+    ahead::run(emu, jobs[..], results);
+    let elapsed: f64 = clock_ns() - started;
+
+    var obj: u8[>..] = [];
+    format(obj, "{\"from_frame\":", emu.total_frames, ",\"frames\":", frames, ",\"elapsed_ms\":", ((elapsed / 100000.0) as! i64) as f64 / 10.0, ",\"results\":[");
+    for i in results.len {
+        let r .= results[i];
+        if i != 0 { obj.append(","); }
+        format(obj, "{\"variant\":", i, ",\"frame\":", r.frame, ",\"hit_break\":", if r.hit_break { "true" } else { "false" }, ",\"pc\":\"");
+        hex_u32(r.pc, obj);
+        obj.append("\",\"sr\":\"");
+        hex_u16(r.sr, obj);
+        obj.append("\",\"d\":[");
+        for k in 8 { if k != 0 { obj.append(","); } obj.append("\""); hex_u32(r.d[k], obj); obj.append("\""); }
+        obj.append("],\"a\":[");
+        for k in 8 { if k != 0 { obj.append(","); } obj.append("\""); hex_u32(r.a[k], obj); obj.append("\""); }
+        let pixels = clamp(r.screen_w * r.screen_h, 0, 393216);
+        // 本体が今表示している画面との違い (大きさが同じときだけ数える)
+        var changed: i64 = -1;
+        if r.screen_w == emu.ppu.screen_w && r.screen_h == emu.ppu.screen_h {
+            changed = 0;
+            for k in pixels { if r.fb[k] != emu.ppu.fb[k] { changed += 1; } }
+        }
+        format(obj, "],\"screen\":{\"width\":", r.screen_w, ",\"height\":", r.screen_h, "},\"changed_pixels\":");
+        if changed >= 0 { format(obj, changed); } else { obj.append("null"); }
+        format(obj, ",\"audio_peak\":", r.audio_peak, ",\"screenshot\":");
+        let path = paths[i][..];
+        if path.len == 0 {
+            obj.append("null");
+        } else if c_save_pixels(r.fb[..pixels], r.screen_w, r.screen_h, path, if is_png_path(path) { 1 } else { 0 }) == 0 {
+            write_text(id_buf, str("failed to write the screenshot for variant ", i), true);
+            return;
+        } else {
+            json_append_quoted(obj, path);
+        }
+        obj.append("}");
+    }
+    obj.append("]");
+    append_machine(obj, emu, 0, false, true);
+    obj.append("}");
+    write_object(id_buf, obj);
+}
+
 fn debug_call(emu: X68kEmulator&, tool_name: const u8[:], args: const u8[:], id_buf: const u8[:]) -> bool {
+    if tool_name == "arcl_run_ahead" {
+        tool_run_ahead(emu, args, id_buf);
+        return true;
+    }
     if tool_name == "arcl_registers" {
         tool_registers(emu, args, id_buf);
         return true;

@@ -200,6 +200,7 @@ fn restore(emu: X68kEmulator&, bank: i32, idx: i32) -> bool {
     emu.session.speed_live = false;
     emu.session.speed_have = false;
     // The framebuffer is derived, not saved. Do not publish stale pixels.
+    emu.ppu.frame_ready = false;
     c_set_frame_ready(0);
     return true;
 }

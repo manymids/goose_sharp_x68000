@@ -33,6 +33,9 @@ struct X68kEmulator {
     break_armed: bool = false,
     break_pc: u32 = 0,
     hit_break: bool = false,
+    // 直前のフレームで作った音 (右、左の順に交互)。ホストへは session が渡す
+    audio: i16[AUDIO_FRAME_MAX * 2] = [0; AUDIO_FRAME_MAX * 2],
+    audio_samples: i32 = 0,
 }
 type ::X68kEmulator = emu::X68kEmulator;
 
@@ -40,7 +43,7 @@ fn bind(emu: X68kEmulator&) -> bool {
     let epoch = c_machine_bind(g_x68k_ram[..], g_iplrom[..], g_cgrom[..], g_sram[..],
         emu.mmu.tvram[..], emu.mmu.gvram[..], emu.mmu.pal[..], emu.mmu.vcreg[..],
         emu.mmu.sprite[..], emu.mmu.bgreg[..], emu.mmu.bgram[..], emu.mmu.bg_chr8[..],
-        emu.mmu.bg_chr16[..], emu.ppu.fb[..], g_ram_limit, g_screen_w, g_screen_h);
+        emu.mmu.bg_chr16[..], emu.ppu.fb[..], g_ram_limit);
     if epoch == 0 { return false; }
     emu.binding_epoch = epoch;
     return true;
@@ -67,9 +70,11 @@ fn reset(emu: X68kEmulator&) {
     c_machine_reset_devices();
     emu.mmu.fm.machine_reset();
     disk::machine_reset();
-    c_set_screen_mode(768, 512);
-    c_clear_framebuffer(0xFF000000);
-    c_set_frame_ready(0);
+    emu.ppu.screen_w = 768;
+    emu.ppu.screen_h = 512;
+    emu.ppu.clear(0xFF000000);
+    emu.ppu.frame_ready = false;
+    emu.present();
 
     // リセット時の初期 SSP と PC を IPLROM (0x00FF0000) から取得
     let ssp = emu.mmu.read32(0x00FF0000);
@@ -286,7 +291,7 @@ fn fast_clear(emu: X68kEmulator&, is_31k: bool) {
     }
 }
 
-let AUDIO_FRAME_MAX = 2048; // 1 フレームに作るサンプル数の上限
+let ::AUDIO_FRAME_MAX = 2048; // 1 フレームに作るサンプル数の上限
 
 // このフレームで合成する音のサンプル数 (44.1 kHz)。31 kHz の画面は 55.46 Hz、15 kHz の画面は 61.46 Hz。
 // 端数を持ち越すので、フレームごとに 1 サンプル違うことがある。
@@ -295,10 +300,11 @@ fn frame_samples(total_frames: i64, is_31k: bool) -> i32 {
     return (((total_frames + 1) * 4410000) / rate - (total_frames * 4410000) / rate) as i32;
 }
 
-// 1 フレームぶんの音を作って出力へ渡す。ADPCM を取り出して、その上に OPM を足し込む。
+// 1 フレームぶんの音を作って emu.audio に置く。ADPCM を取り出して、その上に OPM を足し込む。
 fn mix_audio(emu: X68kEmulator&, samples: i32) {
+    emu.audio_samples = 0;
     if samples <= 0 { return; }
-    var buf: i16[AUDIO_FRAME_MAX * 2] = [0; AUDIO_FRAME_MAX * 2]; // 右、左の順
+    let buf .= emu.audio;
     let count = min(samples, AUDIO_FRAME_MAX);
     for i in count {
         // データが尽きていて、続きのブロックが予約されていなければ、DMA に運ばせる
@@ -309,10 +315,20 @@ fn mix_audio(emu: X68kEmulator&, samples: i32) {
     }
     emu.mmu.adpcm.note_backlog();
     emu.mmu.fm.mix(buf[..count * 2]);
-    c_audio_output(buf[..count * 2]);
+    emu.audio_samples = count;
+}
+
+// 本体の画面と音をホスト (ウィンドウ、音声出力、スクリーンショット) へ渡す。
+// run_frame はホストに触らないので、写しの機械を別スレッドで進めても本体に影響しない。
+fn present(emu: X68kEmulator&) {
+    c_set_screen_mode(emu.ppu.screen_w, emu.ppu.screen_h);
+    c_set_frame_ready(if emu.ppu.frame_ready { 1 } else { 0 });
+    if emu.audio_samples > 0 { c_audio_output(emu.audio[..emu.audio_samples * 2]); }
+    emu.audio_samples = 0;
 }
 
 // 1 フレーム分進める (px68k WinX68k_Exec と同じ走査線単位の進め方)。
+// ホストの状態には触らない (画面の大きさ、フレームバッファ、音は emu の中に置くだけ)。
 // ブレークポイントに当たったら、フレームの途中でも hit_break を立てて戻る。
 fn run_frame(emu: X68kEmulator&) {
     assert(emu.active());
@@ -331,7 +347,7 @@ fn run_frame(emu: X68kEmulator&) {
     emu.mmu.mfp.hsync_start = (((emu.mmu.crtc_regs[0x03] as i32) + 1) * hsync_clk) / (htotal + 1);
     emu.mmu.mfp.hsync_end = hsync_clk;
 
-    ppu::begin_frame(emu.mmu);
+    emu.ppu.begin_frame(emu.mmu);
 
     var clk_count: i32 = 0;
     for vline: i32 in vline_total {
@@ -352,7 +368,7 @@ fn run_frame(emu: X68kEmulator&) {
 
     fast_clear(emu, is_31k);
     // フレーム末の CRTC 設定を画面サイズへ反映
-    ppu::apply_screen(emu.mmu);
+    emu.ppu.apply_screen(emu.mmu);
 
     mix_audio(emu, frame_samples(emu.total_frames, is_31k));
 

@@ -11,6 +11,7 @@ let ::SNAPSHOT_CAPTURE_FAILED = -3;
 
 fn run_frame(emu: X68kEmulator&) {
     emu.run_frame();
+    emu.present();
     let s .= emu.session;
     if !s.rewind_on || s.rewind_interval < 1 || emu.total_frames <= 0 { return; }
     if (emu.total_frames % (s.rewind_interval)) != 0 { return; }

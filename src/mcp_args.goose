@@ -48,6 +48,15 @@ fn json_elements(list: const u8[:], out: const u8[:][>..]&) -> bool {
     return r.error.len == 0;
 }
 
+// JSON の文字列の値 (引用符を含む、書かれたまま) を解いて out に追記する。文字列でなければ false。
+fn json_string(value: const u8[:], out: u8[>..]&) -> bool {
+    if value.len == 0 || value[0] != '"' { return false; }
+    var r = json::reader(value);
+    var scratch: u8[>..] = [];
+    out.append(json::read_string(r, scratch));
+    return json::finish(r);
+}
+
 // 文字列のメンバを out に追記する。キーが無いか、値が文字列でなければ false。
 fn extract_json_str(obj: const u8[:], key: const u8[:], out: u8[>..]&) -> bool {
     let value, found = json_member(obj, key);
