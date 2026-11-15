@@ -4,6 +4,7 @@ import std;
 import json;
 import .mcp_args;
 import .x68k_ahead;
+import .x68k_output;
 import .x68k_bridge;
 import .m68k_types;
 import .x68k_types;
@@ -797,7 +798,7 @@ fn macro_step(emu: X68kEmulator&, op: const u8[:], step: const u8[:], frames_use
         } else {
             var path_buf: u8[>..] = [];
             if !extract_json_str(step, "path", path_buf) { path_buf.append("x68k_screenshot.bmp"); }
-            if !save_frame(path_buf[..]) {
+            if !save_frame(emu, path_buf[..]) {
                 step_ok = false;
                 err.append("failed to write screenshot");
             }
@@ -1196,20 +1197,9 @@ fn tools_list(id_buf: const u8[:]) {
 }
 
 // 画面をファイルに書く。名前が .png で終わっていれば PNG、それ以外は BMP。
-fn is_png_path(path: const u8[:]) -> bool {
-    var ext: u8[4] = [0; 4];
-    if path.len >= 4 {
-        for i in 4 {
-            let c = path[path.len - 4 + i];
-            ext[i] = if c >= 'A' && c <= 'Z' { c + 32 } else { c };
-        }
-    }
-    return ext == ".png";
-}
-
-fn save_frame(path: const u8[:]) -> bool {
-    if is_png_path(path) { return c_save_fb_png(path) != 0; }
-    return c_save_fb_bmp(path) != 0;
+// 本体が今表示している画面を書く
+fn save_frame(emu: X68kEmulator&, path: const u8[:]) -> bool {
+    return output::save_image(path, emu.ppu.fb[..], emu.ppu.screen_w, emu.ppu.screen_h);
 }
 
 fn tool_screenshot(emu: X68kEmulator&, args: const u8[:], id_buf: const u8[:]) {
@@ -1267,7 +1257,7 @@ fn tool_screenshot(emu: X68kEmulator&, args: const u8[:], id_buf: const u8[:]) {
     if !extract_json_str(args, "path", path_buf) {
         path_buf.append("x68k_screenshot.bmp");
     }
-    if !save_frame(path_buf[..]) {
+    if !save_frame(emu, path_buf[..]) {
         write_text(id_buf, "failed to write screenshot", true);
         return;
     }
@@ -1369,7 +1359,7 @@ fn tool_audio_record(emu: X68kEmulator&, args: const u8[:], id_buf: const u8[:])
         return;
     }
     if act == "start" {
-        c_audio_capture_start();
+        output::capture_start();
         var obj: u8[>..] = [];
         obj.append("{\"action\":\"start\",\"sample_rate\":44100,\"cap_seconds\":60");
         append_machine(obj, emu, 0, false, true);
@@ -1378,14 +1368,11 @@ fn tool_audio_record(emu: X68kEmulator&, args: const u8[:], id_buf: const u8[:])
         return;
     }
     if act == "status" {
-        var active: i32 = 0;
-        var frames: i32 = 0;
-        var trunc: i32 = 0;
-        c_audio_capture_status(active, frames, trunc);
-        let on = if active != 0 { "true" } else { "false" };
-        let tr = if trunc != 0 { "true" } else { "false" };
+        let st = output::capture_status();
+        let on = if st.active { "true" } else { "false" };
+        let tr = if st.truncated { "true" } else { "false" };
         var obj: u8[>..] = [];
-        format(obj, "{\"action\":\"status\",\"active\":", on, ",\"frames\":", frames, ",\"truncated\":", tr);
+        format(obj, "{\"action\":\"status\",\"active\":", on, ",\"frames\":", st.frames, ",\"truncated\":", tr);
         append_machine(obj, emu, 0, false, true);
         obj.append("}");
         write_object(id_buf, obj);
@@ -1394,16 +1381,13 @@ fn tool_audio_record(emu: X68kEmulator&, args: const u8[:], id_buf: const u8[:])
     if act == "stop" {
         var path_buf: u8[>..] = [];
         extract_json_str(args, "path", path_buf); // 無ければ空のまま。ファイルは書かずに結果だけ返す
-        var frames: i32 = 0;
-        var trunc: i32 = 0;
-        var peak: i32 = 0;
-        var silent: i32 = 0;
-        if c_audio_capture_stop(path_buf[..], frames, trunc, peak, silent) == 0 {
+        let ok, frames, trunc, peak, silent = output::capture_stop(path_buf[..]);
+        if !ok {
             write_text(id_buf, "failed to write WAV to path", true);
             return;
         }
-        let tr = if trunc != 0 { "true" } else { "false" };
-        let sil = if silent != 0 { "true" } else { "false" };
+        let tr = if trunc { "true" } else { "false" };
+        let sil = if silent { "true" } else { "false" };
         var obj: u8[>..] = [];
         format(obj, "{\"action\":\"stop\",\"frames\":", frames, ",\"truncated\":", tr, ",\"peak\":", peak, ",\"silent\":", sil);
         append_machine(obj, emu, 0, false, true);
@@ -1795,7 +1779,7 @@ fn tool_run_ahead(emu: X68kEmulator&, args: const u8[:], id_buf: const u8[:]) {
         let path = paths[i][..];
         if path.len == 0 {
             obj.append("null");
-        } else if c_save_pixels(r.fb[..pixels], r.screen_w, r.screen_h, path, if is_png_path(path) { 1 } else { 0 }) == 0 {
+        } else if !output::save_image(path, r.fb[..pixels], r.screen_w, r.screen_h) {
             write_text(id_buf, str("failed to write the screenshot for variant ", i), true);
             return;
         } else {

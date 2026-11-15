@@ -12,6 +12,7 @@ import .x68k_input;
 import .x68k_config;
 import .launch_args;
 import .x68k_disk;
+import .x68k_output;
 
 fn launch_error(message: const u8[:]) {
     write_stderr(message);
@@ -38,8 +39,8 @@ fn print_help() {
         "No default disk. GUI preferences: .\\arcl_windows_x68k_goose.ini\n"));
 }
 
-fn write_dump(path: const u8[:]) {
-    if c_save_fb_png(path) == 0 {
+fn write_dump(emu: X68kEmulator&, path: const u8[:]) {
+    if !output::save_image(path, emu.ppu.fb[..], emu.ppu.screen_w, emu.ppu.screen_h) {
         write_stderr("dump-frame: FAILED to write\n");
     } else {
         write_stderr("dump-frame: wrote\n");
@@ -179,7 +180,7 @@ fn run_gui(emu: X68kEmulator&, screen_w: i32, screen_h: i32, scale: i32, max_fra
 
         if max_frames > 0 && emu.total_frames >= max_frames { break; }
         if dump_path.len > 0 && !dumped && emu.total_frames >= dump_after {
-            write_dump(dump_path);
+            write_dump(emu, dump_path);
             dumped = true;
         }
 
@@ -207,7 +208,7 @@ fn run_headless(emu: X68kEmulator&, frames: i64, dump_path: const u8[:]) {
         emu.clock_mhz = c_get_cpu_mhz();
         session::run_frame(emu);
     }
-    if dump_path.len > 0 { write_dump(dump_path); }
+    if dump_path.len > 0 { write_dump(emu, dump_path); }
     write_stderr(str("frames: ", emu.total_frames, "\n"));
 }
 

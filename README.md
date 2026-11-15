@@ -23,6 +23,7 @@ goose_sharp_x68000/
     mcp_args.goose        MCPの引数の取り出し
     launch_args.goose     起動引数の解釈
     x68k_ahead.goose      先読み（機械の写しを別スレッドで進める）
+    x68k_output.goose     画面と音のファイルへの書き出し
     x68k_*.goose          機器・描画・保存・共有サービス
     test_core.goose/.build コアの単体テスト
     x68k_bridge.c/.h      Win32・ファイル・音声出力
@@ -271,7 +272,7 @@ goose build .\src\main.goose -o .\arcl_windows_x68k_goose.exe
 goose build .\src\main.goose --debug -o .\arcl_windows_x68k_goose_debug.exe
 ```
 
-Gooseがソースと同じフォルダの [src/main.build](src/main.build) を使用します。`c_sources` と `c_include` の相対パスはこの配置を前提としているため、`src` 内のファイルはまとめて維持してください。C部分は `src/x68k_bridge.c` と `src/x68k_config.c` で、Win32（ウィンドウ、入力、音声の再生）とファイルの書き出しだけを受け持ちます。機械（CPU・周辺機器・音源）はすべてGooseです。
+Gooseがソースと同じフォルダの [src/main.build](src/main.build) を使用します。`c_sources` と `c_include` の相対パスはこの配置を前提としているため、`src` 内のファイルはまとめて維持してください。C部分は `src/x68k_bridge.c` と `src/x68k_config.c` で、Win32（ウィンドウ、入力、音声の再生、ファイル選択、ディレクトリ一覧）とINIだけを受け持ちます。機械（CPU・周辺機器・音源）と、画面・音のファイルへの書き出しはGooseです。
 
 `-o` でexeをプロジェクトのルートへ出力することで、実行時の `keropi` とINIの場所も分かりやすくなります。`src` 内にexeを置いた場合でも、BIOSやINIの基準はexeの場所ではなく、起動時のカレントディレクトリです。
 
@@ -292,7 +293,8 @@ Gooseがソースと同じフォルダの [src/main.build](src/main.build) を�
 | [src/x68k_session.goose](src/x68k_session.goose) / [src/x68k_input.goose](src/x68k_input.goose) | フロントエンド共通の実行制御と入力 |
 | [src/mcp_server.goose](src/mcp_server.goose) / [src/mcp_args.goose](src/mcp_args.goose) | JSON-RPCの解析・公開ツール・応答 / 引数の取り出し |
 | [src/x68k_config.c](src/x68k_config.c) | GUI用INI。機械の保存状態とは独立 |
-| `src/x68k_bridge.c` | Win32・画像と音声のファイル書き出し・音声デバイス |
+| [src/x68k_output.goose](src/x68k_output.goose) | 画面（BMP・PNG）と音（WAV）の書き出し、録音 |
+| `src/x68k_bridge.c` | Win32（ウィンドウ・入力・音声デバイス・ファイル選択） |
 
 元の開発ツリーではrelease/debugのCPU・機器・保存・寿命管理・設定のテストと、超連射68K・Doomの起動および保存復帰を確認しています。設定については、ARCLとの分離、CLIの優先、初回空起動、書き込み失敗時の既存INI維持も検証しています。
 
@@ -305,7 +307,7 @@ goose build .\src\test_core.goose -o .\test_core.exe
 .\test_core.exe
 ```
 
-すべて通ると `409 / 409 checks passed` と表示し、失敗があれば内容を出して終了コード1で終わります。`--debug` を付けてビルドすると、桁あふれと範囲の検査も有効になります。
+すべて通ると `422 / 422 checks passed` と表示し、失敗があれば内容を出して終了コード1で終わります。`--debug` を付けてビルドすると、桁あふれと範囲の検査も有効になります。
 
 ## 困ったとき・既知の制限
 

@@ -44,13 +44,6 @@ extern fn c_cpu_mhz_ok(mhz: i32) -> i32;
 
 extern fn c_host_local_seconds() -> i64;
 
-extern fn c_save_fb_bmp(path: const u8[:]) -> i32;
-extern fn c_save_fb_png(path: const u8[:]) -> i32;
-// Writes w x h pixels from px (row by row) as a PNG (png = 1) or a BMP.
-extern fn c_save_pixels(px: const u32[:], w: i32, h: i32, path: const u8[:], png: i32) -> i32;
-extern fn c_audio_capture_start();
-extern fn c_audio_capture_status(active: i32&, frames: i32&, truncated: i32&);
-extern fn c_audio_capture_stop(path: const u8[:], frames: i32&, truncated: i32&, peak: i32&, silent: i32&) -> i32;
 extern fn c_host_list_dir(path: const u8[:], out: u8&, cap: i32) -> i32;
 
 // Native-only compatibility/test helpers. Machine callers use x68k_state.
@@ -82,5 +75,5 @@ extern fn c_get_screen_height() -> i32;
 extern fn c_set_frame_ready(ready: i32);
 
 // Audio / Sound API
-// One frame of finished interleaved stereo samples, for the audio device and the capture buffer.
+// One frame of finished interleaved stereo samples, for the audio device.
 extern fn c_audio_output(samples: const i16[:]);

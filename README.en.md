@@ -24,6 +24,7 @@ goose_sharp_x68000/
     mcp_args.goose        Reading MCP tool arguments
     launch_args.goose     Parsing launch arguments
     x68k_ahead.goose      Running copies of the machine ahead on worker threads
+    x68k_output.goose     Writing screens and sound to files
     x68k_*.goose          Devices, rendering, save state, shared services
     test_core.goose/.build Unit tests of the core
     x68k_bridge.c/.h      Win32, file I/O, audio output
@@ -272,7 +273,7 @@ Use a different output name for debug builds.
 goose build .\src\main.goose --debug -o .\arcl_windows_x68k_goose_debug.exe
 ```
 
-Goose uses [src/main.build](src/main.build), located in the same folder as the source. The relative paths in `c_sources` and `c_include` assume this layout, so keep the files under `src` together. The C parts are `src/x68k_bridge.c` and `src/x68k_config.c`; they handle only Win32 (window, input, audio playback) and writing files. The machine (CPU, peripherals, sound chips) is all Goose.
+Goose uses [src/main.build](src/main.build), located in the same folder as the source. The relative paths in `c_sources` and `c_include` assume this layout, so keep the files under `src` together. The C parts are `src/x68k_bridge.c` and `src/x68k_config.c`; they handle only Win32 (window, input, audio playback, file dialog, directory listing) and the INI file. The machine (CPU, peripherals, sound chips) and writing screens and sound to files are Goose.
 
 Using `-o` to output the exe at the project root also keeps the locations of `keropi` and the INI file clear at runtime. Even if you place the exe inside `src`, the reference point for the BIOS and INI files is the current directory at launch time, not the exe's own location.
 
@@ -293,7 +294,8 @@ This public-distribution layout does not include `tools/architecture/build.ps1` 
 | [src/x68k_session.goose](src/x68k_session.goose) / [src/x68k_input.goose](src/x68k_input.goose) | Shared execution control and input handling across frontends |
 | [src/mcp_server.goose](src/mcp_server.goose) / [src/mcp_args.goose](src/mcp_args.goose) | JSON-RPC parsing, exposed tools, responses / reading tool arguments |
 | [src/x68k_config.c](src/x68k_config.c) | GUI INI handling. Independent of machine save states |
-| `src/x68k_bridge.c` | Win32, writing image and audio files, audio device |
+| [src/x68k_output.goose](src/x68k_output.goose) | Writing screens (BMP, PNG) and sound (WAV) to files, audio recording |
+| `src/x68k_bridge.c` | Win32 (window, input, audio device, file dialog) |
 
 In the original development tree, release/debug CPU, device, save, lifecycle-management, and configuration tests have been run, along with confirming boot and save/restore for Chourenjin 68K and Doom. For configuration, separation from ARCL, CLI priority, the initial empty boot, and retaining the existing INI on a failed write have also been verified.
 
@@ -306,7 +308,7 @@ goose build .\src\test_core.goose -o .\test_core.exe
 .\test_core.exe
 ```
 
-It prints `409 / 409 checks passed` when everything passes, and reports each failure and exits with status 1 otherwise. Building with `--debug` also enables the overflow and range checks.
+It prints `422 / 422 checks passed` when everything passes, and reports each failure and exits with status 1 otherwise. Building with `--debug` also enables the overflow and range checks.
 
 ## Troubleshooting and known limitations
 

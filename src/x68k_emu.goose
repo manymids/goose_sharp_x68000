@@ -13,6 +13,7 @@ import .x68k_sasi;
 import .x68k_disk;
 import .x68k_adpcm;
 import .x68k_opm;
+import .x68k_output;
 import .x68k_ram;
 import .x68k_rom;
 import .x68k_session_types;
@@ -323,7 +324,11 @@ fn mix_audio(emu: X68kEmulator&, samples: i32) {
 fn present(emu: X68kEmulator&) {
     c_set_screen_mode(emu.ppu.screen_w, emu.ppu.screen_h);
     c_set_frame_ready(if emu.ppu.frame_ready { 1 } else { 0 });
-    if emu.audio_samples > 0 { c_audio_output(emu.audio[..emu.audio_samples * 2]); }
+    if emu.audio_samples > 0 {
+        let frame = emu.audio[..emu.audio_samples * 2];
+        output::capture_push(frame);
+        c_audio_output(frame);
+    }
     emu.audio_samples = 0;
 }
 

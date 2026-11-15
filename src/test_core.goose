@@ -19,6 +19,7 @@ import .mcp_args;
 import .launch_args;
 import .x68k_adpcm;
 import .x68k_opm;
+import .x68k_output;
 
 var g_checks = 0;
 var g_failures = 0;
@@ -1008,6 +1009,53 @@ fn test_opm() {
     check("opm: a reset silences every voice", buf[100] == 0 && g_fm.read_status() == 0);
 }
 
+// ファイルの書き出し (x68k_output)。値は各形式の仕様と、元の C の実装が書いたファイルで確かめた。
+fn le32(b: u8[>..]&, at: i64) -> u32 {
+    let lo: u32 = b[at];
+    let b1: u32 = b[at + 1];
+    let b2: u32 = b[at + 2];
+    let b3: u32 = b[at + 3];
+    return lo | (b1 << 8) | (b2 << 16) | (b3 << 24);
+}
+
+fn test_output() {
+    // CRC-32 の標準の検査値と、PNG の IEND の CRC
+    check("output: CRC-32 of 123456789", ~output::crc_update(0xFFFFFFFF, "123456789") == 0xCBF43926);
+    check("output: CRC-32 of IEND", ~output::crc_update(0xFFFFFFFF, "IEND") == 0xAE426082);
+
+    let px: u32[6] = [0xFF102030, 0xFF405060, 0xFF708090, 0xFFA0B0C0, 0xFFD0E0F0, 0xFF000000];
+    var bmp: u8[>..] = [];
+    output::bmp_bytes(px[..], 3, 2, bmp);
+    check("output: BMP size and header", bmp.len == 54 + 24 && bmp[0] == 'B' && bmp[1] == 'M' && le32(bmp, 2) == 78 && le32(bmp, 10) == 54);
+    check("output: BMP width and height", le32(bmp, 18) == 3 && le32(bmp, 22) == 2);
+    // 下の行が先。画素は B, G, R, A の順
+    check("output: BMP rows bottom up", bmp[54] == 0xC0 && bmp[55] == 0xB0 && bmp[56] == 0xA0 && bmp[54 + 12] == 0x30);
+
+    var png: u8[>..] = [];
+    output::png_bytes(px[..], 3, 2, png);
+    check("output: PNG signature", png.len > 33 && png[0] == 137 && png[1] == 'P' && png[2] == 'N' && png[3] == 'G');
+    check("output: PNG IHDR", png[12] == 'I' && png[15] == 'R' && png[19] == 3 && png[23] == 2 && png[24] == 8 && png[25] == 2);
+    check("output: PNG ends with IEND", png[png.len - 8] == 'I' && png[png.len - 5] == 'D' && png[png.len - 1] == 0x82);
+
+    let samples: i16[4] = [1, -1, 32767, -32768];
+    var wav: u8[>..] = [];
+    output::wav_bytes(samples[..], wav);
+    check("output: WAV header", wav.len == 44 + 8 && wav[0] == 'R' && wav[8] == 'W' && le32(wav, 4) == 36 + 8 && le32(wav, 24) == 44100 && le32(wav, 40) == 8);
+    check("output: WAV samples little endian", wav[44] == 1 && wav[45] == 0 && wav[46] == 0xFF && wav[47] == 0xFF && wav[50] == 0x00 && wav[51] == 0x80);
+
+    output::capture_start();
+    output::capture_push(samples[..]);
+    output::capture_push(samples[..2]);
+    let st = output::capture_status();
+    check("output: capture counts stereo frames", st.active && st.frames == 3 && !st.truncated);
+    let ok, frames, trunc, peak, silent = output::capture_stop("");
+    check("output: stop without a path reports the take", ok && frames == 3 && !trunc && peak == 32768 && !silent);
+    // 始め直すとサンプル数は 0 に戻る。1 サンプルも無ければ、元の C と同じくファイルを作らずに失敗する
+    output::capture_start();
+    let ok2, frames2, _, _, _ = output::capture_stop("never_written.wav");
+    check("output: a path with no samples fails, as before", !ok2 && frames2 == 0);
+}
+
 fn main() {
     test_flag_helpers();
     test_conditions();
@@ -1032,6 +1080,7 @@ fn main() {
     test_launch_args();
     test_adpcm();
     test_opm();
+    test_output();
     print(g_checks - g_failures, " / ", g_checks, " checks passed");
     if g_failures > 0 { exit(1); }
 }

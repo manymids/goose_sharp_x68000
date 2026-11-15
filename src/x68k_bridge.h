@@ -61,17 +61,8 @@ void c_startup_error(void);
 /* Host local time as seconds since 1970-01-01 of the local calendar. */
 int64_t c_host_local_seconds(void);
 
-// BMP screenshot saver
-int c_save_fb_bmp(X68kByteView path);
-int c_save_fb_png(X68kByteView path);
-int c_save_pixels(X68kPixelView px, int32_t w, int32_t h, X68kByteView path, int32_t png);
-void c_audio_capture_start(void);
-void c_audio_capture_status(int *active, int *frames, int *truncated);
-int c_audio_capture_stop(X68kByteView path, int *frames, int *truncated, int *peak, int *silent);
+// Directory listing for arcl_host_dir (names, kinds and sizes as JSON)
 int c_host_list_dir(X68kByteView path, char *out, int cap);
-
-// ARCL Hardware State Save/Load
-/* Native-only helpers; machine checkpoints are coordinated by x68k_state. */
 
 // Hardware Memory Buffer management
 int x68k_mem_init(X68kByteView sys_dir);
