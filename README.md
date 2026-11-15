@@ -21,6 +21,7 @@ goose_sharp_x68000/
     m68k_*.goose          CPU・MMU・逆アセンブラ
     mcp_server.goose      ARCL MCP
     mcp_args.goose        MCPの引数の取り出し
+    launch_args.goose     起動引数の解釈
     x68k_*.goose          機器・描画・保存・共有サービス
     test_core.goose/.build コアの単体テスト
     x68k_bridge.c/.h      Win32・ファイル・音声出力
@@ -259,7 +260,7 @@ Gooseがソースと同じフォルダの [src/main.build](src/main.build) を�
 
 | 配置 | 担当 |
 |---|---|
-| [src/main.goose](src/main.goose) | 起動引数・GUI/ARCLのイベントループ |
+| [src/main.goose](src/main.goose) / [src/launch_args.goose](src/launch_args.goose) | 起動・GUI/ARCLのイベントループ / 起動引数の解釈 |
 | `src/m68k_*` | CPU命令・MMU |
 | `src/x68k_mfp/fdc/dmac/sasi/rtc.goose` | 周辺機器 |
 | [src/x68k_disk.goose](src/x68k_disk.goose) | FD（XDF・D88・DIM）とHDDのイメージ |
@@ -282,7 +283,7 @@ goose build .\src\test_core.goose -o .\test_core.exe
 .\test_core.exe
 ```
 
-すべて通ると `361 / 361 checks passed` と表示し、失敗があれば内容を出して終了コード1で終わります。`--debug` を付けてビルドすると、桁あふれと範囲の検査も有効になります。
+すべて通ると `381 / 381 checks passed` と表示し、失敗があれば内容を出して終了コード1で終わります。`--debug` を付けてビルドすると、桁あふれと範囲の検査も有効になります。
 
 ## 困ったとき・既知の制限
 

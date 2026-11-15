@@ -10,6 +10,7 @@ import .mcp_server;
 import .x68k_session;
 import .x68k_input;
 import .x68k_config;
+import .launch_args;
 import .x68k_disk;
 
 fn launch_error(message: const u8[:]) {
@@ -37,15 +38,15 @@ fn print_help() {
         "No default disk. GUI preferences: .\\arcl_windows_x68k_goose.ini\n"));
 }
 
-fn write_dump(path: u8[>..]&) {
-    if c_save_fb_png(path[..]) == 0 {
+fn write_dump(path: const u8[:]) {
+    if c_save_fb_png(path) == 0 {
         write_stderr("dump-frame: FAILED to write\n");
     } else {
         write_stderr("dump-frame: wrote\n");
     }
 }
 
-fn print_banner(content_path: u8[>..]&, sys_dir: u8[>..]&) {
+fn print_banner(content_path: const u8[:], sys_dir: const u8[:]) {
     print("=================================================");
     print("  Goose Sharp X68000 Native Emulator (Win32)     ");
     print("=================================================");
@@ -148,7 +149,7 @@ fn run_mcp(emu: X68kEmulator&, want_window: bool, screen_w: i32, screen_h: i32, 
 }
 
 // Win32 ウィンドウで実時間に合わせて動かす。max_frames > 0 ならその数で終わる。
-fn run_gui(emu: X68kEmulator&, screen_w: i32, screen_h: i32, scale: i32, max_frames: i64, dump_path: u8[>..]&, dump_after: i64) {
+fn run_gui(emu: X68kEmulator&, screen_w: i32, screen_h: i32, scale: i32, max_frames: i64, dump_path: const u8[:], dump_after: i64) {
     if !open_window(screen_w, screen_h, scale) {
         print("ERROR: Failed to create Win32 window!");
         return;
@@ -201,7 +202,7 @@ fn run_gui(emu: X68kEmulator&, screen_w: i32, screen_h: i32, scale: i32, max_fra
 }
 
 // ウィンドウなしで frames フレームだけ進める。
-fn run_headless(emu: X68kEmulator&, frames: i64, dump_path: u8[>..]&) {
+fn run_headless(emu: X68kEmulator&, frames: i64, dump_path: const u8[:]) {
     for _ in frames {
         emu.clock_mhz = c_get_cpu_mhz();
         session::run_frame(emu);
@@ -211,119 +212,35 @@ fn run_headless(emu: X68kEmulator&, frames: i64, dump_path: u8[>..]&) {
 }
 
 fn main() {
-    var content_path: u8[>..] = [];
+    var opt = LaunchOptions {};
+    // 引数 0 はプログラム名。読むだけなので const のスライスの並びに写す
+    // (u8[:] の並びは、そのままでは const u8[:] の並びとして渡せない)。
+    let raw_args = args();
+    var cmd_args: const u8[:][>..] = [];
+    for arg in raw_args[1..] { cmd_args.push(arg); }
+    let problem = launch::parse(cmd_args, opt);
+    if problem.len > 0 { launch_error(problem); }
+    if opt.help { print_help(); return; }
+    if opt.ram_ignored { write_stderr("warning: --ram is ignored; RAM is fixed at 12 MB\n"); }
+    if opt.layers >= 0 { mcp::set_layers(opt.layers); }
+
+    let mcp_mode = opt.mcp_mode;
+    let no_window = opt.no_window;
+    let content_path = opt.content_path[..];
     var sys_dir: u8[>..] = [];
-    var clock_mhz: i32 = 10;
-    var mcp_mode = false;
-    var no_window = false;
-    var max_frames: i64 = -1;
-    var frames_set = false;
-    var screen_w: i32 = 768; // デフォルト 768x512
-    var screen_h: i32 = 512;
-    var sys_set = false;
-    var clock_set = false;
-    var mode_set = false;
-    var scale_set = false;
-    var content_set = false;
-    var scale: i32 = 1;
-    var help = false;
-    var positional = false;
-    var dump_path: u8[>..] = [];
-    var dump_after: i64 = 1200;
-
-    let cmd_args = args();
-    var arg_idx = 1;
-    while arg_idx < cmd_args.len {
-        let arg = cmd_args[arg_idx];
-        if positional {
-            content_path.clear(); content_path.append(arg); content_set = true;
-        } else if arg == "--" {
-            positional = true;
-        } else if arg == "--help" || arg == "-h" {
-            help = true;
-        } else if arg == "--mcp" {
-            mcp_mode = true;
-        } else if arg == "--no-window" {
-            no_window = true;
-        } else if arg == "--mode" && arg_idx + 1 < cmd_args.len {
-            arg_idx++;
-            let m = cmd_args[arg_idx];
-            if m == "512" || m == "512x512" {
-                screen_w = 512;
-            } else if m == "768" || m == "768x512" {
-                screen_w = 768;
-            } else { launch_error("--mode must be 512 or 768\n"); }
-            mode_set = true;
-        } else if arg == "-768" || arg == "--768" {
-            screen_w = 768;
-            mode_set = true;
-        } else if arg == "-512" || arg == "--512" {
-            screen_w = 512;
-            mode_set = true;
-        } else if arg == "--system-dir" && arg_idx + 1 < cmd_args.len {
-            arg_idx++;
-            sys_dir.clear();
-            sys_dir.append(cmd_args[arg_idx]);
-            sys_set = true;
-        } else if arg == "--clock" && arg_idx + 1 < cmd_args.len {
-            arg_idx++;
-            let n, ok = parse_int(cmd_args[arg_idx]);
-            if !ok || n < 1 || n > 250 { launch_error("invalid --clock value\n"); }
-            clock_mhz = n as i32; clock_set = true;
-        } else if arg == "--scale" && arg_idx + 1 < cmd_args.len {
-            arg_idx++;
-            let n, ok = parse_int(cmd_args[arg_idx]);
-            if !ok || n < 1 || n > 2 { launch_error("--scale must be 1 or 2\n"); }
-            scale = n as i32; scale_set = true;
-        } else if arg == "--no-disk" {
-            content_path.clear(); content_set = true;
-        } else if arg == "--frames" && arg_idx + 1 < cmd_args.len {
-            arg_idx++;
-            let n, ok = parse_int(cmd_args[arg_idx]);
-            if !ok || n < 1 { launch_error("--frames must be a positive integer\n"); }
-            max_frames = n; frames_set = true;
-        } else if arg == "--dump-frame" && arg_idx + 1 < cmd_args.len {
-            arg_idx++;
-            dump_path.clear();
-            dump_path.append(cmd_args[arg_idx]);
-        } else if arg == "--dump-after-frames" && arg_idx + 1 < cmd_args.len {
-            arg_idx++;
-            let n, ok = parse_int(cmd_args[arg_idx]);
-            if !ok || n < 1 { launch_error("--dump-after-frames must be positive\n"); }
-            dump_after = n;
-        } else if arg == "--mcp-layers" && arg_idx + 1 < cmd_args.len {
-            arg_idx++;
-            let mask = mcp::parse_layers(cmd_args[arg_idx]);
-            if mask < 0 {
-                launch_error("--mcp-layers: expected l0,l1,l2,l3,l4 or all\n");
-            }
-            mcp::set_layers(mask);
-        } else if arg == "--ram" && arg_idx + 1 < cmd_args.len {
-            // 互換のために受け取る。RAM は 12 MB 固定なので、違う値には一言出す。
-            arg_idx++;
-            let n, ok = parse_int(cmd_args[arg_idx]);
-            if !ok || n != 12 { write_stderr("warning: --ram is ignored; RAM is fixed at 12 MB\n"); }
-        } else {
-            if arg.len > 0 && arg[0] == '-' { launch_error("unknown option or missing option value (use --help)\n"); }
-            content_path.clear();
-            content_path.append(arg);
-            content_set = true;
-        }
-        arg_idx++;
-    }
-
-    if help { print_help(); return; }
-    if no_window && !mcp_mode && !frames_set && dump_path.len == 0 {
-        launch_error("--no-window requires --frames N or --dump-frame PATH\n");
-    }
+    sys_dir.append(opt.sys_dir);
+    var clock_mhz = opt.clock_mhz;
+    var screen_w = opt.screen_w;
+    let screen_h = opt.screen_h;
+    var scale = opt.scale;
     let gui_preferences = !mcp_mode && !no_window;
     c_gui_settings_open(if gui_preferences { 1 } else { 0 });
     // ARCL とヘッドレス実行は毎回同じ SRAM から始める。終了時に sram.dat を書き戻すのは GUI だけ。
     c_sram_set_persist(if gui_preferences { 1 } else { 0 });
-    if !sys_set { sys_dir = gui_settings_path(GUI_BIOS); }
-    if !clock_set { clock_mhz = c_gui_settings_int(GUI_CLOCK); }
-    if !mode_set { screen_w = c_gui_settings_int(GUI_WIDTH); }
-    if !scale_set { scale = c_gui_settings_int(GUI_SCALE); }
+    if !opt.sys_set { sys_dir = gui_settings_path(GUI_BIOS); }
+    if !opt.clock_set { clock_mhz = c_gui_settings_int(GUI_CLOCK); }
+    if !opt.mode_set { screen_w = c_gui_settings_int(GUI_WIDTH); }
+    if !opt.scale_set { scale = c_gui_settings_int(GUI_SCALE); }
     c_gui_settings_set_int(GUI_WIDTH, screen_w);
     if sys_dir.len == 0 { launch_error("BIOS directory is empty; use --system-dir PATH\n"); }
 
@@ -342,12 +259,12 @@ fn main() {
         if !mcp_mode && !no_window { c_startup_error(); }
         exit(1);
     }
-    if gui_preferences && !content_set {
+    if gui_preferences && !opt.content_set {
         gui_mount_saved_media();
     } else {
         disk::power_on();
         if content_path.len > 0 {
-            let loaded = if disk::path_is_hdd(content_path[..]) { disk::hdd_load(content_path[..]) } else { disk::fd_load(0, content_path[..]) };
+            let loaded = if disk::path_is_hdd(content_path) { disk::hdd_load(content_path) } else { disk::fd_load(0, content_path) };
             if !loaded {
                 x68k_mem_destroy();
                 launch_error("disk image could not be loaded\n");
@@ -367,11 +284,11 @@ fn main() {
         run_mcp(emu, !no_window, screen_w, screen_h, scale);
     } else if !no_window {
         print_banner(content_path, sys_dir);
-        run_gui(emu, screen_w, screen_h, scale, max_frames, dump_path, dump_after);
+        run_gui(emu, screen_w, screen_h, scale, opt.max_frames, opt.dump_path[..], opt.dump_after);
     } else {
         print_banner(content_path, sys_dir);
         // Without --frames the earlier check guarantees --dump-frame.
-        run_headless(emu, if frames_set { max_frames } else { dump_after }, dump_path);
+        run_headless(emu, if opt.frames_set { opt.max_frames } else { opt.dump_after }, opt.dump_path[..]);
     }
     x68k_mem_destroy();
 }

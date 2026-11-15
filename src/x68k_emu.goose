@@ -201,7 +201,100 @@ fn nominal_fps(mmu: M68kMMU&) -> i32 {
     return ((10000000 + cycles / 2) / cycles) as i32;
 }
 
-// 1フレーム分のエミュレーション実行 (px68k WinX68k_Exec 走査線駆動準拠)
+// 走査線の始まり (水平同期の立ち上がり)。この時点の CRTC の設定で割り込みを起こす。
+// ゲームはフレームの途中でラスタ割り込みのラインを書き換えるので、px68k と同じく毎ライン読む。
+fn line_start(emu: X68kEmulator&, vline: i32, vline_total: i32) {
+    let mfp .= emu.mmu.mfp;
+    let crtc_vstart = emu.mmu.crtc_word(CRTC_VSTART) & 1023;
+    let crtc_vend = emu.mmu.crtc_word(CRTC_VEND) & 1023;
+    let crtc_intline = emu.mmu.crtc_word(CRTC_RASTER) & 1023;
+    mfp.crtc_intline = crtc_intline;
+    mfp.cur_vline = vline;
+    mfp.line_cycles = 0;
+    mfp.in_vdisp = (vline >= crtc_vstart && vline < crtc_vend);
+
+    // HSYNC 割り込み & Timer B HSYNC イベントカウント
+    mfp.trigger_int(MFP_IRQ_HSYNC);
+    mfp.timer_b_hsync();
+
+    // CRTC ラスタ割り込み (IERA bit 1 / AER bit 6 == 0)
+    if (mfp.regs[MFP_AER] & 0x40) == 0 && vline == crtc_intline {
+        mfp.trigger_int(MFP_IRQ_RASTER);
+    }
+
+    // V-DISP 割り込み (AER bit 4)。立ち上がりなら表示の始まり、立ち下がりなら表示の終わりで起こす。
+    let vdisp_line = if (mfp.regs[MFP_AER] & 0x10) != 0 { crtc_vstart }
+        else if crtc_vend >= vline_total { crtc_vend - vline_total }
+        else { vline_total - 1 };
+    if vline == vdisp_line { mfp.trigger_int(MFP_IRQ_VDISP); }
+}
+
+// 表示期間の走査線 1 本を描く。px68k WinDraw_DrawLine と同じく、ラインの終わりのレジスタで描く。
+fn draw_scanline(emu: X68kEmulator&, vline: i32, crtc_vstart: i32) {
+    let mode29 = emu.mmu.crtc_regs[0x29];
+    let vstep: i32 = if (mode29 & 0x14) == 0x10 { 1 } else if (mode29 & 0x14) == 0x04 { 4 } else { 2 };
+    let sy = ((vline - crtc_vstart) * vstep) / 2;
+    if vstep == 1 {
+        // 走査線 2 本で画面の 1 行
+        if (vline & 1) != 0 { emu.ppu.draw_line(emu.mmu, sy); }
+    } else if vstep == 4 {
+        // 走査線 1 本で画面の 2 行
+        emu.ppu.draw_line(emu.mmu, sy);
+        emu.ppu.draw_line(emu.mmu, sy + 1);
+    } else {
+        emu.ppu.draw_line(emu.mmu, sy);
+    }
+}
+
+// 走査線の終わり。CPU がこのラインで書いた設定を使う。
+fn line_end(emu: X68kEmulator&, vline: i32, vline_total: i32, clk_line: i32) {
+    let crtc_vstart = emu.mmu.crtc_word(CRTC_VSTART) & 1023;
+    let crtc_vend = emu.mmu.crtc_word(CRTC_VEND) & 1023;
+    let crtc_intline = emu.mmu.crtc_word(CRTC_RASTER) & 1023;
+    emu.mmu.mfp.crtc_intline = crtc_intline;
+    emu.mmu.mfp.timer_a(vline, crtc_vstart, crtc_vend, vline_total);
+    if (emu.mmu.mfp.regs[MFP_AER] & 0x40) != 0 && vline == crtc_intline {
+        emu.mmu.mfp.trigger_int(MFP_IRQ_RASTER);
+    }
+
+    // 音源のタイマーを 1 ライン分進める
+    emu.mmu.dmac.sound_push();
+    c_sound_scanline_timer(clk_line as u32);
+    emu.mmu.dmac.sound_pull();
+    if c_sound_poll_irq() != 0 {
+        emu.mmu.mfp.trigger_int(MFP_IRQ_OPM);
+    }
+
+    if vline >= crtc_vstart && vline < crtc_vend { draw_scanline(emu, vline, crtc_vstart); }
+    emu.mmu.mfp.key_scanline(vline_total);
+}
+
+// CRTC の高速クリア。指示のあったフレームの終わりに GVRAM を消し、数フレーム後にビットを落とす。
+fn fast_clear(emu: X68kEmulator&, is_31k: bool) {
+    if (emu.mmu.crtc_mode & 2) == 0 { return; }
+    if emu.mmu.crtc_fast_clr > 0 {
+        emu.mmu.crtc_fast_clr--;
+        if emu.mmu.crtc_fast_clr == 0 {
+            emu.mmu.crtc_mode &= 0xFD;
+        }
+    } else {
+        // 確認メモ: ビットが立っているとき 1、落ちているとき 2。入れ替えない。
+        emu.mmu.crtc_fast_clr = if is_31k { 1 } else { 2 };
+        let sx = (emu.mmu.crtc_word(CRTC_GRP_X) & 511) as u32;
+        let sy = (emu.mmu.crtc_word(CRTC_GRP_Y) & 511) as u32;
+        emu.mmu.gvram_fast_clear(emu.mmu.crtc_regs[0x2B], emu.mmu.crtc_regs[0x29], sx, sy);
+    }
+}
+
+// このフレームで合成する音のサンプル数 (44.1 kHz)。31 kHz の画面は 55.46 Hz、15 kHz の画面は 61.46 Hz。
+// 端数を持ち越すので、フレームごとに 1 サンプル違うことがある。
+fn frame_samples(total_frames: i64, is_31k: bool) -> i32 {
+    let rate: i64 = if is_31k { 5546 } else { 6146 };
+    return (((total_frames + 1) * 4410000) / rate - (total_frames * 4410000) / rate) as i32;
+}
+
+// 1 フレーム分進める (px68k WinX68k_Exec と同じ走査線単位の進め方)。
+// ブレークポイントに当たったら、フレームの途中でも hit_break を立てて戻る。
 fn run_frame(emu: X68kEmulator&) {
     assert(emu.active());
     // bit4 が立っているのは 31kHz（px68k VID_MODE = MODE_HIGH）。サイクル予算の数値はそのまま。
@@ -210,145 +303,40 @@ fn run_frame(emu: X68kEmulator&) {
     let frame_len10: i32 = frame_cycles10(emu.mmu) as i32;
     let mhz = if emu.clock_mhz > 0 { emu.clock_mhz } else { 10 };
     let clk_total = (frame_len10 * mhz) / 10;
-
     let vline_total = frame_lines(emu.mmu);
 
     let hsync_clk = clk_total / vline_total;
     let htotal = if emu.mmu.crtc_regs[0x01] > 0 { emu.mmu.crtc_regs[0x01] as i32 } else { 137 };
     // GPIP7 is high during the horizontal sync pulse only (XEiJ): R01 + 1 of R00 + 1 columns.
-    let hstart = (((emu.mmu.crtc_regs[0x03] as i32) + 1) * hsync_clk) / (htotal + 1);
-    let hend = hsync_clk;
-
     emu.mmu.mfp.hsync_clk = hsync_clk;
-    emu.mmu.mfp.hsync_start = hstart;
-    emu.mmu.mfp.hsync_end = hend;
+    emu.mmu.mfp.hsync_start = (((emu.mmu.crtc_regs[0x03] as i32) + 1) * hsync_clk) / (htotal + 1);
+    emu.mmu.mfp.hsync_end = hsync_clk;
 
     ppu::begin_frame(emu.mmu);
 
-    var vline: i32 = 0;
     var clk_count: i32 = 0;
+    for vline: i32 in vline_total {
+        line_start(emu, vline, vline_total);
 
-    while vline < vline_total {
-        // 走査線開始時 (hsync = 1)。ゲームはフレーム途中でラスタ割り込みラインを書き換えるので、
-        // px68k と同じく毎ライン CRTC_IntLine / VSTART / VEND を読む。
-        var crtc_vstart = emu.mmu.crtc_word(CRTC_VSTART) & 1023;
-        var crtc_vend = emu.mmu.crtc_word(CRTC_VEND) & 1023;
-        var crtc_intline = emu.mmu.crtc_word(CRTC_RASTER) & 1023;
-        emu.mmu.mfp.crtc_intline = crtc_intline;
-        emu.mmu.mfp.cur_vline = vline;
-        emu.mmu.mfp.line_cycles = 0;
-        emu.mmu.mfp.in_vdisp = (vline >= crtc_vstart && vline < crtc_vend);
-
-        // HSYNC 割り込み & Timer B HSYNC イベントカウント
-        emu.mmu.mfp.trigger_int(MFP_IRQ_HSYNC);
-        emu.mmu.mfp.timer_b_hsync();
-
-        // CRTC ラスタ割り込み (IERA bit 1 / AER bit 6 == 0)
-        if (emu.mmu.mfp.regs[MFP_AER] & 0x40) == 0 && vline == crtc_intline {
-            emu.mmu.mfp.trigger_int(MFP_IRQ_RASTER);
-        }
-
-        // V-DISP 割り込み (AER bit 4)
-        if (emu.mmu.mfp.regs[MFP_AER] & 0x10) != 0 {
-            if vline == crtc_vstart {
-                emu.mmu.mfp.trigger_int(MFP_IRQ_VDISP);
-            }
-        } else {
-            if crtc_vend >= vline_total {
-                if vline == (crtc_vend - vline_total) {
-                    emu.mmu.mfp.trigger_int(MFP_IRQ_VDISP);
-                }
-            } else {
-                if vline == (vline_total - 1) {
-                    emu.mmu.mfp.trigger_int(MFP_IRQ_VDISP);
-                }
-            }
-        }
-
-        // 走査線内のサイクル実行
+        // この走査線のぶんだけ CPU を進める
         let clk_next = ((clk_total as i64) * ((vline + 1)) / (vline_total)) as i32;
         while clk_count < clk_next {
             if emu.break_armed && (emu.cpu.pc & ADDR_MASK) == (emu.break_pc & ADDR_MASK) {
                 emu.hit_break = true;
                 return;
             }
-            let cycles = emu.step_core();
-            clk_count += cycles;
+            clk_count += emu.step_core();
         }
 
-        // 走査線終了時。CPU がこのラインで書いた比較ラインを使う。
-        crtc_vstart = emu.mmu.crtc_word(CRTC_VSTART) & 1023;
-        crtc_vend = emu.mmu.crtc_word(CRTC_VEND) & 1023;
-        crtc_intline = emu.mmu.crtc_word(CRTC_RASTER) & 1023;
-        emu.mmu.mfp.crtc_intline = crtc_intline;
-        emu.mmu.mfp.timer_a(vline, crtc_vstart, crtc_vend, vline_total);
-        if (emu.mmu.mfp.regs[MFP_AER] & 0x40) != 0 && vline == crtc_intline {
-            emu.mmu.mfp.trigger_int(MFP_IRQ_RASTER);
-        }
-
-        // 音源タイマーステップ (clk_line = frame_len10 / vline_total)
-        let clk_line = frame_len10 / vline_total;
-        emu.mmu.dmac.sound_push();
-        c_sound_scanline_timer(clk_line as u32);
-        emu.mmu.dmac.sound_pull();
-        if c_sound_poll_irq() != 0 {
-            emu.mmu.mfp.trigger_int(MFP_IRQ_OPM);
-        }
-
-        // px68k WinDraw_DrawLine: sprites from the registers at the end of this scanline
-        if vline >= crtc_vstart && vline < crtc_vend {
-            let mode29 = emu.mmu.crtc_regs[0x29];
-            let vstep = if (mode29 & 0x14) == 0x10 { 1 } else if (mode29 & 0x14) == 0x04 { 4 } else { 2 };
-            if vstep == 1 {
-                if (vline & 1) != 0 {
-                    let sy = ((vline - crtc_vstart) * vstep) / 2;
-                    emu.ppu.draw_line(emu.mmu, sy as i32);
-                }
-            } else if vstep == 4 {
-                let sy = ((vline - crtc_vstart) * vstep) / 2;
-                emu.ppu.draw_line(emu.mmu, sy as i32);
-                emu.ppu.draw_line(emu.mmu, (sy + 1) as i32);
-            } else {
-                let sy = ((vline - crtc_vstart) * vstep) / 2;
-                emu.ppu.draw_line(emu.mmu, sy as i32);
-            }
-        }
-
-        emu.mmu.mfp.key_scanline(vline_total);
-        vline++;
+        line_end(emu, vline, vline_total, frame_len10 / vline_total);
     }
 
-    // CRTC 高速クリア (Fast Clear) 処理
-    if (emu.mmu.crtc_mode & 2) != 0 {
-        if emu.mmu.crtc_fast_clr > 0 {
-            emu.mmu.crtc_fast_clr--;
-            if emu.mmu.crtc_fast_clr == 0 {
-                emu.mmu.crtc_mode &= 0xFD;
-            }
-        } else {
-            // 確認メモ: ビットが立っているとき 1、落ちているとき 2。入れ替えない。
-            emu.mmu.crtc_fast_clr = if is_31k { 1 } else { 2 };
-            let sx = (emu.mmu.crtc_word(CRTC_GRP_X) & 511) as u32;
-            let sy = (emu.mmu.crtc_word(CRTC_GRP_Y) & 511) as u32;
-            emu.mmu.gvram_fast_clear(emu.mmu.crtc_regs[0x2B], emu.mmu.crtc_regs[0x29], sx, sy);
-        }
-    }
-
+    fast_clear(emu, is_31k);
     // フレーム末の CRTC 設定を画面サイズへ反映
     ppu::apply_screen(emu.mmu);
 
-    // 44.1kHz。31kHz 画面は 55.46Hz（5546）、15kHz 画面は 61.46Hz（6146）。
-    let samples: i32 = if is_31k {
-        let s_cur = ((emu.total_frames + 1) * 4410000) / 5546;
-        let s_prev = (emu.total_frames * 4410000) / 5546;
-        (s_cur - s_prev) as i32
-    } else {
-        let s_cur = ((emu.total_frames + 1) * 4410000) / 6146;
-        let s_prev = (emu.total_frames * 4410000) / 6146;
-        (s_cur - s_prev) as i32
-    };
     emu.mmu.dmac.sound_push();
-    c_sound_frame_update(samples);
+    c_sound_frame_update(frame_samples(emu.total_frames, is_31k));
     emu.mmu.dmac.sound_pull();
 
     disk::media_tick((emu.mmu.ioc_int_stat & 2) != 0);

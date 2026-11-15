@@ -16,6 +16,7 @@ import .x68k_rtc;
 import .x68k_state;
 import .x68k_disk;
 import .mcp_args;
+import .launch_args;
 
 var g_checks = 0;
 var g_failures = 0;
@@ -840,6 +841,65 @@ fn test_mcp_args() {
     check("elements: an empty array", json_elements("[]", none) && none.len == 0);
 }
 
+// 起動引数の解釈 (launch_args)。
+fn test_launch_args() {
+    var none: const u8[:][>..] = [];
+    var o = LaunchOptions {};
+    check("args: nothing gives the defaults", launch::parse(none, o) == "" && o.clock_mhz == 10 && o.screen_w == 768
+        && o.scale == 1 && !o.mcp_mode && !o.no_window && !o.content_set && o.max_frames == -1 && o.layers == -1);
+
+    o = LaunchOptions {};
+    check("args: a typical MCP launch", launch::parse(["--mcp", "--no-window", "--mcp-layers", "all", "--system-dir", "keropi", "GAME.XDF"], o) == ""
+        && o.mcp_mode && o.no_window && o.layers == MCP_LAYER_ALL && o.sys_set && o.sys_dir == "keropi"
+        && o.content_set && o.content_path == "GAME.XDF");
+
+    o = LaunchOptions {};
+    check("args: numbers", launch::parse(["--clock", "25", "--scale", "2", "--frames", "600", "--dump-after-frames", "30", "--mode", "512x512"], o) == ""
+        && o.clock_mhz == 25 && o.clock_set && o.scale == 2 && o.scale_set && o.max_frames == 600 && o.frames_set
+        && o.dump_after == 30 && o.screen_w == 512 && o.mode_set);
+
+    o = LaunchOptions {};
+    check("args: --no-disk counts as naming the disk", launch::parse(["a.xdf", "--no-disk"], o) == "" && o.content_set && o.content_path.len == 0);
+    o = LaunchOptions {};
+    check("args: the last disk wins", launch::parse(["a.xdf", "b.xdf"], o) == "" && o.content_path == "b.xdf");
+    o = LaunchOptions {};
+    check("args: after --, a leading dash is a file name", launch::parse(["--", "-odd.xdf"], o) == "" && o.content_path == "-odd.xdf");
+    o = LaunchOptions {};
+    check("args: -512 is a short form of --mode", launch::parse(["-512"], o) == "" && o.screen_w == 512 && o.mode_set);
+    o = LaunchOptions {};
+    check("args: --ram other than 12 is noted, not refused", launch::parse(["--ram", "4"], o) == "" && o.ram_ignored);
+    o = LaunchOptions {};
+    check("args: --ram 12 is quiet", launch::parse(["--ram", "12"], o) == "" && !o.ram_ignored);
+    o = LaunchOptions {};
+    check("args: --help skips the other checks", launch::parse(["--no-window", "--help"], o) == "" && o.help);
+
+    o = LaunchOptions {};
+    check("args: an unknown option", launch::parse(["--bogus"], o) == "unknown option or missing option value (use --help)\n");
+    o = LaunchOptions {};
+    check("args: an option with its value missing", launch::parse(["--clock"], o) == "unknown option or missing option value (use --help)\n");
+    o = LaunchOptions {};
+    check("args: a clock out of range", launch::parse(["--clock", "999"], o) == "invalid --clock value\n");
+    o = LaunchOptions {};
+    check("args: a scale out of range", launch::parse(["--scale", "3"], o) == "--scale must be 1 or 2\n");
+    o = LaunchOptions {};
+    check("args: frames must be positive", launch::parse(["--frames", "0"], o) == "--frames must be a positive integer\n");
+    o = LaunchOptions {};
+    check("args: a bad mode", launch::parse(["--mode", "640"], o) == "--mode must be 512 or 768\n");
+    o = LaunchOptions {};
+    check("args: bad layers", launch::parse(["--mcp-layers", "l9"], o) == "--mcp-layers: expected l0,l1,l2,l3,l4 or all\n");
+    o = LaunchOptions {};
+    check("args: --no-window alone has nothing to do", launch::parse(["--no-window"], o) == "--no-window requires --frames N or --dump-frame PATH\n");
+    o = LaunchOptions {};
+    check("args: --no-window with a dump is fine", launch::parse(["--no-window", "--dump-frame", "x.png"], o) == "" && o.dump_path == "x.png");
+
+    var long: u8[>..] = [];
+    long.resize(HOST_PATH_BYTES + 1, 'a');
+    var list: const u8[:][>..] = [];
+    list.push(long[..]);
+    o = LaunchOptions {};
+    check("args: a path that does not fit is refused", launch::parse(list, o) == "the disk image path is too long\n");
+}
+
 fn main() {
     test_flag_helpers();
     test_conditions();
@@ -861,6 +921,7 @@ fn main() {
     test_disk_hdd_and_media();
     test_io_latches();
     test_mcp_args();
+    test_launch_args();
     print(g_checks - g_failures, " / ", g_checks, " checks passed");
     if g_failures > 0 { exit(1); }
 }

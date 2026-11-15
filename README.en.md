@@ -22,6 +22,7 @@ goose_sharp_x68000/
     m68k_*.goose          CPU, MMU, disassembler
     mcp_server.goose      ARCL MCP
     mcp_args.goose        Reading MCP tool arguments
+    launch_args.goose     Parsing launch arguments
     x68k_*.goose          Devices, rendering, save state, shared services
     test_core.goose/.build Unit tests of the core
     x68k_bridge.c/.h      Win32, file I/O, audio output
@@ -260,7 +261,7 @@ This public-distribution layout does not include `tools/architecture/build.ps1` 
 
 | Location | Responsibility |
 |---|---|
-| [src/main.goose](src/main.goose) | Launch arguments, GUI/ARCL event loop |
+| [src/main.goose](src/main.goose) / [src/launch_args.goose](src/launch_args.goose) | Startup, GUI/ARCL event loop / parsing launch arguments |
 | `src/m68k_*` | CPU instructions, MMU |
 | `src/x68k_mfp/fdc/dmac/sasi/rtc.goose` | Peripherals |
 | [src/x68k_disk.goose](src/x68k_disk.goose) | FD (XDF, D88, DIM) and HDD images |
@@ -283,7 +284,7 @@ goose build .\src\test_core.goose -o .\test_core.exe
 .\test_core.exe
 ```
 
-It prints `361 / 361 checks passed` when everything passes, and reports each failure and exits with status 1 otherwise. Building with `--debug` also enables the overflow and range checks.
+It prints `381 / 381 checks passed` when everything passes, and reports each failure and exits with status 1 otherwise. Building with `--debug` also enables the overflow and range checks.
 
 ## Troubleshooting and known limitations
 

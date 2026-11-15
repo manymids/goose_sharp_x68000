@@ -432,25 +432,42 @@ fn bus_wait40(a: u32) -> i32 {
 }
 
 // 0xE80000 以上からの 8 bit 読み出し。番地順。応答しない番地は 0。
+// CRTC の読み出し。読めるのは R20-R21 (0x28-0x2B) と操作ポートだけ。
+fn read_crtc(mmu: M68kMMU&, a: u32) -> u8 {
+    if a == 0xE80481 {
+        // 高速クリアの実行中は bit 1 が立って見える
+        return if mmu.crtc_fast_clr > 0 { mmu.crtc_mode | 0x02 } else { mmu.crtc_mode & 0xFD };
+    }
+    if a >= 0xE80400 { return 0; }
+    let reg = (a & 0x3F) as i32;
+    return if reg >= 0x28 && reg <= 0x2B { mmu.crtc_regs[reg] } else { 0 };
+}
+
+// MFP のレジスタは奇数番地に並ぶ。
+fn read_mfp(mmu: M68kMMU&, a: u32) -> u8 {
+    if (a & 1) == 0 { return 0xFF; }
+    let reg = ((a & 0x3F) >> 1) as i32;
+    let v = mmu.mfp.read(reg);
+    // GPIP0 is the RTC ALARM output.
+    if reg == 0 { return (v & 0xFE) | (if mmu.rtc.alarm_pin() { 1 } else { 0 }); }
+    return v;
+}
+
+fn read_sysport(mmu: M68kMMU&, a: u32) -> u8 {
+    if (a & 1) != 0 {
+        let reg = ((a & 0x0F) >> 1) as i32;
+        if reg == 0 { return 0xF0 | mmu.sysport_contrast; }
+        if reg == 1 { return 0xF0 | mmu.sysport_monitor; }
+        if reg == 3 { return 0xF0 | mmu.sysport_keyctrl; }
+        if reg == 5 { return 0xF0 | mmu.sysport_cputype; }
+    }
+    return 0xFF;
+}
+
 fn io_read8(mmu: M68kMMU&, a: u32) -> u8 {
     // 0x00E80000 - 0x00E804FF: CRTC
     // 0xE80400 未満は下位 6 ビットのミラー。0xE80481 だけが操作ポート。
-    if a >= 0xE80000 && a < 0xE80500 {
-        if a == 0xE80481 {
-            if mmu.crtc_fast_clr > 0 {
-                return (mmu.crtc_mode | 0x02);
-            }
-            return (mmu.crtc_mode & 0xFD);
-        }
-        if a >= 0xE80400 {
-            return 0;
-        }
-        let reg = (a & 0x3F) as i32;
-        if reg >= 0x28 && reg <= 0x2B {
-            return mmu.crtc_regs[reg];
-        }
-        return 0;
-    }
+    if a >= 0xE80000 && a < 0xE80500 { return mmu.read_crtc(a); }
 
     // 0x00E82000 - 0x00E823FF: Palette RAM (1024 bytes)
     if a >= 0xE82000 && a < 0xE82400 {
@@ -468,16 +485,7 @@ fn io_read8(mmu: M68kMMU&, a: u32) -> u8 {
     }
 
     // 0x00E88000 - 0x00E8803F: MFP (MC68901)
-    if (a & 0xFFFFC0) == 0xE88000 {
-        if (a & 1) != 0 {
-            let reg = ((a & 0x3F) >> 1) as i32;
-            let v = mmu.mfp.read(reg);
-            // GPIP0 is the RTC ALARM output.
-            if reg == 0 { return (v & 0xFE) | (if mmu.rtc.alarm_pin() { 1 } else { 0 }); }
-            return v;
-        }
-        return 0xFF;
-    }
+    if (a & 0xFFFFC0) == 0xE88000 { return mmu.read_mfp(a); }
 
     // 0x00E8A000 - 0x00E8BFFF: RTC (RP5C15)
     if (a & 0xFFE000) == 0xE8A000 {
@@ -485,16 +493,7 @@ fn io_read8(mmu: M68kMMU&, a: u32) -> u8 {
     }
 
     // 0x00E8E000 - 0x00E8E00F: SysPort
-    if (a & 0xFFFFF0) == 0xE8E000 {
-        if (a & 1) != 0 {
-            let reg = ((a & 0x0F) >> 1) as i32;
-            if reg == 0 { return 0xF0 | mmu.sysport_contrast; }
-            if reg == 1 { return 0xF0 | mmu.sysport_monitor; }
-            if reg == 3 { return 0xF0 | mmu.sysport_keyctrl; }
-            if reg == 5 { return 0xF0 | mmu.sysport_cputype; }
-        }
-        return 0xFF;
-    }
+    if (a & 0xFFFFF0) == 0xE8E000 { return mmu.read_sysport(a); }
 
     // 0x00E90000 - 0x00E90003: OPM (YM2151)
     if (a & 0xFFFF00) == 0xE90000 {
@@ -629,36 +628,90 @@ fn peek8(mmu: M68kMMU&, addr: u32) -> u8 {
 }
 
 // 0xE80000 以上への 8 bit 書き込み。番地順。応答しない番地は何もしない。
+// テキスト VRAM のラスタコピー (CRTC R22 の転送元 / 転送先、R21 のプレーン選択)。
+fn crtc_raster_copy(mmu: M68kMMU&) {
+    let src_line: u32 = mmu.crtc_regs[0x2C];
+    let dst_line: u32 = mmu.crtc_regs[0x2D];
+    mmu.tvram_raster_copy(src_line, dst_line, mmu.crtc_regs[0x2B]);
+}
+
+// CRTC への書き込み。0xE80481 は操作ポートで、bit 3 がラスタコピー、bit 1 が高速クリア。
+// ラスタコピーは、操作ポートで指示したときと、指示が出ている間に転送先 (R22 下位) を書いたときに行う。
+fn write_crtc(mmu: M68kMMU&, a: u32, val: u8) {
+    if a == 0xE80481 {
+        mmu.crtc_mode = (val | (mmu.crtc_mode & 0x02));
+        if (mmu.crtc_mode & 8) != 0 { mmu.crtc_raster_copy(); }
+        return;
+    }
+    if a >= 0xE80400 { return; }
+    let reg = (a & 0x3F) as i32;
+    if reg >= 0x30 { return; }
+    mmu.crtc_regs[reg] = val;
+    if reg == 0x2D && (mmu.crtc_mode & 8) != 0 { mmu.crtc_raster_copy(); }
+}
+
+// FDC か DMAC に書いたあとに呼ぶ。転送の準備がそろっていれば DMA を進め、
+// FDC が割り込みを要求していれば IOC に伝える。
+fn fdc_service(mmu: M68kMMU&) {
+    if (mmu.dmac.ch[0].csr & 0x08) != 0 && mmu.fdc.exec_len() > 0 {
+        // DMA の読み書きは CPU のアクセスではないので、保護の検査を外して行う
+        let cpu_access = mmu.cpu_access;
+        mmu.cpu_access = false;
+        mmu.dmac.exec_fdc(mmu.fdc, mmu);
+        mmu.cpu_access = cpu_access;
+    }
+    if mmu.fdc.int_pending {
+        mmu.ioc_int_stat |= 0x80;
+        mmu.fdc.int_pending = false;
+    }
+}
+
+fn write_sysport(mmu: M68kMMU&, a: u32, val: u8) {
+    if (a & 1) == 0 { return; }
+    let reg = ((a & 0x0F) >> 1) as i32;
+    if reg == 0 { mmu.sysport_contrast = val & 0x0F; }
+    else if reg == 1 { mmu.sysport_monitor = val & 0x0B; }
+    else if reg == 3 { mmu.sysport_keyctrl = val & 0x0E; }
+    else if reg == 6 { x68k_sram_set_write_enable(if val == 0x31 { 1 } else { 0 }); } // 0x31 で SRAM 書き込み許可
+}
+
+// OPM: $E90001 がレジスタ番号、$E90003 がデータ。書いた値は控えにも残す。
+fn write_opm(mmu: M68kMMU&, a: u32, val: u8) {
+    if a == 0xE90001 {
+        mmu.opm.addr = val;
+        c_sound_opm_write(0, val);
+    } else if a == 0xE90003 {
+        mmu.opm.regs[mmu.opm.addr] = val;
+        if mmu.opm.addr == 0x08 { mmu.opm.key_on[val & 7] = (val >> 3) & 15; }
+        c_sound_opm_write(1, val);
+    }
+}
+
+// 8255: $E9A005 がポート C、$E9A007 がコントロール。
+fn write_pia(mmu: M68kMMU&, a: u32, val: u8) {
+    if a == 0xE9A005 {
+        mmu.set_pia_c(val);
+    } else if a == 0xE9A007 && (val & 0x80) == 0 {
+        // ビットセット / リセット: bit 1-3 がポート C のビット番号、bit 0 が値
+        let mask: u8 = 1 << ((val >> 1) & 7);
+        mmu.set_pia_c(if (val & 1) != 0 { mmu.pia_c | mask } else { mmu.pia_c & ~mask });
+    }
+}
+
+// エリアセット ($EAFF81-$EAFF89 の奇数番地): 256 KB のブロックごとに 1 ビットで、
+// スーパーバイザ専用にするかどうかを決める。1 ポートが 2 MB ぶんで、$200000 から始まる。
+fn write_area_set(mmu: M68kMMU&, a: u32, val: u8) {
+    mmu.xb2_area[(a & 0x0F) as i64] = val;
+    let first = (((a & 14) + 2) << 20) >> 18;
+    for m in 8 {
+        mmu.ram_super[(first + (m as u32)) as i64] = (val >> (m as u8)) & 1;
+    }
+}
+
 fn io_write8(mmu: M68kMMU&, a: u32, val: u8) {
     // 0x00E80000 - 0x00E804FF: CRTC
     if a >= 0xE80000 && a < 0xE80500 {
-        if a == 0xE80481 {
-            // CRTC operation port (Raster Copy & Fast Clear)
-            mmu.crtc_mode = (val | (mmu.crtc_mode & 0x02));
-            if (mmu.crtc_mode & 8) != 0 {
-                let src_line: u32 = mmu.crtc_regs[0x2C];
-                let dst_line: u32 = mmu.crtc_regs[0x2D];
-                let mask = mmu.crtc_regs[0x2B];
-                mmu.tvram_raster_copy(src_line, dst_line, mask);
-            }
-            return;
-        }
-        if a >= 0xE80400 {
-            return;
-        }
-        let reg = (a & 0x3F) as i32;
-        if reg >= 0x30 {
-            return;
-        }
-        mmu.crtc_regs[reg] = val;
-        if reg == 0x2D {
-            if (mmu.crtc_mode & 8) != 0 {
-                let src_line: u32 = mmu.crtc_regs[0x2C];
-                let dst_line: u32 = val;
-                let mask = mmu.crtc_regs[0x2B];
-                mmu.tvram_raster_copy(src_line, dst_line, mask);
-            }
-        }
+        mmu.write_crtc(a, val);
         return;
     }
 
@@ -677,16 +730,7 @@ fn io_write8(mmu: M68kMMU&, a: u32, val: u8) {
     // 0x00E84000 - 0x00E840FF: DMAC (HD63450)
     if (a & 0xFFFF00) == 0xE84000 {
         mmu.dmac.write(a, val);
-        if (mmu.dmac.ch[0].csr & 0x08) != 0 && mmu.fdc.exec_len() > 0 {
-            let cpu_access = mmu.cpu_access;
-            mmu.cpu_access = false;
-            mmu.dmac.exec_fdc(mmu.fdc, mmu);
-            mmu.cpu_access = cpu_access;
-        }
-        if mmu.fdc.int_pending {
-            mmu.ioc_int_stat |= 0x80;
-            mmu.fdc.int_pending = false;
-        }
+        mmu.fdc_service();
         return;
     }
 
@@ -713,29 +757,13 @@ fn io_write8(mmu: M68kMMU&, a: u32, val: u8) {
 
     // 0x00E8E000 - 0x00E8E00F: SysPort
     if (a & 0xFFFFF0) == 0xE8E000 {
-        if (a & 1) != 0 {
-            let reg = ((a & 0x0F) >> 1) as i32;
-            if reg == 0 { mmu.sysport_contrast = val & 0x0F; }
-            else if reg == 1 { mmu.sysport_monitor = val & 0x0B; }
-            else if reg == 3 { mmu.sysport_keyctrl = val & 0x0E; }
-            else if reg == 6 {
-                let en: i32 = if val == 0x31 { 1 } else { 0 };
-                x68k_sram_set_write_enable(en);
-            }
-        }
+        mmu.write_sysport(a, val);
         return;
     }
 
     // 0x00E90000 - 0x00E90003: OPM (YM2151)
     if (a & 0xFFFF00) == 0xE90000 {
-        if a == 0xE90001 {
-            mmu.opm.addr = val;
-            c_sound_opm_write(0, val);
-        } else if a == 0xE90003 {
-            mmu.opm.regs[mmu.opm.addr] = val;
-            if mmu.opm.addr == 0x08 { mmu.opm.key_on[val & 7] = (val >> 3) & 15; }
-            c_sound_opm_write(1, val);
-        }
+        mmu.write_opm(a, val);
         return;
     }
 
@@ -749,16 +777,7 @@ fn io_write8(mmu: M68kMMU&, a: u32, val: u8) {
     if (a & 0xFFFF00) == 0xE94000 {
         let reg = (a & 0x07) as i32;
         mmu.fdc.write(reg, val);
-        if (mmu.dmac.ch[0].csr & 0x08) != 0 && mmu.fdc.exec_len() > 0 {
-            let cpu_access = mmu.cpu_access;
-            mmu.cpu_access = false;
-            mmu.dmac.exec_fdc(mmu.fdc, mmu);
-            mmu.cpu_access = cpu_access;
-        }
-        if mmu.fdc.int_pending {
-            mmu.ioc_int_stat |= 0x80;
-            mmu.fdc.int_pending = false;
-        }
+        mmu.fdc_service();
         return;
     }
 
@@ -776,13 +795,7 @@ fn io_write8(mmu: M68kMMU&, a: u32, val: u8) {
 
     // 0x00E9A000 - 0x00E9A007: JoyPort / PIA (8255)
     if (a & 0xFFFF00) == 0xE9A000 {
-        if a == 0xE9A005 {
-            mmu.set_pia_c(val);
-        } else if a == 0xE9A007 && (val & 0x80) == 0 {
-            // ビットセット / リセット: bit 1-3 がポート C のビット番号、bit 0 が値
-            let mask: u8 = 1 << ((val >> 1) & 7);
-            mmu.set_pia_c(if (val & 1) != 0 { mmu.pia_c | mask } else { mmu.pia_c & ~mask });
-        }
+        mmu.write_pia(a, val);
         return;
     }
 
@@ -800,11 +813,7 @@ fn io_write8(mmu: M68kMMU&, a: u32, val: u8) {
 
     // $EAFF81-$EAFF89 (odd): one bit per 256 KB block, 2 MB per port starting at $200000
     if a >= 0xEAFF81 && a <= 0xEAFF89 && (a & 1) != 0 {
-        mmu.xb2_area[(a & 0x0F) as i64] = val;
-        let first = (((a & 14) + 2) << 20) >> 18;
-        for m in 8 {
-            mmu.ram_super[(first + (m as u32)) as i64] = (val >> (m as u8)) & 1;
-        }
+        mmu.write_area_set(a, val);
         return;
     }
 
