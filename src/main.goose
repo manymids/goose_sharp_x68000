@@ -174,8 +174,7 @@ fn run_mcp(emu: X68kEmulator&, want_window: bool, screen_w: i32, screen_h: i32, 
 }
 
 // Win32 ウィンドウで実時間に合わせて動かす。max_frames > 0 ならその数で終わる。
-fn run_gui(emu: X68kEmulator&, screen_w: i32, screen_h: i32, scale: i32, max_frames: i64, dump_path: const u8[:], dump_after: i64,
-    run_ahead: i32) {
+fn run_gui(emu: X68kEmulator&, screen_w: i32, screen_h: i32, scale: i32, max_frames: i64, dump_path: const u8[:], dump_after: i64) {
     if !open_window(screen_w, screen_h, scale) {
         print("ERROR: Failed to create Win32 window!");
         return;
@@ -183,6 +182,7 @@ fn run_gui(emu: X68kEmulator&, screen_w: i32, screen_h: i32, scale: i32, max_fra
     print("Window opened (", screen_w, "x", screen_h, "). Close window or press ESC to exit.");
 
     var dumped = false;
+    var pace = AheadPace { frames: c_get_run_ahead(), .. };
     var target_time_us: u64 = win32_ui_get_time_us();
     while win32_ui_is_open() {
         let keys = win32_ui_poll();
@@ -199,6 +199,7 @@ fn run_gui(emu: X68kEmulator&, screen_w: i32, screen_h: i32, scale: i32, max_fra
             target_time_us = win32_ui_get_time_us();
         }
 
+        let work_start_us = win32_ui_get_time_us();
         if !emu.is_paused {
             emu.clock_mhz = c_get_cpu_mhz();
             session::run_frame(emu);
@@ -211,6 +212,8 @@ fn run_gui(emu: X68kEmulator&, screen_w: i32, screen_h: i32, scale: i32, max_fra
         }
 
         // 先読みを使うなら、本当のフレームの代わりに run_ahead フレーム先の画面を出す (x68k_ahead)。
+        // メニューの値は上限。実時間に間に合う数まで pace が下げる (高いクロックでは減る)。
+        let run_ahead = pace.frames;
         if !emu.is_paused && run_ahead > 0 && ahead::begin(emu, run_ahead) {
             c_set_screen_mode(emu.ppu.screen_w, emu.ppu.screen_h);
             c_set_frame_ready(if emu.ppu.frame_ready { 1 } else { 0 });
@@ -222,6 +225,13 @@ fn run_gui(emu: X68kEmulator&, screen_w: i32, screen_h: i32, scale: i32, max_fra
 
         // The frame the CRTC programs (768x512 31 kHz: about 18031 us, 55.46 Hz).
         let frame_period_us: u64 = (emu::frame_cycles10(emu.mmu) / 10) as u64;
+        if !emu.is_paused {
+            let before = pace.frames;
+            ahead::pace(pace, c_get_run_ahead(), win32_ui_get_time_us() - work_start_us, frame_period_us);
+            if pace.frames != before { write_stderr(str("run-ahead: ", pace.frames, " frames\n")); }
+        } else {
+            pace.frames = min(pace.frames, c_get_run_ahead());
+        }
         target_time_us += frame_period_us;
         let now_us = win32_ui_get_time_us();
         if target_time_us > now_us {
@@ -280,6 +290,7 @@ fn main() {
     if !opt.scale_set { scale = config::int_value(GUI_SCALE); }
     let run_ahead = if opt.ahead_set { opt.run_ahead } else { config::int_value(GUI_AHEAD) };
     config::set_int(GUI_AHEAD, run_ahead);
+    c_set_run_ahead(run_ahead); // メニューの印。ウィンドウでは毎フレームここから読む
     config::set_int(GUI_WIDTH, screen_w);
     if sys_dir.len == 0 { launch_error("BIOS directory is empty; use --system-dir PATH\n"); }
 
@@ -324,7 +335,7 @@ fn main() {
         run_mcp(emu, !no_window, screen_w, screen_h, scale);
     } else if !no_window {
         print_banner(content_path, sys_dir);
-        run_gui(emu, screen_w, screen_h, scale, opt.max_frames, opt.dump_path[..], opt.dump_after, run_ahead);
+        run_gui(emu, screen_w, screen_h, scale, opt.max_frames, opt.dump_path[..], opt.dump_after);
     } else {
         print_banner(content_path, sys_dir);
         // Without --frames the earlier check guarantees --dump-frame.

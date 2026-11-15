@@ -215,6 +215,7 @@ fn save() -> bool {
 fn store() {
     set_int(GUI_CLOCK, c_get_cpu_mhz());
     set_int(GUI_SCALE, c_get_scale());
+    set_int(GUI_AHEAD, c_get_run_ahead());
     if !save() { write_stderr(str("warning: could not save ", CONFIG_FILE, "\n")); }
 }
 

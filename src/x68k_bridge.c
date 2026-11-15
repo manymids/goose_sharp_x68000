@@ -863,6 +863,26 @@ int c_cpu_mhz_ok(int mhz) {
     return cpu_clock_index(mhz) >= 0;
 }
 
+/* Run-ahead: how many frames ahead the window shows (0 = off). The menu sets it; the frontend
+ * loop reads it every frame and x68k_config.goose saves it. */
+static int g_run_ahead = 0;
+static HMENU g_ahead_menu = NULL;
+
+static void run_ahead_check_menu(void) {
+    if (g_ahead_menu) CheckMenuRadioItem(g_ahead_menu, 601, 605, 601 + g_run_ahead, MF_BYCOMMAND);
+}
+
+int c_set_run_ahead(int frames) {
+    if (frames < 0 || frames > 4) return 0;
+    g_run_ahead = frames;
+    run_ahead_check_menu();
+    return 1;
+}
+
+int c_get_run_ahead(void) {
+    return g_run_ahead;
+}
+
 void c_startup_error(void) {
     MessageBoxA(NULL, "Could not load the X68000 BIOS.\nPlace iplrom.dat (128 KiB) and cgrom.dat (768 KiB) in .\\keropi\nrelative to the working directory, or pass --system-dir PATH.\nSee README.md for setup.",
                 "Goose X68000 - BIOS setup", MB_OK | MB_ICONERROR);
@@ -874,6 +894,11 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
             int id = LOWORD(wParam);
             if (id >= 501 && id <= 509) {
                 c_set_cpu_mhz(k_cpu_clocks[id - 501]);
+                g_settings_changed = 1;
+                return 0;
+            }
+            if (id >= 601 && id <= 605) {
+                c_set_run_ahead(id - 601);
                 g_settings_changed = 1;
                 return 0;
             }
@@ -1179,6 +1204,16 @@ bool win32_ui_init(X68kByteView title_bytes, int w, int h, int scale) {
     AppendMenuA(g_clock_menu, MF_STRING, 509, "250 MHz");
     AppendMenuA(hMenuBar, MF_POPUP, (UINT_PTR)g_clock_menu, "&Clock");
     cpu_clock_check_menu();
+
+    // Run-ahead: show the screen N frames ahead to cut input lag
+    g_ahead_menu = CreatePopupMenu();
+    AppendMenuA(g_ahead_menu, MF_STRING, 601, "&Off");
+    AppendMenuA(g_ahead_menu, MF_STRING, 602, "&1 Frame");
+    AppendMenuA(g_ahead_menu, MF_STRING, 603, "&2 Frames");
+    AppendMenuA(g_ahead_menu, MF_STRING, 604, "&3 Frames");
+    AppendMenuA(g_ahead_menu, MF_STRING, 605, "&4 Frames");
+    AppendMenuA(hMenuBar, MF_POPUP, (UINT_PTR)g_ahead_menu, "Run-&Ahead");
+    run_ahead_check_menu();
 
     // Help Menu
     HMENU hHelpMenu = CreatePopupMenu();

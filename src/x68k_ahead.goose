@@ -134,3 +134,46 @@ fn begin(emu: X68kEmulator&, frames: i32) -> bool {
 fn end(emu: X68kEmulator&) {
     restore(emu);
 }
+
+// ---------------------------------------------------------------
+// 先読みのフレーム数を、間に合う範囲へ自動で合わせる
+// ---------------------------------------------------------------
+//
+// メニューで選んだ数は上限として扱う。1 フレームの仕事 (本当のフレームと先読みと描画) が
+// 実機の 1 フレームの 9 割を超えたら、すぐ 1 つ減らす。1 つ増やしても 7 割に収まる見込みが
+// PACE_SETTLE フレーム続いたら、1 つ戻す。クロックを上げて重くなっても全体は遅れない。
+
+let PACE_SETTLE = 60;
+
+struct Pace {
+    frames: i32 = 0,   // 今使っている先読みのフレーム数
+    calm: i32 = 0,     // 増やしても間に合いそうなフレームが続いた数
+}
+type ::AheadPace = ahead::Pace;
+
+// work_us は、ahead フレーム先読みしたときの 1 フレームの仕事の時間。次に使う数を返す。
+fn pace(p: Pace&, limit: i32, work_us: u64, period_us: u64) -> i32 {
+    if p.frames > limit { p.frames = limit; }
+    if period_us == 0 { return p.frames; }
+    if work_us * 10 > period_us * 9 {
+        if p.frames > 0 { p.frames -= 1; }
+        p.calm = 0;
+        return p.frames;
+    }
+    if p.frames >= limit {
+        p.calm = 0;
+        return p.frames;
+    }
+    // 1 回ぶんの重さは、仕事の時間を進めたフレームの数で割ったもの
+    let per_frame = work_us / ((p.frames + 1) as u64);
+    if per_frame * ((p.frames + 2) as u64) * 10 <= period_us * 7 {
+        p.calm += 1;
+        if p.calm >= PACE_SETTLE {
+            p.frames += 1;
+            p.calm = 0;
+        }
+    } else {
+        p.calm = 0;
+    }
+    return p.frames;
+}

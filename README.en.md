@@ -242,7 +242,7 @@ arcl_windows_x68k_goose.exe [options] [disk-image]
 | `--clock MHZ` | CPU clock. Default is 10 |
 | `--scale 1\|2` | Initial window scale |
 | `--mode 512\|768` | Initial display width. `512x512` / `768x512` can also be specified |
-| `--run-ahead N` | Show the window N frames ahead (0-4) to cut the delay from input to screen. Default 0 (off) |
+| `--run-ahead N` | Show the window N frames ahead (0-4) to cut the delay from input to screen. Default 0 (off). Also switchable from the Run-Ahead menu. The value is an upper limit: when frames would fall behind real time (at high clocks, for example) it is lowered automatically |
 | `--no-disk` | Ignore saved media and boot empty |
 | `--mcp` | Enable the ARCL MCP server. GUI settings are not used |
 | `--mcp-layers LIST` | Layers to expose. e.g. `all`, `l0,l1,l2` |
@@ -312,7 +312,7 @@ goose build .\src\test_core.goose -o .\test_core.exe
 .\test_core.exe
 ```
 
-It prints `446 / 446 checks passed` when everything passes, and reports each failure and exits with status 1 otherwise. Building with `--debug` also enables the overflow and range checks.
+It prints `455 / 455 checks passed` when everything passes, and reports each failure and exits with status 1 otherwise. Building with `--debug` also enables the overflow and range checks.
 
 ## Troubleshooting and known limitations
 

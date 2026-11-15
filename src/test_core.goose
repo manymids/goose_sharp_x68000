@@ -21,6 +21,7 @@ import .x68k_adpcm;
 import .x68k_opm;
 import .x68k_output;
 import .x68k_config;
+import .x68k_ahead;
 
 var g_checks = 0;
 var g_failures = 0;
@@ -1125,6 +1126,32 @@ fn test_config() {
     config::open(false);
 }
 
+// 先読みのフレーム数の自動調整 (x68k_ahead)。1 フレームは 18000 us とする。
+fn test_ahead_pace() {
+    let period: u64 = 18000;
+    var p = AheadPace { frames: 4, .. };
+    check("pace: in time keeps the menu value", ahead::pace(p, 4, 10000, period) == 4);
+    check("pace: over 90% drops one at once", ahead::pace(p, 4, 17000, period) == 3 && ahead::pace(p, 4, 17000, period) == 2);
+    check("pace: never below 0", ahead::pace(p, 0, 30000, period) == 0 && ahead::pace(p, 4, 30000, period) == 0);
+    // 1 回 2000 us なら、0 → 1 は 4000 us で 7 割に収まる。60 フレーム続いてから増える
+    var n: i32 = 0;
+    for _ in 59 { n = ahead::pace(p, 4, 2000, period); }
+    check("pace: does not climb at once", n == 0);
+    check("pace: climbs after a calm second", ahead::pace(p, 4, 2000, period) == 1);
+    // 1 回 4000 us: 2 回で 8000 (仕事)、3 回だと 12000 で 7 割 (12600) に収まる。4 回は 16000 で収まらない
+    var q = AheadPace { frames: 1, .. };
+    for _ in 60 { n = ahead::pace(q, 4, 8000, period); }
+    check("pace: climbs while one more still fits", n == 2);
+    for _ in 200 { n = ahead::pace(q, 4, 12000, period); }
+    check("pace: stops where one more would not fit", n == 2);
+    check("pace: a lower menu value caps it", ahead::pace(q, 1, 1000, period) == 1);
+    var r = AheadPace { frames: 0, .. };
+    for _ in 30 { ahead::pace(r, 4, 2000, period); }
+    ahead::pace(r, 4, 9000, period);   // 増やすと間に合わない 1 フレームで数え直し
+    for _ in 59 { n = ahead::pace(r, 4, 2000, period); }
+    check("pace: a slow frame restarts the wait", n == 0);
+}
+
 fn main() {
     test_flag_helpers();
     test_conditions();
@@ -1151,6 +1178,7 @@ fn main() {
     test_opm();
     test_output();
     test_config();
+    test_ahead_pace();
     print(g_checks - g_failures, " / ", g_checks, " checks passed");
     if g_failures > 0 { exit(1); }
 }

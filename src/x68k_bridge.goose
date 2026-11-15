@@ -35,6 +35,9 @@ extern fn c_host_joy_byte() -> i32;
 extern fn c_set_cpu_mhz(mhz: i32) -> i32;
 extern fn c_get_cpu_mhz() -> i32;
 extern fn c_get_scale() -> i32;
+// The window's run-ahead setting (0-4 frames). The Run-Ahead menu changes it.
+extern fn c_set_run_ahead(frames: i32) -> i32;
+extern fn c_get_run_ahead() -> i32;
 // The window menu changed a setting since the last call: returns 1, and the initial screen width the
 // menu chose (0 if it did not choose one). The settings themselves live in x68k_config.goose.
 extern fn c_gui_take_settings_changes(width: i32&) -> i32;

@@ -56,6 +56,8 @@ int c_set_cpu_mhz(int mhz);
 int c_get_cpu_mhz(void);
 int c_cpu_mhz_ok(int mhz);
 int c_get_scale(void);
+int c_set_run_ahead(int frames);
+int c_get_run_ahead(void);
 int c_gui_take_settings_changes(int32_t *width);
 int c_full_path(X68kByteView path, uint8_t *out, int cap);
 int c_ansi_to_utf8(X68kByteView text, uint8_t *out, int cap);
