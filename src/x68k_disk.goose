@@ -127,9 +127,7 @@ fn replace(image: u8[>..]&, bytes: const u8[:]) {
 
 // GUI が次回の起動で同じディスクを入れ直せるよう、設定にパスを覚えさせる。
 fn remember_path(key: i32, path: const u8[:]) {
-    let none: u8[1] = [0];
-    if path.len == 0 { c_gui_settings_set_path(key, none[0], 0); }
-    else { c_gui_settings_set_path(key, path[0], path.len as i32); }
+    config::set_path(key, path);
 }
 
 fn forget_paths() {
@@ -229,6 +227,7 @@ fn hdd_read(sector: u32, dst: u8[HDD_SECTOR_BYTES]&) -> i32 {
 
 fn hdd_write(sector: u32, src: u8[HDD_SECTOR_BYTES]&) -> i32 {
     let found, at = hdd_sector_at(sector);
+    if found == 1 { note_write(2, at, HDD_SECTOR_BYTES); }
     if found == 1 { copy_into(g_hdd[at..at + HDD_SECTOR_BYTES], src[..]); }
     return found;
 }
@@ -399,6 +398,7 @@ fn fd_write(drive: i32, trk: i32, c: i32, h: i32, r: i32, n: i32, src: const u8[
     let at, bytes = fd_locate(drive, trk, c, h, r, n);
     if bytes == 0 { return false; }
     let count = min(bytes, src.len);
+    note_write(drive, at, count);
     copy_into(fd_image(drive)[at..at + count], src[..count]);
     return true;
 }
@@ -439,6 +439,40 @@ fn fd_current_id(drive: i32) -> bool, u8, u8, u8, u8 {
 // ---------------------------------------------------------------
 
 let ::DISK_IMAGES = 3; // FD0, FD1, HDD の順
+
+// 書き込みの取り消し帳。先読み (x68k_ahead) の間だけ付け、書く前の中身を残しておく。
+// 先読みを終えたら新しい順に書き戻し、イメージを先読みの前と同じにする。
+struct UndoEntry { which: i64 = 0, at: i64 = 0, len: i64 = 0 }
+var g_undo_on = false;
+var g_undo: UndoEntry[>..] = [];
+var g_undo_bytes: u8[>..] = [];
+
+fn undo_begin() {
+    g_undo.clear();
+    g_undo_bytes.clear();
+    g_undo_on = true;
+}
+
+fn note_write(which: i64, at: i64, len: i64) {
+    if !g_undo_on { return; }
+    g_undo.push(UndoEntry { which: which, at: at, len: len });
+    g_undo_bytes.append(image(which)[at..at + len]);
+}
+
+// 付けた書き込みを新しい順に戻して、帳を閉じる。
+fn undo_rollback() {
+    var end = g_undo_bytes.len;
+    var i = g_undo.len;
+    while i > 0 {
+        i -= 1;
+        let e = g_undo[i];
+        copy_into(image(e.which)[e.at..e.at + e.len], g_undo_bytes[end - e.len..end]);
+        end -= e.len;
+    }
+    g_undo.clear();
+    g_undo_bytes.clear();
+    g_undo_on = false;
+}
 
 fn image(which: i64) -> u8[:] {
     if which == 0 { return g_fd0[..]; }

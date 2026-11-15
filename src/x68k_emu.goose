@@ -9,6 +9,7 @@ import .x68k_mfp;
 import .x68k_ppu;
 import .x68k_fdc;
 import .x68k_dmac;
+import .x68k_dma_bus;
 import .x68k_sasi;
 import .x68k_disk;
 import .x68k_adpcm;
@@ -107,8 +108,8 @@ fn step(emu: X68kEmulator&) -> i32 {
 
 // The frame loop checks the binding once, outside this instruction hot path.
 fn step_core(emu: X68kEmulator&) -> i32 {
-    dmac::pump_sasi(emu.mmu);
-    dmac::exec_ch2(emu.mmu);
+    dmabus::pump_sasi(emu.mmu);
+    dmabus::exec_ch2(emu.mmu);
     let cycles = m68k::step(emu.cpu, emu.mmu);
     emu.total_cycles += cycles;
     emu.mmu.mfp.line_cycles += cycles;
@@ -264,7 +265,7 @@ fn line_end(emu: X68kEmulator&, vline: i32, vline_total: i32, clk_line: i32) {
     }
 
     // 音源を 1 ライン分進める。ADPCM は、たまっているデータが尽きる頃合いで DMA に次を運ばせる。
-    for _ in emu.mmu.adpcm.pre_update(clk_line) { dmac::exec_adpcm(emu.mmu); }
+    for _ in emu.mmu.adpcm.pre_update(clk_line) { dmabus::exec_adpcm(emu.mmu); }
     emu.mmu.fm.count2(clk_line as u32);
     if emu.mmu.fm.irq {
         emu.mmu.fm.irq = false;
@@ -309,7 +310,7 @@ fn mix_audio(emu: X68kEmulator&, samples: i32) {
     let count = min(samples, AUDIO_FRAME_MAX);
     for i in count {
         // データが尽きていて、続きのブロックが予約されていなければ、DMA に運ばせる
-        if emu.mmu.adpcm.empty() && (emu.mmu.dmac.ch[3].ccr & 0x40) == 0 { dmac::exec_adpcm(emu.mmu); }
+        if emu.mmu.adpcm.empty() && (emu.mmu.dmac.ch[3].ccr & 0x40) == 0 { dmabus::exec_adpcm(emu.mmu); }
         let r, l = emu.mmu.adpcm.next_sample();
         buf[i * 2] = r;
         buf[i * 2 + 1] = l;

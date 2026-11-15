@@ -20,6 +20,7 @@ import .launch_args;
 import .x68k_adpcm;
 import .x68k_opm;
 import .x68k_output;
+import .x68k_config;
 
 var g_checks = 0;
 var g_failures = 0;
@@ -724,6 +725,24 @@ fn test_disk_hdd_and_media() {
     sector[5] = 0x99;
     check("hdd: write a sector", disk::hdd_write(3, sector) == 1 && disk::hdd_read(3, sector) == 1 && sector[5] == 0x99);
     check("hdd: a sector past the image", disk::hdd_read(4, sector) == 0 && sector[5] == 0);
+
+    // 先読みの間の書き込みは取り消し帳で戻る。同じセクタへ 2 度書いても最初の中身へ戻る
+    disk::undo_begin();
+    sector[5] = 0x11;
+    disk::hdd_write(3, sector);
+    sector[5] = 0x22;
+    disk::hdd_write(3, sector);
+    disk::hdd_write(0, sector);
+    disk::undo_rollback();
+    disk::hdd_read(3, sector);
+    let back3 = sector[5];
+    disk::hdd_read(0, sector);
+    check("hdd: writes during run-ahead are undone", back3 == 0x99 && sector[5] == 0);
+    sector[5] = 0x33;
+    disk::hdd_write(1, sector);
+    disk::undo_rollback();
+    disk::hdd_read(1, sector);
+    check("hdd: without undo_begin a write stays", sector[5] == 0x33);
     disk::hdd_eject();
     check("hdd: no image", disk::hdd_read(0, sector) == -1 && !disk::hdd_unit_ok());
     check("hdd: ejecting asks SASI to reset, once", disk::take_sasi_reset() && !disk::take_sasi_reset());
@@ -873,6 +892,10 @@ fn test_launch_args() {
     check("args: --ram other than 12 is noted, not refused", launch::parse(["--ram", "4"], o) == "" && o.ram_ignored);
     o = LaunchOptions {};
     check("args: --ram 12 is quiet", launch::parse(["--ram", "12"], o) == "" && !o.ram_ignored);
+    o = LaunchOptions {};
+    check("args: --run-ahead", launch::parse(["--run-ahead", "2"], o) == "" && o.run_ahead == 2 && o.ahead_set);
+    o = LaunchOptions {};
+    check("args: --run-ahead out of range", launch::parse(["--run-ahead", "5"], o) == "--run-ahead must be 0 to 4\n");
     o = LaunchOptions {};
     check("args: --help skips the other checks", launch::parse(["--no-window", "--help"], o) == "" && o.help);
 
@@ -1056,6 +1079,52 @@ fn test_output() {
     check("output: a path with no samples fails, as before", !ok2 && frames2 == 0);
 }
 
+// ウィンドウの設定 (x68k_config)。ファイルは読み書きせず、中身の解析と書き出しだけを見る。
+fn test_config() {
+    config::open(false);
+    check("config: defaults", config::int_value(GUI_CLOCK) == 10 && config::int_value(GUI_SCALE) == 1 && config::int_value(GUI_WIDTH) == 768);
+    let bios = config::path(GUI_BIOS);
+    check("config: the default BIOS folder is absolute", bios.len > 9 && bios[1] == ':' && bios[bios.len - 7..] == "\\keropi");
+
+    // 値の読み方は C の strtol と同じ
+    check("config: a plain number", config::read_int("a=25\r\n", "a", 1) == 25);
+    check("config: spaces before and after", config::read_int("a= +25 \t\r\n", "a", 1) == 25);
+    check("config: junk after the number", config::read_int("a=25x\r\n", "a", 1) == 1);
+    check("config: out of range", config::read_int("a=100001\r\n", "a", 1) == 1 && config::read_int("a=-1\r\n", "a", 1) == 1);
+    check("config: blank means 0, empty means absent", config::read_int("a= \r\n", "a", 1) == 0 && config::read_int("a=\r\n", "a", 1) == 1);
+    check("config: a key must be followed by =", config::read_int("ab=5\r\na=6\r\n", "a", 1) == 6);
+    let v, found = config::ini_value("x=1\r\n\r\nfd0=C:\\a b\\c.xdf\n", "fd0");
+    check("config: a path value runs to the end of the line", found && v == "C:\\a b\\c.xdf");
+
+    // 範囲外の値は入らず、前の値が残る
+    config::parse("[gui]\r\nversion=1\r\nclock_mhz=50\r\nscale=3\r\nscreen_width=512\r\nrun_ahead=2\r\nfd1=C:\\x\\y.d88\r\n");
+    check("config: values in range are taken", config::int_value(GUI_CLOCK) == 50 && config::int_value(GUI_WIDTH) == 512
+        && config::int_value(GUI_AHEAD) == 2);
+    check("config: run_ahead stops at 4", config::set_int(GUI_AHEAD, 4) && !config::set_int(GUI_AHEAD, 5) && config::int_value(GUI_AHEAD) == 4);
+    check("config: a scale of 3 is refused", config::int_value(GUI_SCALE) == 1);
+    check("config: a path is kept", config::path(GUI_FD1) == "C:\\x\\y.d88");
+    config::parse("[gui]\r\nversion=2\r\nclock_mhz=16\r\n");
+    check("config: another version is ignored", config::int_value(GUI_CLOCK) == 50);
+
+    check("config: an empty path clears a drive, but not the BIOS folder", config::set_path(GUI_FD1, "") && config::path(GUI_FD1).len == 0 && !config::set_path(GUI_BIOS, ""));
+    check("config: a path with a line break is refused", !config::set_path(GUI_FD0, "C:\\a\nb"));
+
+    // UTF-8 として正しくないものだけを旧形式 (ANSI) とみなす
+    check("config: valid UTF-8", config::utf8_valid("C:\\日本語\\x.xdf") && config::utf8_valid("abc"));
+    let ansi: u8[4] = [0x93, 0xFA, 0x96, 0x7B];   // cp932 の「日本」
+    check("config: ANSI bytes are not UTF-8", !config::utf8_valid(ansi[..]));
+    let overlong: u8[2] = [0xC0, 0xAF];
+    let surrogate: u8[3] = [0xED, 0xA0, 0x80];
+    check("config: overlong forms and surrogates are not UTF-8", !config::utf8_valid(overlong[..]) && !config::utf8_valid(surrogate[..]));
+
+    var text: u8[>..] = [];
+    config::render(text);
+    let clock_text, has_clock = config::ini_value(text, "clock_mhz");
+    let fd1_text, has_fd1 = config::ini_value(text, "fd1");
+    check("config: the file layout", text[..20] == "[gui]\r\nversion=1\r\ncl" && has_clock && clock_text == "50" && has_fd1 && fd1_text.len == 0);
+    config::open(false);
+}
+
 fn main() {
     test_flag_helpers();
     test_conditions();
@@ -1081,6 +1150,7 @@ fn main() {
     test_adpcm();
     test_opm();
     test_output();
+    test_config();
     print(g_checks - g_failures, " / ", g_checks, " checks passed");
     if g_failures > 0 { exit(1); }
 }

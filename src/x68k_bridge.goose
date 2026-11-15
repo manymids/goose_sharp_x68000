@@ -11,12 +11,6 @@ extern fn c_machine_bind(ram: u8[:], ipl: u8[:], cgrom: u8[:], sram: u8[:],
     ram_limit: i32&) -> u64;
 extern fn c_machine_epoch() -> u64;
 extern fn c_machine_reset_devices();
-extern fn c_gui_settings_open(enabled: i32);
-extern fn c_gui_settings_int(key: i32) -> i32;
-extern fn c_gui_settings_set_int(key: i32, value: i32) -> i32;
-extern fn c_gui_settings_path(key: i32, out: u8&, cap: i32) -> i32;
-extern fn c_gui_settings_set_path(key: i32, path: const u8&, len: i32) -> i32;
-extern fn c_gui_settings_store();
 extern fn c_startup_error();
 extern fn c_audio_discard();
 extern fn c_host_input_discard();
@@ -40,6 +34,14 @@ extern fn win32_ui_get_key_scancode() -> i32;
 extern fn c_host_joy_byte() -> i32;
 extern fn c_set_cpu_mhz(mhz: i32) -> i32;
 extern fn c_get_cpu_mhz() -> i32;
+extern fn c_get_scale() -> i32;
+// The window menu changed a setting since the last call: returns 1, and the initial screen width the
+// menu chose (0 if it did not choose one). The settings themselves live in x68k_config.goose.
+extern fn c_gui_take_settings_changes(width: i32&) -> i32;
+// The absolute form of a UTF-8 path (GetFullPathNameW), as UTF-8 in out. Returns its length, 0 on failure.
+extern fn c_full_path(path: const u8[:], out: u8&, cap: i32) -> i32;
+// Text in the ANSI code page converted to UTF-8 in out. Returns its length, 0 on failure.
+extern fn c_ansi_to_utf8(text: const u8[:], out: u8&, cap: i32) -> i32;
 extern fn c_cpu_mhz_ok(mhz: i32) -> i32;
 
 extern fn c_host_local_seconds() -> i64;

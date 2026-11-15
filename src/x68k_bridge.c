@@ -535,6 +535,42 @@ static uint32_t g_keys = 0;
 static BITMAPINFO g_bmi;
 static int g_pending_cmd = 0;
 
+/* The settings live in x68k_config.goose. The menu only notes that one changed, and which initial
+ * screen width it chose; the frontend loop collects that once per frame and saves the file. */
+static int g_settings_changed = 0;
+static int g_menu_width = 0;
+
+int c_gui_take_settings_changes(int32_t *width) {
+    int changed = g_settings_changed;
+    if (width) *width = g_menu_width;
+    g_settings_changed = 0;
+    g_menu_width = 0;
+    return changed;
+}
+
+int c_get_scale(void) { return g_scale; }
+
+int c_full_path(X68kByteView path_bytes, uint8_t *out, int cap) {
+    char path[PATH_CAP];
+    wchar_t wide[MAX_PATH], full[MAX_PATH];
+    DWORD n;
+    if (!out || cap < 1) return 0;
+    bind_path(path_bytes.data, (int)path_bytes.len, path, PATH_CAP);
+    if (!path[0] || !path_to_wide(path, wide, MAX_PATH)) return 0;
+    n = GetFullPathNameW(wide, MAX_PATH, full, NULL);
+    if (!n || n >= MAX_PATH || !path_from_wide(full, (char *)out, cap)) return 0;
+    return (int)strlen((const char *)out);
+}
+
+int c_ansi_to_utf8(X68kByteView text, uint8_t *out, int cap) {
+    char in[PATH_CAP];
+    wchar_t wide[MAX_PATH];
+    if (!out || cap < 1) return 0;
+    bind_path(text.data, (int)text.len, in, PATH_CAP);
+    if (!MultiByteToWideChar(CP_ACP, 0, in, -1, wide, MAX_PATH) || !path_from_wide(wide, (char *)out, cap)) return 0;
+    return (int)strlen((const char *)out);
+}
+
 /* A disk the user picked from the menu. The images belong to the Goose side, so the menu
  * only records the request and the frontend loop collects it once per frame. */
 enum { MEDIA_NONE = 0, MEDIA_FD0_INSERT, MEDIA_FD0_EJECT, MEDIA_FD1_INSERT, MEDIA_FD1_EJECT,
@@ -827,13 +863,6 @@ int c_cpu_mhz_ok(int mhz) {
     return cpu_clock_index(mhz) >= 0;
 }
 
-void c_gui_settings_store(void) {
-    c_gui_settings_set_int(GUI_CLOCK, g_cpu_mhz);
-    c_gui_settings_set_int(GUI_SCALE, g_scale);
-    if (g_sys_dir[0]) c_gui_settings_set_path(GUI_BIOS, (const uint8_t *)g_sys_dir, (int)strlen(g_sys_dir));
-    if (!c_gui_settings_save()) fprintf(stderr, "warning: could not save arcl_windows_x68k_goose.ini\n");
-}
-
 void c_startup_error(void) {
     MessageBoxA(NULL, "Could not load the X68000 BIOS.\nPlace iplrom.dat (128 KiB) and cgrom.dat (768 KiB) in .\\keropi\nrelative to the working directory, or pass --system-dir PATH.\nSee README.md for setup.",
                 "Goose X68000 - BIOS setup", MB_OK | MB_ICONERROR);
@@ -845,7 +874,7 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
             int id = LOWORD(wParam);
             if (id >= 501 && id <= 509) {
                 c_set_cpu_mhz(k_cpu_clocks[id - 501]);
-                c_gui_settings_store();
+                g_settings_changed = 1;
                 return 0;
             }
             switch (id) {
@@ -853,8 +882,8 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
                 case 104: g_is_open = false; DestroyWindow(hwnd); break;
                 case 201: win32_set_scale(1); break;
                 case 202: win32_set_scale(2); break;
-                case 211: c_gui_settings_set_int(GUI_WIDTH, 768); c_set_screen_mode(768, 512); break;
-                case 212: c_gui_settings_set_int(GUI_WIDTH, 512); c_set_screen_mode(512, 512); break;
+                case 211: g_menu_width = 768; c_set_screen_mode(768, 512); break;
+                case 212: g_menu_width = 512; c_set_screen_mode(512, 512); break;
                 // FD0 (a new disk here also reboots; the frontend decides that)
                 case 401: {
                     char file_buf[PATH_CAP] = {0};
@@ -883,7 +912,7 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
                     break;
                 default: break;
             }
-            c_gui_settings_store();
+            g_settings_changed = 1;
             return 0;
         }
         case WM_CLOSE:

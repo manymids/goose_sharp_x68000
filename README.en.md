@@ -23,12 +23,13 @@ goose_sharp_x68000/
     mcp_server.goose      ARCL MCP
     mcp_args.goose        Reading MCP tool arguments
     launch_args.goose     Parsing launch arguments
-    x68k_ahead.goose      Running copies of the machine ahead on worker threads
+    x68k_ahead.goose      Running copies of the machine ahead (worker threads / showing the window ahead)
+    x68k_config.goose     Loading/saving GUI settings (INI)
     x68k_output.goose     Writing screens and sound to files
     x68k_*.goose          Devices, rendering, save state, shared services
     test_core.goose/.build Unit tests of the core
     x68k_bridge.c/.h      Win32, file I/O, audio output
-    x68k_config.c/.h      Loading/saving GUI settings
+    x68k_config.h         The CPU clock list (for the C menu)
     x68k_path.h           Conversion between UTF-8 paths and Win32 wide strings
     sound/fmgen-readme.txt Original notes and terms of FMGEN, the code x68k_opm.goose was rewritten from
 ```
@@ -91,13 +92,13 @@ In addition to keyboard input, the arrow keys plus `Z` / `X` and Space / Enter a
 
 By default, the GUI reads `arcl_windows_x68k_goose.ini` from the current directory. Settings are saved when you change the clock, display, or disks from the menu, and on normal exit.
 
-The saved items are the BIOS directory, the FD0/FD1/HDD selections, the clock speed, the scale, and the initial display width. Ejecting a disk is also saved. If a disk has been moved or deleted and can no longer be loaded, the emulator warns and starts without that media.
+The saved items are the BIOS directory, the FD0/FD1/HDD selections, the clock speed, the scale, the initial display width, and the run-ahead frame count. Ejecting a disk is also saved. If a disk has been moved or deleted and can no longer be loaded, the emulator warns and starts without that media.
 
 For the regular GUI, the priority order is **explicit launch arguments → saved GUI settings → defaults**.
 
 - Specifying a disk as an argument ignores all saved media and boots with only that disk.
 - `--no-disk` ignores all saved media and boots with nothing inserted.
-- `--clock` / `--system-dir` / `--scale` / `--mode` each take priority over the corresponding saved value.
+- `--clock` / `--system-dir` / `--scale` / `--mode` / `--run-ahead` each take priority over the corresponding saved value.
 - The settings last used in the regular GUI are saved for the next GUI launch.
 - **ARCL (`--mcp`) and headless mode (`--no-window`) neither read nor write GUI settings.** Launch arguments and ARCL operations take priority and are not affected by whatever clock or disk was last used in the GUI.
 
@@ -241,6 +242,7 @@ arcl_windows_x68k_goose.exe [options] [disk-image]
 | `--clock MHZ` | CPU clock. Default is 10 |
 | `--scale 1\|2` | Initial window scale |
 | `--mode 512\|768` | Initial display width. `512x512` / `768x512` can also be specified |
+| `--run-ahead N` | Show the window N frames ahead (0-4) to cut the delay from input to screen. Default 0 (off) |
 | `--no-disk` | Ignore saved media and boot empty |
 | `--mcp` | Enable the ARCL MCP server. GUI settings are not used |
 | `--mcp-layers LIST` | Layers to expose. e.g. `all`, `l0,l1,l2` |
@@ -273,7 +275,7 @@ Use a different output name for debug builds.
 goose build .\src\main.goose --debug -o .\arcl_windows_x68k_goose_debug.exe
 ```
 
-Goose uses [src/main.build](src/main.build), located in the same folder as the source. The relative paths in `c_sources` and `c_include` assume this layout, so keep the files under `src` together. The C parts are `src/x68k_bridge.c` and `src/x68k_config.c`; they handle only Win32 (window, input, audio playback, file dialog, directory listing) and the INI file. The machine (CPU, peripherals, sound chips) and writing screens and sound to files are Goose.
+Goose uses [src/main.build](src/main.build), located in the same folder as the source. The relative paths in `c_sources` and `c_include` assume this layout, so keep the files under `src` together. The only C part is `src/x68k_bridge.c`; it handles Win32 (window, input, audio playback, file dialog, directory listing, path conversion). The machine (CPU, peripherals, sound chips), writing screens and sound to files, and the GUI settings (INI) are Goose.
 
 Using `-o` to output the exe at the project root also keeps the locations of `keropi` and the INI file clear at runtime. Even if you place the exe inside `src`, the reference point for the BIOS and INI files is the current directory at launch time, not the exe's own location.
 
@@ -286,6 +288,7 @@ This public-distribution layout does not include `tools/architecture/build.ps1` 
 | [src/main.goose](src/main.goose) / [src/launch_args.goose](src/launch_args.goose) | Startup, GUI/ARCL event loop / parsing launch arguments |
 | `src/m68k_*` | CPU instructions, MMU |
 | `src/x68k_mfp/fdc/dmac/sasi/rtc.goose` | Peripherals |
+| [src/x68k_dma_bus.goose](src/x68k_dma_bus.goose) | DMAC channel 1-3 transfers (through the MMU; the channel 0 FDC transfer lives in the MMU) |
 | [src/x68k_adpcm.goose](src/x68k_adpcm.goose) / [src/x68k_opm.goose](src/x68k_opm.goose) | ADPCM (MSM6258) / FM synthesis (YM2151, rewritten from fmgen) |
 | [src/x68k_disk.goose](src/x68k_disk.goose) | FD (XDF, D88, DIM) and HDD images |
 | [src/x68k_ppu.goose](src/x68k_ppu.goose) | Scanline processing and rendering composition |
@@ -293,7 +296,8 @@ This public-distribution layout does not include `tools/architecture/build.ps1` 
 | [src/x68k_state.goose](src/x68k_state.goose) | Shared save logic for regular saves, snapshots, and rewind, including the copies of RAM and the disk images |
 | [src/x68k_session.goose](src/x68k_session.goose) / [src/x68k_input.goose](src/x68k_input.goose) | Shared execution control and input handling across frontends |
 | [src/mcp_server.goose](src/mcp_server.goose) / [src/mcp_args.goose](src/mcp_args.goose) | JSON-RPC parsing, exposed tools, responses / reading tool arguments |
-| [src/x68k_config.c](src/x68k_config.c) | GUI INI handling. Independent of machine save states |
+| [src/x68k_config.goose](src/x68k_config.goose) | GUI INI handling. Independent of machine save states |
+| [src/x68k_ahead.goose](src/x68k_ahead.goose) | Running ahead (copies on worker threads / the screen shown ahead in the window) |
 | [src/x68k_output.goose](src/x68k_output.goose) | Writing screens (BMP, PNG) and sound (WAV) to files, audio recording |
 | `src/x68k_bridge.c` | Win32 (window, input, audio device, file dialog) |
 
@@ -308,7 +312,7 @@ goose build .\src\test_core.goose -o .\test_core.exe
 .\test_core.exe
 ```
 
-It prints `422 / 422 checks passed` when everything passes, and reports each failure and exits with status 1 otherwise. Building with `--debug` also enables the overflow and range checks.
+It prints `446 / 446 checks passed` when everything passes, and reports each failure and exits with status 1 otherwise. Building with `--debug` also enables the overflow and range checks.
 
 ## Troubleshooting and known limitations
 

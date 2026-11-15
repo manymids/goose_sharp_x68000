@@ -13,6 +13,7 @@ import .x68k_config;
 import .launch_args;
 import .x68k_disk;
 import .x68k_output;
+import .x68k_ahead;
 
 fn launch_error(message: const u8[:]) {
     write_stderr(message);
@@ -27,6 +28,7 @@ fn print_help() {
         "  --clock MHZ          10,16,25,50,75,100,150,200,250 (default: 10)\n",
         "  --scale 1|2          Initial GUI window scale\n",
         "  --mode 512|768       Initial display width (guest CRTC may change it)\n",
+        "  --run-ahead N        Show the window N frames ahead (0-4) to cut input lag\n",
         "  --no-disk            Ignore all remembered GUI media; start empty\n",
         "  --mcp                ARCL MCP over stdio; ignores GUI preferences\n",
         "  --mcp-layers LIST    l0,l1,l2,l3,l4 or all (default: l0,l1)\n",
@@ -102,6 +104,28 @@ fn apply_menu_media() -> bool {
     return false;
 }
 
+// 保存してある前回のディスク (x68k_config) を入れ直す。
+fn mount_saved(key: i32, value: const u8[:]) {
+    if value.len == 0 { return; }
+    let ok = if key == GUI_HDD { disk::hdd_load(value) } else { disk::fd_load(key - GUI_FD0, value) };
+    if !ok { write_stderr(str("warning: saved disk could not be loaded: ", value, "\n")); }
+}
+
+// 前回の終了時に入っていたディスクを、空のドライブへ入れ直す。
+// 読めなかったものは設定からも消え、次回は試さない。
+fn mount_saved_media() {
+    var fd0: u8[>..] = [];
+    var fd1: u8[>..] = [];
+    var hdd: u8[>..] = [];
+    fd0.append(config::path(GUI_FD0));
+    fd1.append(config::path(GUI_FD1));
+    hdd.append(config::path(GUI_HDD));
+    disk::power_on();
+    mount_saved(GUI_FD0, fd0);
+    mount_saved(GUI_FD1, fd1);
+    mount_saved(GUI_HDD, hdd);
+}
+
 // リセットの操作 (メニュー / F5) か、起動し直しの要るディスクの出し入れがあったか。
 fn reset_requested() -> bool {
     let command = win32_ui_get_command();
@@ -150,7 +174,8 @@ fn run_mcp(emu: X68kEmulator&, want_window: bool, screen_w: i32, screen_h: i32, 
 }
 
 // Win32 ウィンドウで実時間に合わせて動かす。max_frames > 0 ならその数で終わる。
-fn run_gui(emu: X68kEmulator&, screen_w: i32, screen_h: i32, scale: i32, max_frames: i64, dump_path: const u8[:], dump_after: i64) {
+fn run_gui(emu: X68kEmulator&, screen_w: i32, screen_h: i32, scale: i32, max_frames: i64, dump_path: const u8[:], dump_after: i64,
+    run_ahead: i32) {
     if !open_window(screen_w, screen_h, scale) {
         print("ERROR: Failed to create Win32 window!");
         return;
@@ -165,6 +190,7 @@ fn run_gui(emu: X68kEmulator&, screen_w: i32, screen_h: i32, scale: i32, max_fra
 
         pump_host_keys(emu);
         emu.mmu.joy1 = c_host_joy_byte() as u8;
+        config::sync_from_host();
 
         if reset_requested() {
             session::reset(emu);
@@ -184,7 +210,15 @@ fn run_gui(emu: X68kEmulator&, screen_w: i32, screen_h: i32, scale: i32, max_fra
             dumped = true;
         }
 
-        win32_ui_render_fb();
+        // 先読みを使うなら、本当のフレームの代わりに run_ahead フレーム先の画面を出す (x68k_ahead)。
+        if !emu.is_paused && run_ahead > 0 && ahead::begin(emu, run_ahead) {
+            c_set_screen_mode(emu.ppu.screen_w, emu.ppu.screen_h);
+            c_set_frame_ready(if emu.ppu.frame_ready { 1 } else { 0 });
+            win32_ui_render_fb();
+            ahead::end(emu);
+        } else {
+            win32_ui_render_fb();
+        }
 
         // The frame the CRTC programs (768x512 31 kHz: about 18031 us, 55.46 Hz).
         let frame_period_us: u64 = (emu::frame_cycles10(emu.mmu) / 10) as u64;
@@ -198,15 +232,17 @@ fn run_gui(emu: X68kEmulator&, screen_w: i32, screen_h: i32, scale: i32, max_fra
         }
     }
 
-    c_gui_settings_store();
+    config::store();
     win32_ui_destroy();
 }
 
 // ウィンドウなしで frames フレームだけ進める。
-fn run_headless(emu: X68kEmulator&, frames: i64, dump_path: const u8[:]) {
+// run_ahead > 0 なら毎フレーム先読みして戻す (見せる画面はないが、戻したあとが同じかを確かめられる)。
+fn run_headless(emu: X68kEmulator&, frames: i64, dump_path: const u8[:], run_ahead: i32) {
     for _ in frames {
         emu.clock_mhz = c_get_cpu_mhz();
         session::run_frame(emu);
+        if run_ahead > 0 && ahead::begin(emu, run_ahead) { ahead::end(emu); }
     }
     if dump_path.len > 0 { write_dump(emu, dump_path); }
     write_stderr(str("frames: ", emu.total_frames, "\n"));
@@ -235,14 +271,16 @@ fn main() {
     let screen_h = opt.screen_h;
     var scale = opt.scale;
     let gui_preferences = !mcp_mode && !no_window;
-    c_gui_settings_open(if gui_preferences { 1 } else { 0 });
+    config::open(gui_preferences);
     // ARCL とヘッドレス実行は毎回同じ SRAM から始める。終了時に sram.dat を書き戻すのは GUI だけ。
     c_sram_set_persist(if gui_preferences { 1 } else { 0 });
-    if !opt.sys_set { sys_dir = gui_settings_path(GUI_BIOS); }
-    if !opt.clock_set { clock_mhz = c_gui_settings_int(GUI_CLOCK); }
-    if !opt.mode_set { screen_w = c_gui_settings_int(GUI_WIDTH); }
-    if !opt.scale_set { scale = c_gui_settings_int(GUI_SCALE); }
-    c_gui_settings_set_int(GUI_WIDTH, screen_w);
+    if !opt.sys_set { sys_dir.clear(); sys_dir.append(config::path(GUI_BIOS)); }
+    if !opt.clock_set { clock_mhz = config::int_value(GUI_CLOCK); }
+    if !opt.mode_set { screen_w = config::int_value(GUI_WIDTH); }
+    if !opt.scale_set { scale = config::int_value(GUI_SCALE); }
+    let run_ahead = if opt.ahead_set { opt.run_ahead } else { config::int_value(GUI_AHEAD) };
+    config::set_int(GUI_AHEAD, run_ahead);
+    config::set_int(GUI_WIDTH, screen_w);
     if sys_dir.len == 0 { launch_error("BIOS directory is empty; use --system-dir PATH\n"); }
 
     if c_set_cpu_mhz(clock_mhz) == 0 {
@@ -255,13 +293,14 @@ fn main() {
 
     // ハードウェアメモリ (RAM 12MB, ROM, VRAM) の初期化
     let mem_ok = x68k_mem_init(sys_dir[..]);
+    if mem_ok != 0 { config::set_path(GUI_BIOS, sys_dir[..]); } // 保存するときに書く BIOS のフォルダ
     if mem_ok == 0 {
         write_stderr(str("Could not initialize BIOS/memory from: ", sys_dir, " (iplrom.dat 128 KiB, cgrom.dat 768 KiB required)\n"));
         if !mcp_mode && !no_window { c_startup_error(); }
         exit(1);
     }
     if gui_preferences && !opt.content_set {
-        gui_mount_saved_media();
+        mount_saved_media();
     } else {
         disk::power_on();
         if content_path.len > 0 {
@@ -285,11 +324,11 @@ fn main() {
         run_mcp(emu, !no_window, screen_w, screen_h, scale);
     } else if !no_window {
         print_banner(content_path, sys_dir);
-        run_gui(emu, screen_w, screen_h, scale, opt.max_frames, opt.dump_path[..], opt.dump_after);
+        run_gui(emu, screen_w, screen_h, scale, opt.max_frames, opt.dump_path[..], opt.dump_after, run_ahead);
     } else {
         print_banner(content_path, sys_dir);
         // Without --frames the earlier check guarantees --dump-frame.
-        run_headless(emu, if opt.frames_set { opt.max_frames } else { opt.dump_after }, opt.dump_path[..]);
+        run_headless(emu, if opt.frames_set { opt.max_frames } else { opt.dump_after }, opt.dump_path[..], run_ahead);
     }
     x68k_mem_destroy();
 }

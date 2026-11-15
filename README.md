@@ -22,12 +22,13 @@ goose_sharp_x68000/
     mcp_server.goose      ARCL MCP
     mcp_args.goose        MCPの引数の取り出し
     launch_args.goose     起動引数の解釈
-    x68k_ahead.goose      先読み（機械の写しを別スレッドで進める）
+    x68k_ahead.goose      先読み（機械の写しを別スレッドで進める / 画面だけ先へ進めて見せる）
+    x68k_config.goose     GUI設定（INI）の読込・保存
     x68k_output.goose     画面と音のファイルへの書き出し
     x68k_*.goose          機器・描画・保存・共有サービス
     test_core.goose/.build コアの単体テスト
     x68k_bridge.c/.h      Win32・ファイル・音声出力
-    x68k_config.c/.h      GUI設定の読込・保存
+    x68k_config.h         CPUクロックの一覧（C側のメニュー用）
     x68k_path.h           パスのUTF-8とWin32のワイド文字の変換
     sound/fmgen-readme.txt FMGEN（x68k_opm.goose の元のコード）の説明・条件の原文
 ```
@@ -90,13 +91,13 @@ Set-Location C:\work\goose_sharp_x68000
 
 通常GUIは、カレントディレクトリの `arcl_windows_x68k_goose.ini` を読み込みます。クロック・表示・ディスクをメニューで変更したときと、正常終了時に設定を保存します。
 
-保存するのは BIOSディレクトリ、FD0・FD1・HDDの選択、クロック、倍率、初期表示幅です。ディスクの取り出しも保存されます。ディスクが移動・削除されて読み込めない場合は、警告してその媒体なしで起動します。
+保存するのは BIOSディレクトリ、FD0・FD1・HDDの選択、クロック、倍率、初期表示幅、先読みのフレーム数です。ディスクの取り出しも保存されます。ディスクが移動・削除されて読み込めない場合は、警告してその媒体なしで起動します。
 
 通常GUIの優先順位は、**明示した起動引数 → 保存済みGUI設定 → 初期値**です。
 
 - ディスクを引数で指定すると、保存済み媒体をすべて無視し、そのディスクだけで起動します。
 - `--no-disk` は保存済み媒体をすべて無視して空の状態で起動します。
-- `--clock` / `--system-dir` / `--scale` / `--mode` は、それぞれ保存済みの値より優先します。
+- `--clock` / `--system-dir` / `--scale` / `--mode` / `--run-ahead` は、それぞれ保存済みの値より優先します。
 - 通常GUIで使った最終設定は、次回GUI起動用に保存されます。
 - **ARCL（`--mcp`）とヘッドレス（`--no-window`）はGUI設定を読み書きしません。** 起動引数とARCL操作が優先され、GUIで最後に使ったクロックやディスクに影響されません。
 
@@ -240,6 +241,7 @@ arcl_windows_x68k_goose.exe [options] [disk-image]
 | `--clock MHZ` | CPUクロック。初期値10 |
 | `--scale 1\|2` | 初期ウィンドウ倍率 |
 | `--mode 512\|768` | 初期表示幅。`512x512` / `768x512` も指定可能 |
+| `--run-ahead N` | ウィンドウにNフレーム先（0〜4）の画面を出し、入力から画面までの遅れを縮める。初期値0（使わない） |
 | `--no-disk` | 保存済み媒体を無視して空で起動 |
 | `--mcp` | ARCL MCPを有効化。GUI設定は不使用 |
 | `--mcp-layers LIST` | 公開するレイヤー。例: `all`、`l0,l1,l2` |
@@ -272,7 +274,7 @@ goose build .\src\main.goose -o .\arcl_windows_x68k_goose.exe
 goose build .\src\main.goose --debug -o .\arcl_windows_x68k_goose_debug.exe
 ```
 
-Gooseがソースと同じフォルダの [src/main.build](src/main.build) を使用します。`c_sources` と `c_include` の相対パスはこの配置を前提としているため、`src` 内のファイルはまとめて維持してください。C部分は `src/x68k_bridge.c` と `src/x68k_config.c` で、Win32（ウィンドウ、入力、音声の再生、ファイル選択、ディレクトリ一覧）とINIだけを受け持ちます。機械（CPU・周辺機器・音源）と、画面・音のファイルへの書き出しはGooseです。
+Gooseがソースと同じフォルダの [src/main.build](src/main.build) を使用します。`c_sources` と `c_include` の相対パスはこの配置を前提としているため、`src` 内のファイルはまとめて維持してください。C部分は `src/x68k_bridge.c` だけで、Win32（ウィンドウ、入力、音声の再生、ファイル選択、ディレクトリ一覧、パスの変換）を受け持ちます。機械（CPU・周辺機器・音源）、画面・音のファイルへの書き出し、GUI設定（INI）はGooseです。
 
 `-o` でexeをプロジェクトのルートへ出力することで、実行時の `keropi` とINIの場所も分かりやすくなります。`src` 内にexeを置いた場合でも、BIOSやINIの基準はexeの場所ではなく、起動時のカレントディレクトリです。
 
@@ -285,6 +287,7 @@ Gooseがソースと同じフォルダの [src/main.build](src/main.build) を�
 | [src/main.goose](src/main.goose) / [src/launch_args.goose](src/launch_args.goose) | 起動・GUI/ARCLのイベントループ / 起動引数の解釈 |
 | `src/m68k_*` | CPU命令・MMU |
 | `src/x68k_mfp/fdc/dmac/sasi/rtc.goose` | 周辺機器 |
+| [src/x68k_dma_bus.goose](src/x68k_dma_bus.goose) | DMACのch1〜3の転送（MMUの読み書きを通る。ch0のFDC転送はMMUの側） |
 | [src/x68k_adpcm.goose](src/x68k_adpcm.goose) / [src/x68k_opm.goose](src/x68k_opm.goose) | ADPCM（MSM6258） / FM音源（YM2151。fmgenを書き直したもの） |
 | [src/x68k_disk.goose](src/x68k_disk.goose) | FD（XDF・D88・DIM）とHDDのイメージ |
 | [src/x68k_ppu.goose](src/x68k_ppu.goose) | 走査線・描画合成 |
@@ -292,7 +295,8 @@ Gooseがソースと同じフォルダの [src/main.build](src/main.build) を�
 | [src/x68k_state.goose](src/x68k_state.goose) | 通常保存・snapshot・rewindの共通保存（RAM・ディスクイメージの写しを含む） |
 | [src/x68k_session.goose](src/x68k_session.goose) / [src/x68k_input.goose](src/x68k_input.goose) | フロントエンド共通の実行制御と入力 |
 | [src/mcp_server.goose](src/mcp_server.goose) / [src/mcp_args.goose](src/mcp_args.goose) | JSON-RPCの解析・公開ツール・応答 / 引数の取り出し |
-| [src/x68k_config.c](src/x68k_config.c) | GUI用INI。機械の保存状態とは独立 |
+| [src/x68k_config.goose](src/x68k_config.goose) | GUI用INI。機械の保存状態とは独立 |
+| [src/x68k_ahead.goose](src/x68k_ahead.goose) | 先読み（別スレッドの写し / ウィンドウに見せる先の画面） |
 | [src/x68k_output.goose](src/x68k_output.goose) | 画面（BMP・PNG）と音（WAV）の書き出し、録音 |
 | `src/x68k_bridge.c` | Win32（ウィンドウ・入力・音声デバイス・ファイル選択） |
 
@@ -300,14 +304,14 @@ Gooseがソースと同じフォルダの [src/main.build](src/main.build) を�
 
 **この公開用構成には `test_*.goose`、対応するテスト用 `.build`、`tools/architecture/`、開発用 `ARCHITECTURE_*.md` は含まれていません。** 記載した検証は元の開発ツリーで実施した結果で、このフォルダだけで同じ自動テストを再実行できるという意味ではありません。
 
-BIOSもディスクイメージも使わないコアの単体テストとして [src/test_core.goose](src/test_core.goose) を同梱しています。CPUのフラグ計算と命令実行、例外、キー入力の対応表、FDCのコマンド表、DMACのレジスタ、RTCの暦計算、逆アセンブラの出力を確認します。
+BIOSもディスクイメージも使わないコアの単体テストとして [src/test_core.goose](src/test_core.goose) を同梱しています。CPUのフラグ計算と命令実行、例外、キー入力の対応表、FDCのコマンド表、DMACのレジスタ、RTCの暦計算、逆アセンブラの出力、GUI設定の解析と書き出し、先読みの間のディスク書き込みの取り消しを確認します。
 
 ```powershell
 goose build .\src\test_core.goose -o .\test_core.exe
 .\test_core.exe
 ```
 
-すべて通ると `422 / 422 checks passed` と表示し、失敗があれば内容を出して終了コード1で終わります。`--debug` を付けてビルドすると、桁あふれと範囲の検査も有効になります。
+すべて通ると `446 / 446 checks passed` と表示し、失敗があれば内容を出して終了コード1で終わります。`--debug` を付けてビルドすると、桁あふれと範囲の検査も有効になります。
 
 ## 困ったとき・既知の制限
 

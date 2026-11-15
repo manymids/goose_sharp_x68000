@@ -653,6 +653,98 @@ fn write_crtc(mmu: M68kMMU&, a: u32, val: u8) {
     if reg == 0x2D && (mmu.crtc_mode & 8) != 0 { mmu.crtc_raster_copy(); }
 }
 
+// FDC と DMAC Ch 0 の DMA 転送実行 (DMAC がバスマスタになって MMU の読み書きを使う)。
+// px68k の dma_writemem24 は wm_main 経由なので、GVRAM / TVRAM も CPU と同じ書き込みになる。
+fn fdc_dma(dmac: X68kDMAC&, fdc: X68kFDC&, mmu: M68kMMU&) -> bool {
+    // Ch 0 が動作中 (ACT = bit 3) かチェック
+    if (dmac.ch[0].csr & 0x08) == 0 {
+        return false;
+    }
+    if fdc.exec_len() <= 0 {
+        return false;
+    }
+
+    // 1 セクタ転送するたびに FDC_NextTrack。MTC が残っていれば次セクタも続ける。
+    while (dmac.ch[0].csr & 0x08) != 0 && fdc.exec_len() > 0 {
+        // WriteData 実行中はメモリ → FDC。OCR bit7 (デバイス → メモリ) が立っていれば方向が合わない。
+        let to_disk = fdc.is_writing();
+        if to_disk && (dmac.ch[0].ocr & 0x80) != 0 {
+            return false;
+        }
+        for i in fdc.exec_len() {
+            let addr = dmac.ch[0].mar & ADDR_MASK;
+            let b = fdc.data_buf[i];
+            if to_disk {
+                fdc.data_buf[i] = mmu.read8(addr);
+            } else if dmac::in_ram(addr, 1) {
+                x68k_ram_write(addr as! i32, b);
+            } else if addr >= 0xC00000 && addr < 0xE00000 {
+                mmu.gvram_cpu_write((addr - 0xC00000) as! i32, b, mmu.crtc_regs[0x28]);
+            } else if addr >= 0xE00000 && addr < 0xE80000 {
+                let off = (addr - 0xE00000) as! i32;
+                mmu.write_tvram_access(off, b, mmu.crtc_regs[0x2A], mmu.crtc_regs[0x2B], mmu.crtc_regs[0x2E], mmu.crtc_regs[0x2F]);
+            }
+            if (dmac.ch[0].scr & 8) != 0 {
+                dmac.ch[0].mar--;
+            } else {
+                dmac.ch[0].mar++;
+            }
+        }
+
+        // MTC の減算（ワード転送の場合は セクタ長 / 2、バイト転送の場合はセクタ長）
+        let size_code = (dmac.ch[0].ocr >> 4) & 3;
+        let units = if size_code == 1 { (fdc.exec_len() / 2) as! u16 } else { fdc.exec_len() as! u16 };
+        if dmac.ch[0].mtc >= units {
+            dmac.ch[0].mtc -= units;
+        } else {
+            dmac.ch[0].mtc = 0;
+        }
+
+        if dmac.ch[0].mtc == 0 {
+            if (dmac.ch[0].ocr & 8) != 0 {
+                // Next block in chain
+                if (dmac.ch[0].ocr & 4) != 0 {
+                    if dmac.ch[0].bar != 0 {
+                        dmac.ch[0].mar = dmac::readmem24_dword(dmac.ch[0].bar) & ADDR_MASK;
+                        dmac.ch[0].mtc = dmac::readmem24_word(dmac.ch[0].bar + 4);
+                        dmac.ch[0].bar = dmac::readmem24_dword(dmac.ch[0].bar + 6) & ADDR_MASK;
+                    }
+                } else {
+                    if dmac.ch[0].btc > 0 {
+                        dmac.ch[0].btc--;
+                        if dmac.ch[0].btc != 0 {
+                            dmac.ch[0].mar = dmac::readmem24_dword(dmac.ch[0].bar) & ADDR_MASK;
+                            dmac.ch[0].mtc = dmac::readmem24_word(dmac.ch[0].bar + 4);
+                            dmac.ch[0].bar += 6;
+                        }
+                    }
+                }
+            }
+        }
+
+        if dmac.ch[0].mtc == 0 {
+            // DMAC 転送完了フラグ
+            dmac.ch[0].csr |= 0x80; // COC (Channel Operation Complete)
+            dmac.ch[0].csr &= 0xF7; // ACT = 0
+            dmac.ch[0].ccr &= 0x7F; // STR = 0
+            // px68k DMAINT。CCR bit3 が許可のときだけ。ch3 は C 側の経路のまま。
+            if (dmac.ch[0].ccr & 0x08) != 0 {
+                dmac.int_ch |= 1;
+                dmac.int_pending = true;
+            }
+        }
+
+        if to_disk {
+            // 転送カウンタが尽きたら TC。残っていれば次のセクタを待つ。
+            fdc.write_buffer(dmac.ch[0].mtc == 0);
+        } else {
+            fdc.next_track();
+        }
+    }
+
+    return true;
+}
+
 // FDC か DMAC に書いたあとに呼ぶ。転送の準備がそろっていれば DMA を進め、
 // FDC が割り込みを要求していれば IOC に伝える。
 fn fdc_service(mmu: M68kMMU&) {
@@ -660,7 +752,7 @@ fn fdc_service(mmu: M68kMMU&) {
         // DMA の読み書きは CPU のアクセスではないので、保護の検査を外して行う
         let cpu_access = mmu.cpu_access;
         mmu.cpu_access = false;
-        mmu.dmac.exec_fdc(mmu.fdc, mmu);
+        fdc_dma(mmu.dmac, mmu.fdc, mmu);
         mmu.cpu_access = cpu_access;
     }
     if mmu.fdc.int_pending {

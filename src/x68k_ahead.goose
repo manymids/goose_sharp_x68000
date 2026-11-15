@@ -10,6 +10,9 @@ import .x68k_emu;
 import .x68k_input;
 import .x68k_ppu;
 import .m68k_cpu;
+import .x68k_ram;
+import .x68k_rom;
+import .x68k_disk;
 namespace ahead;
 
 let ::AHEAD_MAX_VARIANTS = 8;
@@ -74,4 +77,60 @@ fn run(emu: X68kEmulator&, jobs: const Job[:], out: Result[>..]&) {
             if r.variant == i { out.push(r); }
         }
     }
+}
+
+// ---------------------------------------------------------------
+// 見せるための先読み (ウィンドウの入力遅れを減らす)
+// ---------------------------------------------------------------
+//
+// 本当のフレームを進めて音を出したあとで、同じスレッドで機械を frames フレーム先まで進め、
+// その画面を出してから元へ戻す。今押しているキーがそのまま続くと見なした未来を見せるので、
+// ゲームが入力を画面に出すまでの遅れがその分だけ縮んで見える。先読みの間の音は捨てる。
+// 戻すのは run_frame が変えうるものすべて: エミュレータの構造体、RAM、SRAM、ディスクの状態と
+// イメージ (イメージは書き込みの取り消し帳で戻す)。
+
+struct Saved {
+    emu: X68kEmulator = X68kEmulator {},
+    sram: u8[SRAM_BYTES] = [0; SRAM_BYTES],
+    sram_we: i32 = 0,
+    disk: DiskState = DiskState {},
+}
+var g_saved = Saved {};
+var g_saved_ram: u8[>..] = [];
+
+fn save(emu: X68kEmulator&) {
+    g_saved.emu = emu;
+    g_saved.sram = g_sram;
+    g_saved.sram_we = x68k_sram_write_enable();
+    g_saved.disk = g_disk;
+    g_saved_ram.clear();
+    g_saved_ram.append(g_x68k_ram[..x68k_ram_limit()]);
+    disk::undo_begin();
+}
+
+fn restore(emu: X68kEmulator&) {
+    disk::undo_rollback();
+    copy_into(g_x68k_ram[..g_saved_ram.len], g_saved_ram[..]);
+    g_disk = g_saved.disk;
+    x68k_sram_set_write_enable(g_saved.sram_we);
+    g_sram = g_saved.sram;
+    emu = g_saved.emu;
+}
+
+// emu を frames フレーム先まで進める。画面を出したら必ず end で元に戻すこと。
+// ブレークポイントに当たればそこで止める。end のあとの emu は begin の前とまったく同じ。
+fn begin(emu: X68kEmulator&, frames: i32) -> bool {
+    if frames < 1 || !emu.active() { return false; }
+    save(emu);
+    emu.hit_break = false;
+    for _ in frames {
+        emu.run_frame();
+        emu.audio_samples = 0;
+        if emu.hit_break { break; }
+    }
+    return true;
+}
+
+fn end(emu: X68kEmulator&) {
+    restore(emu);
 }

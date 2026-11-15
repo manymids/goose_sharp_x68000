@@ -55,7 +55,10 @@ int c_host_joy_byte(void);
 int c_set_cpu_mhz(int mhz);
 int c_get_cpu_mhz(void);
 int c_cpu_mhz_ok(int mhz);
-void c_gui_settings_store(void);
+int c_get_scale(void);
+int c_gui_take_settings_changes(int32_t *width);
+int c_full_path(X68kByteView path, uint8_t *out, int cap);
+int c_ansi_to_utf8(X68kByteView text, uint8_t *out, int cap);
 void c_startup_error(void);
 
 /* Host local time as seconds since 1970-01-01 of the local calendar. */

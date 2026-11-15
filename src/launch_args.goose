@@ -4,6 +4,7 @@
 import std;
 import .x68k_bridge;
 import .mcp_server;
+import .x68k_config;
 namespace launch;
 
 struct Options {
@@ -16,6 +17,7 @@ struct Options {
     scale: i32 = 1,
     max_frames: i64 = -1,   // --frames。-1 は無制限
     dump_after: i64 = 1200, // --dump-after-frames
+    run_ahead: i32 = 0,     // --run-ahead。ウィンドウで先読みして見せるフレーム数
     layers: i32 = -1,       // --mcp-layers のビット集合。-1 は指定なし
     mcp_mode: bool = false,
     no_window: bool = false,
@@ -27,6 +29,7 @@ struct Options {
     clock_set: bool = false,
     mode_set: bool = false,
     scale_set: bool = false,
+    ahead_set: bool = false,
     content_set: bool = false, // ディスクが指定された。--no-disk も含む
 }
 type ::LaunchOptions = launch::Options;
@@ -47,7 +50,7 @@ fn number(text: const u8[:], lo: i64, hi: i64) -> i64, bool {
 // 値を取るオプションかどうか。
 fn takes_value(arg: const u8[:]) -> bool {
     return arg == "--mode" || arg == "--system-dir" || arg == "--clock" || arg == "--scale" || arg == "--frames"
-        || arg == "--dump-frame" || arg == "--dump-after-frames" || arg == "--mcp-layers" || arg == "--ram";
+        || arg == "--dump-frame" || arg == "--dump-after-frames" || arg == "--mcp-layers" || arg == "--ram" || arg == "--run-ahead";
 }
 
 // 値を取るオプション 1 つを opt に反映する。問題があればその説明を返す。
@@ -85,6 +88,11 @@ fn apply_value(opt: Options&, name: const u8[:], value: const u8[:]) -> const u8
         let mask = mcp::parse_layers(value);
         if mask < 0 { return "--mcp-layers: expected l0,l1,l2,l3,l4 or all\n"; }
         opt.layers = mask;
+    } else if name == "--run-ahead" {
+        let n, ok = number(value, 0, AHEAD_SHOW_MAX);
+        if !ok { return "--run-ahead must be 0 to 4\n"; }
+        opt.run_ahead = n as i32;
+        opt.ahead_set = true;
     } else if name == "--ram" {
         // 互換のために受け取る。RAM は 12 MB 固定。
         let _, ok = number(value, 12, 12);
