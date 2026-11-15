@@ -166,26 +166,15 @@ static void *host_calloc(size_t n, size_t size) {
     return calloc(n, size);
 }
 static char g_sys_dir[PATH_CAP];
-#define TVRAM_SIZE (512 * 1024)        // 512KB
-#define GVRAM_SIZE (512 * 1024)        // 512KB
 #define CGROM_SIZE (768 * 1024)        // 768KB
 #define IPL_SIZE   (128 * 1024)        // 128KB
 #define SRAM_SIZE  (16 * 1024)         // 16KB
-#define PAL_SIZE     (1024)            // 1024 bytes (0xE82000 - 0xE823FF)
-#define VCREG_SIZE   (0x400)           // 1024 bytes (0xE82400 - 0xE827FF)
-#define SPRITE_SIZE  (0x800)           // 2048 bytes (0xEB0000 - 0xEB07FF)
-#define BGREG_SIZE   (0x20)            // 32 bytes   (0xEB0800 - 0xEB081F)
-#define BGRAM_SIZE   (0x8000)          // 32768 bytes (0xEB8000 - 0xEBFFFF)
 #define FB_MAX_W   768
 #define FB_MAX_H   512
 #define FB_MAX_PIXELS (FB_MAX_W * FB_MAX_H)
 
 static uint8_t *g_ram = NULL;
 static int g_ram_bound = 0;
-static uint8_t *g_tvram = NULL;
-static int g_tvram_bound = 0;
-static uint8_t *g_gvram = NULL;
-static int g_gvram_bound = 0;
 static uint8_t *g_cgrom = NULL;
 static int g_cgrom_bound = 0;
 static uint8_t *g_iplrom = NULL;
@@ -194,18 +183,7 @@ static uint8_t *g_sram = NULL;
 static int g_sram_bound = 0;
 static uint32_t *g_fb = NULL;
 static int g_fb_bound = 0;
-
-static uint8_t *g_pal = NULL;
-static uint8_t *g_vcreg = NULL;
-static int g_vcreg_bound = 0;
-static uint8_t *g_sprite = NULL;
-static uint8_t *g_bgreg = NULL;
-static uint8_t *g_bgram = NULL;
-static uint8_t *g_bg_chr8 = NULL;
-static uint8_t *g_bg_chr16 = NULL;
-static int g_video_bound = 0;
 static int g_src_w = 768; // Default to 768x512 standard X68000 mode
-static int g_frame_ready = 0;
 static int g_src_h = 512;
 
 
@@ -264,25 +242,12 @@ int x68k_mem_init(X68kByteView sys_bytes) {
         g_sys_dir[PATH_CAP - 1] = '\0';
     }
     if (!g_ram) g_ram = (uint8_t *)host_calloc(1, (size_t)g_ram_bytes);
-    if (!g_tvram_bound && !g_tvram) g_tvram = (uint8_t *)host_calloc(1, TVRAM_SIZE);
-    if (!g_gvram_bound && !g_gvram) g_gvram = (uint8_t *)host_calloc(1, GVRAM_SIZE);
     if (!g_cgrom) g_cgrom = (uint8_t *)host_calloc(1, CGROM_SIZE);
     if (!g_iplrom) g_iplrom = (uint8_t *)host_calloc(1, IPL_SIZE);
     if (!g_sram) g_sram = (uint8_t *)host_calloc(1, SRAM_SIZE);
     if (!g_fb) g_fb = (uint32_t *)host_calloc(1, FB_MAX_PIXELS * sizeof(uint32_t));
 
-    if (!g_vcreg) g_vcreg = (uint8_t *)host_calloc(1, VCREG_SIZE);
-    if (!g_video_bound) {
-        if (!g_pal) g_pal = (uint8_t *)host_calloc(1, PAL_SIZE);
-        if (!g_sprite) g_sprite = (uint8_t *)host_calloc(1, SPRITE_SIZE);
-        if (!g_bgreg) g_bgreg = (uint8_t *)host_calloc(1, BGREG_SIZE);
-        if (!g_bgram) g_bgram = (uint8_t *)host_calloc(1, BGRAM_SIZE);
-        if (!g_bg_chr8) g_bg_chr8 = (uint8_t *)host_calloc(1, 8 * 8 * 256);
-        if (!g_bg_chr16) g_bg_chr16 = (uint8_t *)host_calloc(1, 16 * 16 * 256);
-    }
-    if (!g_ram || !g_tvram || !g_gvram || !g_cgrom || !g_iplrom || !g_sram ||
-        !g_fb || !g_vcreg || !g_pal || !g_sprite || !g_bgreg ||
-        !g_bgram || !g_bg_chr8 || !g_bg_chr16) {
+    if (!g_ram || !g_cgrom || !g_iplrom || !g_sram || !g_fb) {
         x68k_mem_destroy();
         return 0;
     }
@@ -328,12 +293,6 @@ void x68k_mem_destroy(void) {
     if (!g_ram_bound && g_ram) free(g_ram);
     g_ram = NULL;
     g_ram_bound = 0;
-    if (!g_tvram_bound && g_tvram) free(g_tvram);
-    g_tvram = NULL;
-    g_tvram_bound = 0;
-    if (!g_gvram_bound && g_gvram) free(g_gvram);
-    g_gvram = NULL;
-    g_gvram_bound = 0;
     if (!g_cgrom_bound && g_cgrom) free(g_cgrom);
     g_cgrom = NULL;
     g_cgrom_bound = 0;
@@ -347,26 +306,7 @@ void x68k_mem_destroy(void) {
     g_fb = NULL;
     g_fb_bound = 0;
 
-    if (!g_vcreg_bound && g_vcreg) free(g_vcreg);
-    g_vcreg = NULL;
-    g_vcreg_bound = 0;
-    if (!g_video_bound) {
-        if (g_pal) free(g_pal);
-        if (g_sprite) free(g_sprite);
-        if (g_bgreg) free(g_bgreg);
-        if (g_bgram) free(g_bgram);
-        if (g_bg_chr8) free(g_bg_chr8);
-        if (g_bg_chr16) free(g_bg_chr16);
-    }
-    g_pal = NULL;
-    g_sprite = NULL;
-    g_bgreg = NULL;
-    g_bgram = NULL;
-    g_bg_chr8 = NULL;
-    g_bg_chr16 = NULL;
-    g_video_bound = 0;
 
-    g_frame_ready = 0;
     g_sys_dir[0] = 0;
 }
 
@@ -425,28 +365,6 @@ uint8_t *c_ram_base(void) {
     return g_ram;
 }
 
-void c_tvram_bind(uint8_t *tvram) {
-    if (!tvram) return;
-    if (!g_tvram_bound) {
-        free(g_tvram);
-        g_tvram_bound = 1;
-    }
-    g_tvram = tvram;
-}
-
-uint8_t c_mem_read_tvram(int32_t off) {
-    if (g_tvram && off >= 0 && off < TVRAM_SIZE) return g_tvram[off];
-    return 0;
-}
-
-int c_frame_ready(void) {
-    return g_frame_ready;
-}
-
-void c_set_frame_ready(int32_t ready) {
-    g_frame_ready = ready ? 1 : 0;
-}
-
 void c_fb_bind(uint32_t *fb) {
     if (!fb) return;
     if (!g_fb_bound) {
@@ -454,67 +372,6 @@ void c_fb_bind(uint32_t *fb) {
         g_fb_bound = 1;
     }
     g_fb = fb;
-}
-
-void c_gvram_bind(uint8_t *gvram) {
-    if (!gvram) return;
-    if (!g_gvram_bound) {
-        free(g_gvram);
-        g_gvram_bound = 1;
-    }
-    g_gvram = gvram;
-}
-
-uint8_t c_mem_read_gvram(int32_t off) {
-    if (!g_gvram) return 0;
-    int32_t a = off & 0x1FFFFF;
-    if (a < GVRAM_SIZE) return g_gvram[a];
-    return 0;
-}
-
-void c_video_bind(uint8_t *pal, uint8_t *sprite, uint8_t *bgreg, uint8_t *bgram, uint8_t *chr8, uint8_t *chr16) {
-    if (!pal || !sprite || !bgreg || !bgram || !chr8 || !chr16) return;
-    if (!g_video_bound) {
-        free(g_pal);
-        free(g_sprite);
-        free(g_bgreg);
-        free(g_bgram);
-        free(g_bg_chr8);
-        free(g_bg_chr16);
-        g_video_bound = 1;
-    }
-    g_pal = pal;
-    g_sprite = sprite;
-    g_bgreg = bgreg;
-    g_bgram = bgram;
-    g_bg_chr8 = chr8;
-    g_bg_chr16 = chr16;
-}
-
-uint8_t c_mem_read_pal(int32_t off) {
-    if (g_pal && off >= 0 && off < PAL_SIZE) return g_pal[off];
-    return 0xFF;
-}
-
-void c_vcreg_bind(uint8_t *vcreg) {
-    if (!vcreg) return;
-    if (!g_vcreg_bound) {
-        if (g_vcreg && g_vcreg != vcreg)
-            memcpy(vcreg, g_vcreg, VCREG_SIZE);
-        free(g_vcreg);
-        g_vcreg_bound = 1;
-    }
-    g_vcreg = vcreg;
-}
-
-uint8_t c_mem_read_sprite(int32_t off) {
-    if (g_sprite && off >= 0 && off < SPRITE_SIZE) return g_sprite[off];
-    return 0xFF;
-}
-
-uint8_t c_mem_read_bg_reg(int32_t off) {
-    if (g_bgreg && off >= 0 && off < BGREG_SIZE) return g_bgreg[off];
-    return 0xFF;
 }
 
 void c_line_zero(uint16_t *grp, uint8_t *mix, uint16_t *sp, uint16_t *sp2, uint16_t *bg, uint8_t *tr) {
@@ -602,11 +459,7 @@ static uint64_t machine_bind_views(const X68kHostViews *v) {
     if (!g_mem_ready || !v) return 0;
 #define VIEW_OK(field, count) (v->field.data && v->field.len == (int64_t)(count))
     if (!VIEW_OK(ram, 12582912) || !VIEW_OK(ipl, IPL_SIZE) || !VIEW_OK(cgrom, CGROM_SIZE) ||
-        !VIEW_OK(sram, SRAM_SIZE) || !VIEW_OK(tvram, TVRAM_SIZE) || !VIEW_OK(gvram, GVRAM_SIZE) ||
-        !VIEW_OK(pal, PAL_SIZE) || !VIEW_OK(vc, VCREG_SIZE) || !VIEW_OK(sprite, SPRITE_SIZE) ||
-        !VIEW_OK(bgreg, BGREG_SIZE) || !VIEW_OK(bgram, BGRAM_SIZE) ||
-        !VIEW_OK(chr8, 8 * 8 * 256) || !VIEW_OK(chr16, 16 * 16 * 256) ||
-        !VIEW_OK(fb, FB_MAX_PIXELS) || !v->ram_limit) return 0;
+        !VIEW_OK(sram, SRAM_SIZE) || !VIEW_OK(fb, FB_MAX_PIXELS) || !v->ram_limit) return 0;
 #undef VIEW_OK
     // All validation precedes registration. No allocation or callbacks here.
     if (!g_ram_bound) {
@@ -615,8 +468,6 @@ static uint64_t machine_bind_views(const X68kHostViews *v) {
     }
     c_ram_bind(v->ram.data); c_ram_limit_bind(v->ram_limit);
     c_ipl_bind(v->ipl.data); c_cgrom_bind(v->cgrom.data); c_sram_bind(v->sram.data);
-    c_video_bind(v->pal.data, v->sprite.data, v->bgreg.data, v->bgram.data, v->chr8.data, v->chr16.data);
-    c_vcreg_bind(v->vc.data); c_tvram_bind(v->tvram.data); c_gvram_bind(v->gvram.data);
     c_fb_bind(v->fb.data);
     if (++g_machine_epoch_next == 0) ++g_machine_epoch_next;
     g_machine_epoch = g_machine_epoch_next;
@@ -624,11 +475,8 @@ static uint64_t machine_bind_views(const X68kHostViews *v) {
 }
 
 uint64_t c_machine_bind(X68kByteView ram, X68kByteView ipl, X68kByteView cgrom, X68kByteView sram,
-    X68kByteView tvram, X68kByteView gvram, X68kByteView pal, X68kByteView vc, X68kByteView sprite,
-    X68kByteView bgreg, X68kByteView bgram, X68kByteView chr8, X68kByteView chr16, X68kPixelView fb,
-    int32_t *ram_limit) {
-    X68kHostViews views = {ram, ipl, cgrom, sram, tvram, gvram, pal, vc, sprite,
-        bgreg, bgram, chr8, chr16, fb, ram_limit};
+    X68kPixelView fb, int32_t *ram_limit) {
+    X68kHostViews views = {ram, ipl, cgrom, sram, fb, ram_limit};
     return machine_bind_views(&views);
 }
 
@@ -1034,10 +882,6 @@ int c_audio_init(void) {
 
 static void win32_audio_destroy(void);
 
-void c_audio_shutdown(void) {
-    win32_audio_destroy();
-}
-
 static int audio_is_free(int idx) {
     if (!g_audio_busy[idx])
         return 1;
@@ -1311,6 +1155,8 @@ static void win32_timer_shutdown(void) {
     }
 }
 
+/* Close whatever is open: the audio device, the timer resolution, the window. Safe to call
+ * when none of them was opened (headless and windowless ARCL runs end here too). */
 void win32_ui_destroy(void) {
     win32_audio_destroy();
     win32_timer_shutdown();
@@ -1323,6 +1169,7 @@ void win32_ui_destroy(void) {
         g_hwnd = NULL;
     }
     g_clock_menu = NULL;
+    g_ahead_menu = NULL;
     g_is_open = false;
 }
 

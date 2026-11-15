@@ -1,14 +1,11 @@
-// X68000 Win32 Bridge extern declarations in Goose
+// C 側 (Win32 のウィンドウ、入力、音声、ファイル選択) の関数の宣言
 //
 // Every path and file name that crosses here is UTF-8, in both directions.
 let HOST_PATH_BYTES = 800; // room for the longest path C hands back (PATH_CAP in x68k_path.h)
 
 // Slices cross as pointer/64-bit count pairs. Counts are bytes except fb.
 // Borrowed until x68k_mem_destroy; no reference-containing struct crosses.
-extern fn c_machine_bind(ram: u8[:], ipl: u8[:], cgrom: u8[:], sram: u8[:],
-    tvram: u8[:], gvram: u8[:], pal: u8[:], vc: u8[:], sprite: u8[:],
-    bgreg: u8[:], bgram: u8[:], chr8: u8[:], chr16: u8[:], fb: u32[:],
-    ram_limit: i32&) -> u64;
+extern fn c_machine_bind(ram: u8[:], ipl: u8[:], cgrom: u8[:], sram: u8[:], fb: u32[:], ram_limit: i32&) -> u64;
 extern fn c_machine_epoch() -> u64;
 extern fn c_machine_reset_devices();
 extern fn c_startup_error();
@@ -18,7 +15,6 @@ extern fn c_host_input_discard();
 extern fn c_io_poll_line(out_buf: u8&, max_len: i32, wait_ms: i32) -> i32;
 extern fn c_io_write_line(data: const u8&, len: i32);
 extern fn c_audio_init() -> i32;
-extern fn c_audio_shutdown();
 
 extern fn win32_ui_init(title: const u8[:], w: i32, h: i32, scale: i32) -> bool;
 extern fn win32_ui_poll() -> u32;
@@ -61,23 +57,16 @@ extern fn c_mem_set_ram_mb(mb: i32) -> i32;
 extern fn x68k_mem_destroy();
 extern fn c_sram_set_persist(enabled: i32);
 
-extern fn c_mem_read_tvram(off: i32) -> u8;
-extern fn c_frame_ready() -> i32;
 
-extern fn c_mem_read_gvram(off: i32) -> u8;
 
-extern fn c_mem_read_pal(off: i32) -> u8;
 
-extern fn c_mem_read_sprite(off: i32) -> u8;
 
-extern fn c_mem_read_bg_reg(off: i32) -> u8;
 
 extern fn c_line_zero(grp: u16&, mix: u8&, sp: u16&, sp2: u16&, bg: u16&, tr: u8&);
 
 extern fn c_set_screen_mode(w: i32, h: i32);
 extern fn c_get_screen_width() -> i32;
 extern fn c_get_screen_height() -> i32;
-extern fn c_set_frame_ready(ready: i32);
 
 // Audio / Sound API
 // One frame of finished interleaved stereo samples, for the audio device.

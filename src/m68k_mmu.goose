@@ -1,4 +1,4 @@
-// Sharp X68000 メモリ管理ユニット (MMU) in Goose
+// Sharp X68000 のメモリマップ (RAM、VRAM、ROM、I/O の読み書き)
 
 import .x68k_bridge;
 import .x68k_mfp;
@@ -153,26 +153,11 @@ fn gvram_fast_clear(mmu: M68kMMU&, reg2b: u8, reg29: u8, scroll_x: u32, scroll_y
         w0 = 512 - sx;
     }
     let sy = scroll_y & 0x1FF;
-    var y: u32 = 0;
-    while y < v {
-        let offset = (((y + sy) & 0x1FF) << 10);
-        var x: u32 = 0;
-        var p = offset + (sx * 2);
-        while x < w0 {
-            mmu.gvram_and16(p, mask);
-            p += 2;
-            x += 1;
-        }
-        if w1 > 0 {
-            x = 0;
-            p = offset;
-            while x < w1 {
-                mmu.gvram_and16(p, mask);
-                p += 2;
-                x += 1;
-            }
-        }
-        y += 1;
+    // 1 行は 512 ドット。右端を越えたぶん (w1) は行の先頭へ折り返す
+    for y: u32 in v {
+        let offset = ((y + sy) & 0x1FF) << 10;
+        for x: u32 in w0 { mmu.gvram_and16(offset + (sx + x) * 2, mask); }
+        for x: u32 in w1 { mmu.gvram_and16(offset + x * 2, mask); }
     }
 }
 
@@ -183,7 +168,7 @@ fn gvram_cpu_read(mmu: M68kMMU&, off: i32, r20: u8) -> u8 {
     if kind == 0 {
         if (adr & 1) == 0 { return 0; }
         var i = gvram_addr1024(adr);
-        if (adr & 0x100000) == 0 { i = i ^ 1; }
+        if (adr & 0x100000) == 0 { i ^= 1; }
         if i >= VRAM_BYTES { return 0; }
         let b = mmu.gvram_get(i);
         if (adr & 0x400) != 0 { return b >> 4; }
@@ -220,7 +205,7 @@ fn gvram_cpu_write(mmu: M68kMMU&, off: i32, val: u8, r20: u8) {
     if kind == 0 {
         if (adr & 1) == 0 { return; }
         var i = gvram_addr1024(adr);
-        if (adr & 0x100000) == 0 { i = i ^ 1; }
+        if (adr & 0x100000) == 0 { i ^= 1; }
         if i >= VRAM_BYTES { return; }
         let cur = mmu.gvram_get(i);
         if (adr & 0x400) != 0 {
@@ -308,10 +293,7 @@ fn tvram_raster_copy(mmu: M68kMMU&, src_line: u32, dst_line: u32, plane_mask: u8
     for bit in 4 {
         let flag: u8 = 1 << bit;
         if (plane_mask & flag) != 0 {
-            var plane: u32 = 0;
-            if bit == 1 { plane = 0x20000; }
-            if bit == 2 { plane = 0x40000; }
-            if bit == 3 { plane = 0x60000; }
+            let plane: u32 = (bit as u32) * 0x20000;   // プレーンは 128 KB ずつ並ぶ
             for i in 512 {
                 let s: i64 = src + plane + (i as u32);
                 let d: i64 = dst + plane + (i as u32);

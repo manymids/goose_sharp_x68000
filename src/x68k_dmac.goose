@@ -1,5 +1,4 @@
-// Sharp X68000 DMAコントローラ (HD63450 / DMAC) in Goose
-// ※実機 ROM / ブートセクタ自走用
+// Sharp X68000 の DMA コントローラ (HD63450 / DMAC)
 
 // ch0 は FDC、ch1 は SASI、ch2 は汎用、ch3 は ADPCM。
 // ここにあるのはレジスタと割り込みだけで、MMU は知らない。DMAC はバスマスタなので転送は

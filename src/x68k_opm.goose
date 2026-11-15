@@ -1040,9 +1040,8 @@ fn lfo(o: X68kOPM&) {
 fn next_noise(o: X68kOPM&) -> u32 {
     o.noisecount += (2 * o.rateratio) as i32;
     if o.noisecount >= (32 << RATIO_BITS) {
-        var n = 32 - (o.noisedelta & 0x1F) as i32;
-        if n == 1 { n = 2; }
-        o.noisecount = o.noisecount - (n << RATIO_BITS);
+        let n = max(32 - (o.noisedelta & 0x1F) as i32, 2);   // 1 は 2 として数える
+        o.noisecount -= n << RATIO_BITS;
         if (o.noisedelta & 0x1F) == 0x1F { o.noisecount -= RATIO_BITS; }
         o.noise = (o.noise >> 1) ^ (if (o.noise & 1) != 0 { 0x8408 } else { 0 });
     }

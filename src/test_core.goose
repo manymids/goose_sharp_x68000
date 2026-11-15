@@ -491,6 +491,14 @@ fn test_rtc() {
     check("writing the weekday changes only the weekday", rtc.digit(6) == 3 && rtc.digit(7) == 1);
     rtc.write(0x13, 0x02);
     check("writing the month re-dates the clock", rtc.digit(9) == 2 && rtc.digit(4) == 1);
+    rtc.write(0x15, 0x01);
+    check("writing the month's tens digit", rtc.digit(10) == 1 && rtc.digit(9) == 2);
+    rtc.write(0x17, 0x07);
+    check("writing the year's ones digit", rtc.digit(11) == 7 && rtc.digit(12) == 4 && rtc.digit(10) == 1);
+    rtc.write(0x19, 0x02);
+    check("writing the year's tens digit", rtc.digit(12) == 2 && rtc.digit(11) == 7 && rtc.digit(9) == 2);
+    rtc.write(0x0F, 0x02);
+    check("writing the day's ones digit", rtc.digit(7) == 2 && rtc.digit(9) == 2);
 }
 
 // CODE に words を置いて 1 命令を逆アセンブルし、文字列と長さを確かめる。

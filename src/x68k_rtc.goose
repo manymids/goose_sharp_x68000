@@ -168,27 +168,28 @@ fn write(rtc: X68kRTC&, reg: i32, val: u8) {
     if idx > 12 { return; }
     let d: i64 = val & masks[idx];
     let cur: i64 = rtc.digit(idx);
-    if idx == 0 { rtc.add_seconds(d - cur); }
-    else if idx == 1 { rtc.add_seconds((d - cur) * 10); }
-    else if idx == 2 { rtc.add_seconds((d - cur) * 60); }
-    else if idx == 3 { rtc.add_seconds((d - cur) * 600); }
-    else if idx == 4 { rtc.add_seconds((d - cur) * 3600); }
-    else if idx == 5 {
-        let unit = if rtc.rule == 0 { 43200 } else { 72000 };
-        rtc.add_seconds(((d >> 1) - (cur >> 1)) * unit + ((d & 1) - (cur & 1)) * 36000);
-    }
-    else if idx == 6 { rtc.week_gap = (rtc.week_gap + d - cur) % 7; }
-    else if idx == 7 { rtc.add_seconds((d - cur) * 86400); }
-    else if idx == 8 { rtc.add_seconds((d - cur) * 864000); }
-    else {
-        var y = 1980 + (rtc.digit(12) as i64) * 10 + (rtc.digit(11));
-        var mo = (rtc.digit(10) as i64) * 10 + (rtc.digit(9));
-        let day = (rtc.digit(8) as i64) * 10 + (rtc.digit(7));
-        if idx == 9 { mo = mo - cur + d; }
-        else if idx == 10 { mo = mo - cur * 10 + d * 10; }
-        else if idx == 11 { y = y - cur + d; }
-        else { y = y - cur * 10 + d * 10; }
-        rtc.set_date(y, mo, day);
+    // 時刻の桁は秒へ直して足す。日付の桁 (月と年) は暦を組み直す。
+    match idx {
+        0 => { rtc.add_seconds(d - cur); },                // 秒の 1 の位
+        1 => { rtc.add_seconds((d - cur) * 10); },         // 秒の 10 の位
+        2 => { rtc.add_seconds((d - cur) * 60); },         // 分の 1 の位
+        3 => { rtc.add_seconds((d - cur) * 600); },        // 分の 10 の位
+        4 => { rtc.add_seconds((d - cur) * 3600); },       // 時の 1 の位
+        5 => {                                              // 時の 10 の位 (12 時間制では午後の印も)
+            let unit = if rtc.rule == 0 { 43200 } else { 72000 };
+            rtc.add_seconds(((d >> 1) - (cur >> 1)) * unit + ((d & 1) - (cur & 1)) * 36000);
+        },
+        6 => { rtc.week_gap = (rtc.week_gap + d - cur) % 7; },   // 曜日
+        7 => { rtc.add_seconds((d - cur) * 86400); },      // 日の 1 の位
+        8 => { rtc.add_seconds((d - cur) * 864000); },     // 日の 10 の位
+        _ => {                                              // 9, 10: 月、11, 12: 年 (1980 年から)
+            let step: i64 = if idx == 9 || idx == 11 { 1 } else { 10 };
+            var y = 1980 + (rtc.digit(12) as i64) * 10 + (rtc.digit(11));
+            var mo = (rtc.digit(10) as i64) * 10 + (rtc.digit(9));
+            let day = (rtc.digit(8) as i64) * 10 + (rtc.digit(7));
+            if idx <= 10 { mo += (d - cur) * step; } else { y += (d - cur) * step; }
+            rtc.set_date(y, mo, day);
+        },
     }
 }
 

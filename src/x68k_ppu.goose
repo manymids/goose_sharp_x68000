@@ -1,4 +1,4 @@
-// Sharp X68000 PPU (Text & Graphic合成描画) in Goose
+// Sharp X68000 の画面合成 (テキスト、グラフィック、BG、スプライト)
 
 import .x68k_bridge;
 import .m68k_mmu;
@@ -81,13 +81,9 @@ fn sprites_to_line(ppu: X68kPPU&, mmu: M68kMMU&, pri: i32, width: i32, sy: i32) 
         let flip_y = (ctrl_i & 0x8000) != 0;
         let src_y = if flip_y { 15 - (row as i32) } else { row as i32 };
         let pal_bank = (ctrl_i & 0x0F00) >> 4;
-        var px = 0;
-        var t = t0;
-        while px < 16 {
+        for px: i32 in 16 {
             let src_x = if flip_x { 15 - px } else { px };
-            let tt = t;
-            px += 1;
-            t += 1;
+            let tt = t0 + (px as u32);
             if tt < LINE_PAD || tt >= ((width + LINE_PAD) as u32) || tt >= LINE_BUF_W { continue; }
             let src = pat * 256 + src_y * 16 + src_x;
             let col = mmu.bg_chr16[src] & 0x0F;
@@ -133,15 +129,12 @@ fn draw_bg_map(ppu: X68kPPU&, mmu: M68kMMU&, screen_w: i32, sy: i32, scroll_x: i
     let tiles = screen_w / span + 2;
     var sx0: i32 = x_phase - 15;
     let chr_bytes: i32 = if wide { PCG16_BYTES } else { PCG8_BYTES };
-    var tile: i32 = 0;
-    while tile < tiles {
+    for _ in tiles {
+        let x0 = sx0;   // このタイルの左端
+        sx0 += span;
         let map = top + row + (map_col & 0x7F);
         map_col = (map_col + 2) & 0x7F;
-        if map < 0 || map + 1 >= BGRAM_BYTES {
-            sx0 += span;
-            tile += 1;
-            continue;
-        }
+        if map < 0 || map + 1 >= BGRAM_BYTES { continue; }
         let attr = mmu.bgram[map];
         let attr_i: i32 = attr;
         // pat_base: パターン番号から求めた PCG 内の先頭。pat_row: そのパターン内の行の位置。
@@ -170,15 +163,13 @@ fn draw_bg_map(ppu: X68kPPU&, mmu: M68kMMU&, screen_w: i32, sy: i32, scroll_x: i
                 // gd 経路でも、すでに BG かスプライトがある画素は上書きしない。
                 // 上書きすると色 0 のタイルが手前の地面を消して格子になる。
                 let nib = if wide { mmu.bg_chr16[src] & 0x0F } else { mmu.bg_chr8[src] & 0x0F };
-                let t = sx0 + j + LINE_PAD;
+                let t = x0 + j + LINE_PAD;
                 let covered = t >= 0 && t < LINE_BUF_W && (ppu.line_tr[t] & 2) != 0;
                 if nib != 0 || (!ng && !covered) {
-                    ppu.plot_bg(mmu, sx0 + j, screen_w, nib | pal_hi);
+                    ppu.plot_bg(mmu, x0 + j, screen_w, nib | pal_hi);
                 }
             }
         }
-        sx0 += span;
-        tile += 1;
     }
 }
 
@@ -319,7 +310,7 @@ fn grp4_line(ppu: X68kPPU&, mmu: M68kMMU&, page: i32, sy: i32, width: i32, opaq:
     let scroll_y = crtc_pair(mmu, grp_yhi(p)) & grp_mask(p);
     let high = (p & 1) != 0;
     var y = scroll_y + (sy as u32);
-    if (mmu.crtc_regs[0x29] & 0x1C) == 0x1C { y = y + (sy as u32); }
+    if (mmu.crtc_regs[0x29] & 0x1C) == 0x1C { y += sy as u32; }
     y = (y & 0x1FF) << 10;
     let xs = scroll_x & 0x1FF;
     var off = y + xs * 2 + ((p >> 1) as u32);
@@ -346,7 +337,7 @@ fn grp4_sp_line(ppu: X68kPPU&, mmu: M68kMMU&, page: i32, sy: i32, width: i32) {
     let scroll_x = crtc_pair(mmu, grp_xhi(p)) & grp_mask(p);
     let scroll_y = crtc_pair(mmu, grp_yhi(p)) & grp_mask(p);
     var y = scroll_y + (sy as u32);
-    if (mmu.crtc_regs[0x29] & 0x1C) == 0x1C { y = y + (sy as u32); }
+    if (mmu.crtc_regs[0x29] & 0x1C) == 0x1C { y += sy as u32; }
     y = (y & 0x1FF) << 10;
     let x = scroll_x & 0x1FF;
     let add: u32 = if (p & 2) != 0 { 1 } else { 0 };
@@ -367,7 +358,7 @@ fn grp4_sp_line(ppu: X68kPPU&, mmu: M68kMMU&, page: i32, sy: i32, width: i32) {
         }
         off += 2;
         left -= 1;
-        if left == 0 { off = off - 0x400; }
+        if left == 0 { off -= 0x400; }
     }
 }
 
@@ -377,7 +368,7 @@ fn grp4_tr_line(ppu: X68kPPU&, mmu: M68kMMU&, page: i32, sy: i32, width: i32, op
     let scroll_x = crtc_pair(mmu, grp_xhi(p)) & grp_mask(p);
     let scroll_y = crtc_pair(mmu, grp_yhi(p)) & grp_mask(p);
     var y = scroll_y + (sy as u32);
-    if (mmu.crtc_regs[0x29] & 0x1C) == 0x1C { y = y + (sy as u32); }
+    if (mmu.crtc_regs[0x29] & 0x1C) == 0x1C { y += sy as u32; }
     y = (y & 0x1FF) << 10;
     y += ((p >> 1) as u32);
     let high = (p & 1) != 0;
@@ -413,7 +404,7 @@ fn grp4h_line(ppu: X68kPPU&, mmu: M68kMMU&, sy: i32, width: i32, special: bool) 
     let scroll_x = crtc_pair(mmu, CRTC_GRP_X) & 1023;
     let scroll_y = crtc_pair(mmu, CRTC_GRP_Y) & 1023;
     var y = scroll_y + (sy as u32);
-    if (mmu.crtc_regs[0x29] & 0x1C) == 0x1C { y = y + (sy as u32); }
+    if (mmu.crtc_regs[0x29] & 0x1C) == 0x1C { y += sy as u32; }
     y &= 0x3FF;
     var bits: u32 = 0;
     if (y & 0x200) == 0 {
@@ -447,7 +438,7 @@ fn grp4h_line(ppu: X68kPPU&, mmu: M68kMMU&, sy: i32, width: i32, special: bool) 
         left -= 1;
         if left == 0 {
             off -= 0x400;
-            if !special { bits = bits ^ 4; }
+            if !special { bits ^= 4; }
             left = 512;
         }
     }
@@ -481,7 +472,7 @@ fn grp8_line(ppu: X68kPPU&, mmu: M68kMMU&, page: i32, sy: i32, width: i32, opaq:
         }
         src += 2;
         off += 2;
-        if (off & 0x3FE) == 0 { off = off - 0x400; }
+        if (off & 0x3FE) == 0 { off -= 0x400; }
         left -= 1;
         if !wrapped && left == 0 {
             src -= 0x400;
@@ -522,9 +513,9 @@ fn grp8_sp_line(ppu: X68kPPU&, mmu: M68kMMU&, page: i32, sy: i32, width: i32) {
         }
         off += 2;
         off0 += 2;
-        if (off0 & 0x3FE) == 0 { off0 = off0 - 0x400; }
+        if (off0 & 0x3FE) == 0 { off0 -= 0x400; }
         left -= 1;
-        if left == 0 { off = off - 0x400; }
+        if left == 0 { off -= 0x400; }
     }
 }
 
@@ -536,7 +527,7 @@ fn pal16_adr(b: i32) -> i32 {
 fn grp16_line(ppu: X68kPPU&, mmu: M68kMMU&, sy: i32, width: i32) {
     assert(width >= 0 && width <= 1024);
     var y = (crtc_pair(mmu, CRTC_GRP_Y) & 1023) + (sy as u32);
-    if (mmu.crtc_regs[0x29] & 0x1C) == 0x1C { y = y + (sy as u32); }
+    if (mmu.crtc_regs[0x29] & 0x1C) == 0x1C { y += sy as u32; }
     y = (y & 0x1FF) << 10;
     let x = (crtc_pair(mmu, CRTC_GRP_X) & 1023) & 0x1FF;
     var src = y + x * 2;
@@ -566,7 +557,7 @@ fn grp16_line(ppu: X68kPPU&, mmu: M68kMMU&, sy: i32, width: i32) {
 fn grp16_sp_line(ppu: X68kPPU&, mmu: M68kMMU&, sy: i32, width: i32) {
     assert(width >= 0 && width <= 1024);
     var y = (crtc_pair(mmu, CRTC_GRP_Y) & 1023) + (sy as u32);
-    if (mmu.crtc_regs[0x29] & 0x1C) == 0x1C { y = y + (sy as u32); }
+    if (mmu.crtc_regs[0x29] & 0x1C) == 0x1C { y += sy as u32; }
     y = (y & 0x1FF) << 10;
     let x = (crtc_pair(mmu, CRTC_GRP_X) & 1023) & 0x1FF;
     var off = y + x * 2;
@@ -585,7 +576,7 @@ fn grp16_sp_line(ppu: X68kPPU&, mmu: M68kMMU&, sy: i32, width: i32) {
         }
         off += 2;
         left -= 1;
-        if left == 0 { off = off - 0x400; }
+        if left == 0 { off -= 0x400; }
     }
 }
 
@@ -710,15 +701,10 @@ fn blit_sp2(ppu: X68kPPU&, width: i32, opaq: bool) {
 
 fn blit_bg(ppu: X68kPPU&, width: i32, opaq: bool, td: bool, flagbit: i32) {
     assert(width >= 0 && width <= 1024);
-    var i: i32 = 0;
-    while i < width {
+    for i: i32 in width {
         let t = i + LINE_PAD;
-        if !opaq && td && (ppu.line_tr[t] & (flagbit as u8)) == 0 {
-            i += 1;
-            continue;
-        }
+        if !opaq && td && (ppu.line_tr[t] & (flagbit as u8)) == 0 { continue; }
         ppu.scr_put_raw(i, ppu.line_bg[t], opaq);
-        i += 1;
     }
 }
 
@@ -977,8 +963,7 @@ fn clear(ppu: X68kPPU&, argb: u32) {
 // ビデオコントローラの優先順位で合成してフレームバッファへ書く。
 fn draw_line(ppu: X68kPPU&, mmu: M68kMMU&, sy: i32) {
     if sy < 0 || sy >= ppu.screen_h { return; }
-    var width = ppu.screen_w;
-    if width > 1024 { width = 1024; }
+    let width = min(ppu.screen_w, 1024);
     if width < 1 { return; }
     ppu.clear_front();
     let vc1_0: i32 = mmu.vcreg[0x100];

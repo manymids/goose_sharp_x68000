@@ -1,5 +1,4 @@
-// Sharp X68000 フロッピーディスクコントローラ (uPD72065 / FDC) in Goose
-// ※実機 ROM / ディスクコード自走用
+// Sharp X68000 のフロッピーディスクコントローラ (uPD72065 / FDC)
 
 import .x68k_bridge;
 import .x68k_disk;

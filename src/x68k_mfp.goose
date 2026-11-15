@@ -1,4 +1,4 @@
-// Sharp X68000 MC68901 MFP (Multi-Function Peripheral) in Goose
+// Sharp X68000 の MFP (MC68901: タイマー、割り込み、キーボードの USART)
 
 namespace mfp;
 
@@ -58,17 +58,13 @@ struct X68kMFP {
 }
 type ::X68kMFP = mfp::X68kMFP;
 
-// プリスケーラ分周テーブル (4MHz MFP クロック / 10MHz CPU 基準: px68k mfp.c 準拠)
+// タイマーが 1 つ数えるまでの CPU クロック数 (10 MHz 基準、px68k mfp.c と同じ)。
+// MFP は 4 MHz で動き、モードで 4〜200 分周する。MFP の 1 クロックは CPU の 2.5 クロックなので、
+// 分周比 × 2.5 になる (例: 1/4 分周なら 4 × 2.5 = 10)。モード 0 は停止で、ここでは 1 を返す。
+let PRESCALER_CYCLES: i32[8] = [1, 10, 25, 40, 125, 160, 250, 500];
+
 fn get_prescaler(mode: i32) -> i32 {
-    let m = mode & 7;
-    if m == 1 { return 10; }  // 1/4分周: 4 / 0.4 = 10 cycles
-    if m == 2 { return 25; }  // 1/10分周: 10 / 0.4 = 25 cycles
-    if m == 3 { return 40; }  // 1/16分周: 16 / 0.4 = 40 cycles
-    if m == 4 { return 125; } // 1/50分周: 50 / 0.4 = 125 cycles
-    if m == 5 { return 160; } // 1/64分周: 64 / 0.4 = 160 cycles
-    if m == 6 { return 250; } // 1/100分周: 100 / 0.4 = 250 cycles
-    if m == 7 { return 500; } // 1/200分周: 200 / 0.4 = 500 cycles
-    return 1;
+    return PRESCALER_CYCLES[mode & 7];
 }
 
 fn init(mfp: X68kMFP&) {

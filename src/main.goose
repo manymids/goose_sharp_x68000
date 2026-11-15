@@ -1,4 +1,4 @@
-// Sharp X68000 Native Emulator & ARCL MCP Server in Goose
+// Sharp X68000 エミュレータの入口 (GUI、ヘッドレス、ARCL MCP)
 
 import std;
 import os;
@@ -53,7 +53,7 @@ fn print_banner(content_path: const u8[:], sys_dir: const u8[:]) {
     print("=================================================");
     print("  Goose Sharp X68000 Native Emulator (Win32)     ");
     print("=================================================");
-    print("Motorola 68000 CPU, MMU, PPU written in Goose!");
+    print("CPU, devices and sound in Goose; Win32 host in C");
     print("Content Disk : ", content_path);
     print("System ROMs  : ", sys_dir);
     print("Clock / RAM  : ", c_get_cpu_mhz(), " MHz / 12 MB");
@@ -162,15 +162,13 @@ fn run_mcp(emu: X68kEmulator&, want_window: bool, screen_w: i32, screen_h: i32, 
         if read_len > 0 { mcp::dispatch(emu, io_buf[..read_len], is_running); }
 
         if !emu.is_paused {
-            emu.clock_mhz = c_get_cpu_mhz();
+            session::follow_host_clock(emu);
             session::run_frame(emu);
             if window_ok && win32_ui_is_open() { win32_ui_render_fb(); }
             win32_ui_sleep(1);
         }
     }
 
-    // win32_ui_destroy は音声も止める。ウィンドウがなければ音声だけ止める。
-    if window_ok { win32_ui_destroy(); } else { c_audio_shutdown(); }
 }
 
 // Win32 ウィンドウで実時間に合わせて動かす。max_frames > 0 ならその数で終わる。
@@ -201,7 +199,7 @@ fn run_gui(emu: X68kEmulator&, screen_w: i32, screen_h: i32, scale: i32, max_fra
 
         let work_start_us = win32_ui_get_time_us();
         if !emu.is_paused {
-            emu.clock_mhz = c_get_cpu_mhz();
+            session::follow_host_clock(emu);
             session::run_frame(emu);
         }
 
@@ -216,7 +214,6 @@ fn run_gui(emu: X68kEmulator&, screen_w: i32, screen_h: i32, scale: i32, max_fra
         let run_ahead = pace.frames;
         if !emu.is_paused && run_ahead > 0 && ahead::begin(emu, run_ahead) {
             c_set_screen_mode(emu.ppu.screen_w, emu.ppu.screen_h);
-            c_set_frame_ready(if emu.ppu.frame_ready { 1 } else { 0 });
             win32_ui_render_fb();
             ahead::end(emu);
         } else {
@@ -243,14 +240,13 @@ fn run_gui(emu: X68kEmulator&, screen_w: i32, screen_h: i32, scale: i32, max_fra
     }
 
     config::store();
-    win32_ui_destroy();
 }
 
 // ウィンドウなしで frames フレームだけ進める。
 // run_ahead > 0 なら毎フレーム先読みして戻す (見せる画面はないが、戻したあとが同じかを確かめられる)。
 fn run_headless(emu: X68kEmulator&, frames: i64, dump_path: const u8[:], run_ahead: i32) {
     for _ in frames {
-        emu.clock_mhz = c_get_cpu_mhz();
+        session::follow_host_clock(emu);
         session::run_frame(emu);
         if run_ahead > 0 && ahead::begin(emu, run_ahead) { ahead::end(emu); }
     }
@@ -325,7 +321,6 @@ fn main() {
 
     // Goose ネイティブ X68000 エミュレータ本体の初期化
     var emu = X68kEmulator {};
-    emu.clock_mhz = c_get_cpu_mhz();
     emu.init();
     // The GUI clock follows the host; ARCL and headless runs start at XEiJ's fixed 2026-01-01
     // so that runs replay identically.
@@ -341,5 +336,8 @@ fn main() {
         // Without --frames the earlier check guarantees --dump-frame.
         run_headless(emu, if opt.frames_set { opt.max_frames } else { opt.dump_after }, opt.dump_path[..], run_ahead);
     }
+    // 終了処理はどの起動の形でも同じ。win32_ui_destroy は開いているものだけを閉じる
+    // (ウィンドウ、音声、タイマー)。x68k_mem_destroy は SRAM を書き戻し (GUI のみ)、メモリを放す。
+    win32_ui_destroy();
     x68k_mem_destroy();
 }

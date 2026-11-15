@@ -1,4 +1,4 @@
-// Motorola 68000 CPU 構造体 & フラグヘルパー in Goose
+// Motorola 68000 のレジスタとフラグの操作
 
 import .m68k_types;
 namespace cpu;

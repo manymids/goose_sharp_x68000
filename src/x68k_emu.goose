@@ -1,4 +1,4 @@
-// Sharp X68000 エミュレータ本体モジュール in Goose
+// エミュレータ本体: 機械の構造体、リセット、フレームの進行
 
 import .x68k_bridge;
 import .m68k_types;
@@ -42,10 +42,7 @@ struct X68kEmulator {
 type ::X68kEmulator = emu::X68kEmulator;
 
 fn bind(emu: X68kEmulator&) -> bool {
-    let epoch = c_machine_bind(g_x68k_ram[..], g_iplrom[..], g_cgrom[..], g_sram[..],
-        emu.mmu.tvram[..], emu.mmu.gvram[..], emu.mmu.pal[..], emu.mmu.vcreg[..],
-        emu.mmu.sprite[..], emu.mmu.bgreg[..], emu.mmu.bgram[..], emu.mmu.bg_chr8[..],
-        emu.mmu.bg_chr16[..], emu.ppu.fb[..], g_ram_limit);
+    let epoch = c_machine_bind(g_x68k_ram[..], g_iplrom[..], g_cgrom[..], g_sram[..], emu.ppu.fb[..], g_ram_limit);
     if epoch == 0 { return false; }
     emu.binding_epoch = epoch;
     return true;
@@ -108,8 +105,12 @@ fn step(emu: X68kEmulator&) -> i32 {
 
 // The frame loop checks the binding once, outside this instruction hot path.
 fn step_core(emu: X68kEmulator&) -> i32 {
-    dmabus::pump_sasi(emu.mmu);
-    dmabus::exec_ch2(emu.mmu);
+    // DMA の ch1 (SASI) と ch2 は、動作中 (CSR の ACT) のときだけ進める。どちらも止まっていれば
+    // 何もしないので、1 命令ごとの呼び出しを省く。
+    if ((emu.mmu.dmac.ch[1].csr | emu.mmu.dmac.ch[2].csr) & 0x08) != 0 {
+        dmabus::pump_sasi(emu.mmu);
+        dmabus::exec_ch2(emu.mmu);
+    }
     let cycles = m68k::step(emu.cpu, emu.mmu);
     emu.total_cycles += cycles;
     emu.mmu.mfp.line_cycles += cycles;
@@ -124,6 +125,19 @@ fn step_core(emu: X68kEmulator&) -> i32 {
         emu.mmu.rtc.now += usedclk; // 0.1 us
     }
 
+    if interrupt_waiting(emu) { take_interrupt(emu); }
+    return cycles;
+}
+
+// 割り込みの要求がどこかに出ているか。ほとんどの命令ではどれも出ていないので、
+// 下の take_interrupt の個々の判定を省ける。
+fn interrupt_waiting(emu: X68kEmulator&) -> bool {
+    return emu.mmu.mfp.has_pending_int() || emu.mmu.dmac.int_pending || emu.mmu.dmac.adpcm_vec >= 0
+        || (emu.mmu.ioc_int_stat & 0x80) != 0 || emu.mmu.sasi_irq || g_disk.media_pending;
+}
+
+// 要求の出ている割り込みを、CPU のマスクが許せば受け付ける。
+fn take_interrupt(emu: X68kEmulator&) {
     // MFP 割り込みチェック (Level 6)
     if emu.mmu.mfp.has_pending_int() {
         if emu.cpu.int_mask() < 6 {
@@ -176,8 +190,6 @@ fn step_core(emu: X68kEmulator&) -> i32 {
             m68k::interrupt(emu.cpu, emu.mmu, 1, vect);
         }
     }
-
-    return cycles;
 }
 
 // Lines per frame: R04 + 1.
@@ -324,7 +336,6 @@ fn mix_audio(emu: X68kEmulator&, samples: i32) {
 // run_frame はホストに触らないので、写しの機械を別スレッドで進めても本体に影響しない。
 fn present(emu: X68kEmulator&) {
     c_set_screen_mode(emu.ppu.screen_w, emu.ppu.screen_h);
-    c_set_frame_ready(if emu.ppu.frame_ready { 1 } else { 0 });
     if emu.audio_samples > 0 {
         let frame = emu.audio[..emu.audio_samples * 2];
         output::capture_push(frame);

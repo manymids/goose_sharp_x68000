@@ -166,7 +166,7 @@ fn capture(emu: X68kEmulator&, bank: i32, idx: i32) -> bool {
     slot.total_cycles = emu.total_cycles;
     slot.clk_used = emu.clk_used;
     slot.sram_we = x68k_sram_write_enable();
-    slot.clock_mhz = c_get_cpu_mhz();
+    slot.clock_mhz = emu.clock_mhz;
     slot.disk = g_disk;
     slot.layout = layout;
     slot.version = STATE_VERSION;
@@ -201,7 +201,6 @@ fn restore(emu: X68kEmulator&, bank: i32, idx: i32) -> bool {
     emu.session.speed_have = false;
     // The framebuffer is derived, not saved. Do not publish stale pixels.
     emu.ppu.frame_ready = false;
-    c_set_frame_ready(0);
     return true;
 }
 

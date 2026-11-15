@@ -9,6 +9,12 @@ let ::SNAPSHOT_INVALID = -1;
 let ::SNAPSHOT_FULL = -2;
 let ::SNAPSHOT_CAPTURE_FAILED = -3;
 
+// 機械のクロックは emu.clock_mhz だけが持つ。ウィンドウのメニュー (C) で選んだ値は、
+// フロントエンドがフレームの前にここで取り込む。
+fn follow_host_clock(emu: X68kEmulator&) {
+    emu.clock_mhz = c_get_cpu_mhz();
+}
+
 fn run_frame(emu: X68kEmulator&) {
     emu.run_frame();
     emu.present();

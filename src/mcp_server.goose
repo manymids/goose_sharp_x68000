@@ -1,4 +1,4 @@
-// Sharp X68000 ARCL MCP (Model Context Protocol) サーバーモジュール in Goose
+// ARCL MCP (Model Context Protocol) のサーバー
 
 import std;
 import json;
@@ -95,13 +95,13 @@ fn write_error_object(id: const u8[:], err: const u8[:], obj: const u8[:]) {
     c_io_write_line(resp[0], resp.len as i32);
 }
 
-fn append_palette(out: u8[>..]&, base: i32) {
+fn append_palette(out: u8[>..]&, pal: const u8[:], base: i32) {
     out.append("[");
     for i in 256 {
         if i != 0 { out.append(","); }
         let off: i32 = base + (i as i32) * 2;
-        let hi: i32 = c_mem_read_pal(off);
-        let lo: i32 = c_mem_read_pal(off + 1);
+        let hi: i32 = pal[off];
+        let lo: i32 = pal[off + 1];
         let v = (hi << 8) | lo;
         let r5 = (v >> 6) & 31;
         let g5 = (v >> 11) & 31;
@@ -177,7 +177,7 @@ fn parse_layers(text: const u8[:]) -> i32 {
         else { return -1; }
         if (layers & bit) != 0 { return -1; }
         layers |= bit;
-        if i < text.len && text[i] == ',' { i = i + 1; }
+        if i < text.len && text[i] == ',' { i += 1; }
     }
     if layers == 0 { return -1; }
     return layers;
@@ -223,18 +223,15 @@ fn live_ssp(cpu: M68kCPU&) -> u32 {
     return cpu.ssp;
 }
 
-fn tv_ink(x: i32, y: i32) -> bool {
+fn tv_ink(tv: const u8[:], x: i32, y: i32) -> bool {
     let row = y & 1023;
     let col_byte = (x & 1023) >> 3;
     let bit = 7 - (x & 7);
     // TVRAM is stored in bus order, so byte x/8 of a raster is at offset x/8.
     let addr = (row * 128 + col_byte);
-    var v: u8 = 0;
-    if (c_mem_read_tvram(addr) & ((1 << bit) as u8)) != 0 { v = v | 1; }
-    if (c_mem_read_tvram(addr + 0x20000) & ((1 << bit) as u8)) != 0 { v = v | 2; }
-    if (c_mem_read_tvram(addr + 0x40000) & ((1 << bit) as u8)) != 0 { v = v | 4; }
-    if (c_mem_read_tvram(addr + 0x60000) & ((1 << bit) as u8)) != 0 { v = v | 8; }
-    return v != 0;
+    // 4 枚のプレーンのどれかに点があればインク
+    let mask = (1 << bit) as u8;
+    return ((tv[addr] | tv[addr + 0x20000] | tv[addr + 0x40000] | tv[addr + 0x60000]) & mask) != 0;
 }
 
 fn glyph_eq(code: i32, glyph: u8[>..]&, bold: bool) -> bool {
@@ -288,7 +285,7 @@ fn console_decode(emu: X68kEmulator&, text: u8[>..]&) -> i32 {
                 for gx in 8 {
                     let tv_x = ((scroll_x + (c) * 8 + (gx as i32)) & 1023);
                     let tv_y = ((scroll_y + (r) * 16 + (gy as i32)) & 1023);
-                    if tv_ink(tv_x, tv_y) { byte = byte | ((0x80 >> (gx as i32)) as u8); }
+                    if tv_ink(emu.mmu.tvram[..], tv_x, tv_y) { byte |= ((0x80 >> (gx as i32)) as u8); }
                 }
                 if byte != 0 { blank = false; }
                 glyph.push(byte);
@@ -354,7 +351,7 @@ fn command_line(emu: X68kEmulator&, out: u8[>..]&) {
     var n = 0;
     var i = 0;
     while i < full.len {
-        if full[i] == 10 { n = n + 1; }
+        if full[i] == 10 { n += 1; }
         i += 1;
     }
     if n < 2 { return; }
@@ -518,8 +515,7 @@ fn tool_type(emu: X68kEmulator&, args: const u8[:], id_buf: const u8[:]) {
     for i in text.len {
         if !input::type_has_key(text[i]) {
             let hex = "0123456789abcdef";
-            var shown = text[i];
-            if shown < 0x20 || shown >= 0x7f { shown = '?'; }
+            let shown = if text[i] < 0x20 || text[i] >= 0x7f { '?' } else { text[i] };
             var msg: u8[>..] = [];
             msg.append("character '");
             msg.push(shown);
@@ -786,7 +782,7 @@ fn macro_step(emu: X68kEmulator&, op: const u8[:], step: const u8[:], frames_use
             }
         }
     } else if op == "screenshot" {
-        if c_frame_ready() == 0 {
+        if !emu.ppu.frame_ready {
             step_ok = false;
             err.append("no frame available yet; call arcl_run first");
         } else if json_has(step, "inline") {
@@ -1203,7 +1199,7 @@ fn save_frame(emu: X68kEmulator&, path: const u8[:]) -> bool {
 }
 
 fn tool_screenshot(emu: X68kEmulator&, args: const u8[:], id_buf: const u8[:]) {
-    if c_frame_ready() == 0 {
+    if !emu.ppu.frame_ready {
         write_text(id_buf, "no frame available yet; call arcl_run first", true);
         return;
     }
@@ -1859,7 +1855,8 @@ fn tool_vram(emu: X68kEmulator&, args: const u8[:], id_buf: const u8[:]) {
     let hex = "0123456789abcdef";
     var data_hex: u8[>..] = [];
     for i in length {
-        let b = if gv { c_mem_read_gvram((address as i32) + i) } else { c_mem_read_tvram((address as i32) + i) };
+        let at = (address as i64) + i;
+        let b = if gv { emu.mmu.gvram[at] } else { emu.mmu.tvram[at] };
         data_hex.push(hex[((b >> 4) & 0x0F) as i32]);
         data_hex.push(hex[(b & 0x0F) as i32]);
     }
@@ -2003,9 +2000,9 @@ fn tool_opm(emu: X68kEmulator&, args: const u8[:], id_buf: const u8[:]) {
 fn tool_palette(emu: X68kEmulator&, args: const u8[:], id_buf: const u8[:]) {
     var obj: u8[>..] = [];
     obj.append("{\"graphic\":");
-    append_palette(obj, 0);
+    append_palette(obj, emu.mmu.pal[..], 0);
     obj.append(",\"text\":");
-    append_palette(obj, 0x200);
+    append_palette(obj, emu.mmu.pal[..], 0x200);
     append_machine(obj, emu, 0, false, true);
     obj.append("}");
     write_object(id_buf, obj);
@@ -2014,9 +2011,11 @@ fn tool_palette(emu: X68kEmulator&, args: const u8[:], id_buf: const u8[:]) {
 fn tool_sprites(emu: X68kEmulator&, args: const u8[:], id_buf: const u8[:]) {
     let hstart = emu.mmu.crtc_word(CRTC_HSTART);
     let vstart = emu.mmu.crtc_word(CRTC_VSTART);
-    let b0d: i32 = c_mem_read_bg_reg(0x0D);
-    let b0f: i32 = c_mem_read_bg_reg(0x0F);
-    let b11: i32 = c_mem_read_bg_reg(0x11);
+    let bg .= emu.mmu.bgreg;
+    let sp .= emu.mmu.sprite;
+    let b0d: i32 = bg[0x0D];
+    let b0f: i32 = bg[0x0F];
+    let b11: i32 = bg[0x11];
     let hadjust = (b0d - (hstart + 4)) * 8;
     let vdiv = if (b11 & 4) != 0 { 1 } else { 2 };
     let vline = (b0f - vstart) / vdiv;
@@ -2025,10 +2024,10 @@ fn tool_sprites(emu: X68kEmulator&, args: const u8[:], id_buf: const u8[:]) {
     for i in 128 {
         if i != 0 { obj.append(","); }
         let base: i32 = (i as i32) * 8;
-        let posx = (c_mem_read_sprite(base)) | ((c_mem_read_sprite(base + 1) as i32) << 8);
-        let posy = (c_mem_read_sprite(base + 2)) | ((c_mem_read_sprite(base + 3) as i32) << 8);
-        let ctrl = (c_mem_read_sprite(base + 4)) | ((c_mem_read_sprite(base + 5) as i32) << 8);
-        let ply: i32 = c_mem_read_sprite(base + 6);
+        let posx = sp[base] | ((sp[base + 1] as i32) << 8);
+        let posy = sp[base + 2] | ((sp[base + 3] as i32) << 8);
+        let ctrl = sp[base + 4] | ((sp[base + 5] as i32) << 8);
+        let ply: i32 = sp[base + 6];
         var ctrl_hex: u8[>..] = [];
         hex_u16(ctrl as u16, ctrl_hex);
         format(obj, "{\"index\":", i, ",\"x\":", posx, ",\"y\":", posy, ",\"priority\":", ply & 3, ",\"palette\":", (ctrl >> 4) & 15, ",\"ctrl_raw\":\"", ctrl_hex, "\"}");
@@ -2036,7 +2035,7 @@ fn tool_sprites(emu: X68kEmulator&, args: const u8[:], id_buf: const u8[:]) {
     format(obj, "],\"bg_hadjust\":", hadjust, ",\"bg_vline\":", vline, ",\"vlinebg\":0,\"bg_regs\":\"");
     let hex = "0123456789abcdef";
     for i in 32 {
-        let b = c_mem_read_bg_reg(i as i32);
+        let b = bg[i];
         obj.push(hex[((b >> 4) & 15) as i32]);
         obj.push(hex[(b & 15) as i32]);
     }
@@ -2111,7 +2110,7 @@ fn dispatch(emu: X68kEmulator&, line: const u8[:], is_running: bool&) {
         return;
     }
 
-    // 1. initialize
+    // initialize: サーバーの名前と、ツールを持つことを返す
     if method == "initialize" {
         var resp: u8[>..] = [];
         format(resp, "{\"jsonrpc\":\"2.0\",\"id\":", id_buf, ",\"result\":{",
@@ -2124,13 +2123,13 @@ fn dispatch(emu: X68kEmulator&, line: const u8[:], is_running: bool&) {
         return;
     }
 
-    // 3. tools/list
+    // tools/list: 有効にしたレイヤーのツールの一覧
     if method == "tools/list" {
         tools_list(id_buf);
         return;
     }
 
-    // 4. tools/call
+    // tools/call: ツールを 1 つ実行する
     if method == "tools/call" {
         let params, _ = json_member(line, "params");
         var tool_name: u8[>..] = [];

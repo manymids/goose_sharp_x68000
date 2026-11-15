@@ -1,4 +1,4 @@
-// Motorola 68000 命令デコード & 実行エンジン in Goose (Approach 1 完全実装)
+// Motorola 68000 の命令のデコードと実行
 
 import .m68k_types;
 import .m68k_cpu;
@@ -259,8 +259,7 @@ fn ea_is_reg_or_imm(mode: i32, reg: i32) -> bool {
 // <ea>,Dn の ADD/SUB/AND/OR。バイト/ワードは 4、ロングは 6、プラス EA。
 // ロングでソースがレジスタか即値のときは 8 (XEiJ)。
 fn alu_read_cycles(size: i32, mode: i32, reg: i32) -> i32 {
-    var base: i32 = if size == 4 { 6 } else { 4 };
-    if size == 4 && ea_is_reg_or_imm(mode, reg) { base = 8; }
+    let base: i32 = if size != 4 { 4 } else if ea_is_reg_or_imm(mode, reg) { 8 } else { 6 };
     return base + ea_extra_cycles(mode, reg, size);
 }
 
@@ -286,8 +285,7 @@ fn alu_bin_cycles(size: i32, mode: i32, reg: i32, to_ea: bool) -> i32 {
 // ADDA/SUBA: .W 8, .L 6 (8 from a register or immediate), plus EA.
 fn adda_cycles(is_long: bool, mode: i32, reg: i32) -> i32 {
     let size: i32 = if is_long { 4 } else { 2 };
-    var base: i32 = if is_long { 6 } else { 8 };
-    if is_long && ea_is_reg_or_imm(mode, reg) { base = 8; }
+    let base: i32 = if is_long && !ea_is_reg_or_imm(mode, reg) { 6 } else { 8 };
     return base + ea_extra_cycles(mode, reg, size);
 }
 
@@ -588,10 +586,7 @@ fn exec_immediate(cpu: M68kCPU&, mmu: M68kMMU&, op: u16) -> i32 {
         let size: i32 = if sz_code == 0 { 1 } else if sz_code == 1 { 2 } else { 4 };
         // ORI/ANDI/EORI to SR はユーザーモードで Vector 8。即値は読まない（C68K と同じ）。
         if size == 2 && mode == 7 && reg == 4 && (imm_op == 0 || imm_op == 1 || imm_op == 5) {
-            if !cpu.is_supervisor() {
-                trigger_exception(cpu, mmu, 8, mmu.inst_pc);
-                return 34;
-            }
+            if !cpu.is_supervisor() { return privilege_violation(cpu, mmu); }
         }
         let imm_val = if size == 1 { (fetch16(cpu, mmu) & 0xFF) as u32 }
                       else if size == 2 { fetch16(cpu, mmu) as! u32 }
@@ -691,59 +686,55 @@ fn trigger_exception(cpu: M68kCPU&, mmu: M68kMMU&, vector: i32, return_pc: u32) 
 // -------------------------------------------------------------
 
 // NOP, RESET, STOP, RTS, RTE, RTR, TRAPV, JMP, JSR。戻り値は消費サイクルと、この関数が命令を処理したかどうか。
+// 特権違反 (Vector 8)。積む PC はこの命令の先頭。
+fn privilege_violation(cpu: M68kCPU&, mmu: M68kMMU&) -> i32 {
+    trigger_exception(cpu, mmu, 8, mmu.inst_pc);
+    return 34;
+}
+
 fn op4_flow(cpu: M68kCPU&, mmu: M68kMMU&, op: u16) -> i32, bool {
     let mode: i32 = (op >> 3) & 0x07;
     let reg: i32 = op & 0x07;
 
-    // NOP (0x4E71)
-    if op == 0x4E71 { return 4, true; }
-    // RESET (0x4E70)。px68k の Reset_CallBack は C68k_Reset_Dummy で、周辺は変えない。
-    if op == 0x4E70 {
-        if !cpu.is_supervisor() {
-            trigger_exception(cpu, mmu, 8, mmu.inst_pc);
-            return 34, true;
-        }
-        return 132, true;
-    }
-    // STOP #imm (0x4E72)
-    if op == 0x4E72 {
-        if !cpu.is_supervisor() {
-            trigger_exception(cpu, mmu, 8, mmu.inst_pc);
-            return 34, true;
-        }
-        let imm = fetch16(cpu, mmu);
-        cpu.set_sr(imm);
-        cpu.halted = true;
-        return 4, true;
-    }
-    // RTS (0x4E75)
-    if op == 0x4E75 { cpu.pc = pop32(cpu, mmu); return 16, true; }
-    // RTE (0x4E73)
-    if op == 0x4E73 {
-        if !cpu.is_supervisor() {
-            trigger_exception(cpu, mmu, 8, mmu.inst_pc);
-            return 34, true;
-        }
-        let new_sr = pop16(cpu, mmu);
-        let new_pc = pop32(cpu, mmu);
-        cpu.set_sr(new_sr);
-        cpu.pc = new_pc;
-        return 20, true;
-    }
-    // RTR (0x4E77)
-    if op == 0x4E77 {
-        let ccr = pop16(cpu, mmu);
-        cpu.set_ccr(ccr as! u8);
-        cpu.pc = pop32(cpu, mmu);
-        return 20, true;
-    }
-    // TRAPV (0x4E76)。V が立っていれば Vector 7。積む PC は次の命令。
-    if op == 0x4E76 {
-        if cpu.flag_v() {
-            trigger_exception(cpu, mmu, 7, cpu.pc);
-            return 34, true;
-        }
-        return 4, true;
+    // 0x4E70〜0x4E77 はオペランドのない制御命令
+    match op {
+        0x4E71 => { return 4, true; },                                    // NOP
+        0x4E70 => {                                                       // RESET
+            // px68k の Reset_CallBack は C68k_Reset_Dummy で、周辺は変えない。
+            if !cpu.is_supervisor() { return privilege_violation(cpu, mmu), true; }
+            return 132, true;
+        },
+        0x4E72 => {                                                       // STOP #imm
+            if !cpu.is_supervisor() { return privilege_violation(cpu, mmu), true; }
+            let imm = fetch16(cpu, mmu);
+            cpu.set_sr(imm);
+            cpu.halted = true;
+            return 4, true;
+        },
+        0x4E73 => {                                                       // RTE
+            if !cpu.is_supervisor() { return privilege_violation(cpu, mmu), true; }
+            let new_sr = pop16(cpu, mmu);
+            let new_pc = pop32(cpu, mmu);
+            cpu.set_sr(new_sr);
+            cpu.pc = new_pc;
+            return 20, true;
+        },
+        0x4E75 => { cpu.pc = pop32(cpu, mmu); return 16, true; },         // RTS
+        0x4E76 => {                                                       // TRAPV
+            // V が立っていれば Vector 7。積む PC は次の命令。
+            if cpu.flag_v() {
+                trigger_exception(cpu, mmu, 7, cpu.pc);
+                return 34, true;
+            }
+            return 4, true;
+        },
+        0x4E77 => {                                                       // RTR
+            let ccr = pop16(cpu, mmu);
+            cpu.set_ccr(ccr as! u8);
+            cpu.pc = pop32(cpu, mmu);
+            return 20, true;
+        },
+        _ => {},
     }
 
     // JMP (0100 1110 11 eee eee)
@@ -808,10 +799,7 @@ fn op4_stack(cpu: M68kCPU&, mmu: M68kMMU&, op: u16) -> i32, bool {
 
     // MOVE USP (0100 1110 0110 drrr)
     if (op & 0xFFF0) == 0x4E60 {
-        if !cpu.is_supervisor() {
-            trigger_exception(cpu, mmu, 8, mmu.inst_pc);
-            return 34, true;
-        }
+        if !cpu.is_supervisor() { return privilege_violation(cpu, mmu), true; }
         let areg: i32 = op & 0x07;
         let to_usp = (op & 0x08) == 0;
         if to_usp { cpu.usp = cpu.a[areg]; } else { cpu.a[areg] = cpu.usp; }
@@ -922,10 +910,7 @@ fn op4_status(cpu: M68kCPU&, mmu: M68kMMU&, op: u16) -> i32, bool {
 
     // MOVE to SR (0100 0110 11 eee eee)
     if (op & 0xFFC0) == 0x46C0 {
-        if !cpu.is_supervisor() {
-            trigger_exception(cpu, mmu, 8, mmu.inst_pc);
-            return 34, true;
-        }
+        if !cpu.is_supervisor() { return privilege_violation(cpu, mmu), true; }
         let val = ea_read(cpu, mmu, mode, reg, 2) as! u16;
         cpu.set_sr(val);
         return 12 + ea_bw_extra(mode, reg), true;
@@ -1525,8 +1510,8 @@ fn exec_op5(cpu: M68kCPU&, mmu: M68kMMU&, op: u16) -> i32 {
     }
 
     // ADDQ / SUBQ
-    var q: u32 = (op >> 9) & 0x07;
-    if q == 0 { q = 8; }
+    let q3: u32 = (op >> 9) & 0x07;
+    let q: u32 = if q3 == 0 { 8 } else { q3 };   // 0 は 8 を表す
     let is_sub = (op & 0x0100) != 0;
     let sz_code: i32 = (op >> 6) & 0x03;
     let mode: i32 = (op >> 3) & 0x07;
