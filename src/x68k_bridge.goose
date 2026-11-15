@@ -8,7 +8,7 @@ let HOST_PATH_BYTES = 800; // room for the longest path C hands back (PATH_CAP i
 extern fn c_machine_bind(ram: u8[:], ipl: u8[:], cgrom: u8[:], sram: u8[:],
     tvram: u8[:], gvram: u8[:], pal: u8[:], vc: u8[:], sprite: u8[:],
     bgreg: u8[:], bgram: u8[:], chr8: u8[:], chr16: u8[:], fb: u32[:],
-    ram_limit: i32&, screen_w: i32&, screen_h: i32&, dma_vec: i32&) -> u64;
+    ram_limit: i32&, screen_w: i32&, screen_h: i32&) -> u64;
 extern fn c_machine_epoch() -> u64;
 extern fn c_machine_reset_devices();
 extern fn c_gui_settings_open(enabled: i32);
@@ -89,12 +89,7 @@ extern fn c_set_frame_ready(ready: i32);
 extern fn c_sound_init();
 extern fn c_sound_opm_write(addr: u32, val: u8);
 extern fn c_sound_opm_read(addr: u32) -> u8;
-extern fn c_sound_adpcm_write(addr: u32, val: u8);
-extern fn c_sound_adpcm_read(addr: u32) -> u8;
-extern fn c_sound_adpcm_set_pan(pan: u8);
 extern fn c_sound_scanline_timer(cycles: u32);
-extern fn c_sound_frame_update(samples: i32);
+// Adds the OPM to one frame of interleaved stereo samples and sends them to the audio output.
+extern fn c_sound_frame_mix(samples: i16[:]);
 extern fn c_sound_poll_irq() -> i32;
-extern fn c_dmac_push_ch3(csr: u8, cer: u8, dcr: u8, ocr: u8, scr: u8, ccr: u8, mtc: u16, mar: u32, dar: u32, btc: u16, bar: u32, niv: u8, eiv: u8);
-extern fn c_dmac_pull_ch3(csr: u8&, cer: u8&, ccr: u8&, mtc: u16&, mar: u32&, dar: u32&, btc: u16&, bar: u32&);
-extern fn c_dmac_ack_irq();

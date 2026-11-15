@@ -1,10 +1,6 @@
 #include "x68k_sound.h"
 #include "common.h"
 #include "opm.h"
-#include "adpcm.h"
-
-// グローバル設定・スタブ定義
-SoundConfig Config = { 0, 16, 16 };
 
 static volatile int g_opm_irq_flag = 0;
 
@@ -30,9 +26,6 @@ MyOPM::MyOPM() {
 
 void MyOPM::WriteIO(uint32_t adr, uint8_t data) {
     if (adr & 1) {
-        if (CurReg == 0x1b) {
-            ADPCM_SetClock((data >> 5) & 4);
-        }
         SetReg(CurReg, (int)data);
     } else {
         CurReg = (int)data;
@@ -55,208 +48,9 @@ static MyOPM *g_opm = NULL;
 
 extern "C" {
 
-extern uint8_t *c_ram_base(void);
-extern int32_t c_ram_size(void);
-
-DMAChannelStub DMA[4];
-static int g_dma_vec = -1;
-static int32_t *g_dma_vec_slot = NULL;
-
-static void dma_vec_store(int v) {
-    g_dma_vec = v;
-    if (g_dma_vec_slot) *g_dma_vec_slot = (int32_t)v;
-}
-
-void c_dma_vec_bind(int32_t *slot) {
-    g_dma_vec_slot = slot;
-    if (slot) *slot = (int32_t)g_dma_vec;
-}
-
-static uint8_t dma_mem_read(uint32_t addr) {
-    uint8_t *ram = c_ram_base();
-    addr &= 0x00FFFFFFu;
-    if (ram && addr < (uint32_t)c_ram_size())
-        return ram[addr];
-    return 0;
-}
-
-static void dma_port_write(uint32_t addr, uint8_t val) {
-    uint8_t *ram = c_ram_base();
-    addr &= 0x00FFFFFFu;
-    if ((addr & 0xFFFFFCu) == 0x00E92000u) {
-        ADPCM_Write(addr, val);
-        return;
-    }
-    if (ram && addr < (uint32_t)c_ram_size())
-        ram[addr] = val;
-}
-
-static uint32_t dma_mem_read32(uint32_t addr) {
-    return ((uint32_t)dma_mem_read(addr) << 24) |
-           ((uint32_t)dma_mem_read(addr + 1) << 16) |
-           ((uint32_t)dma_mem_read(addr + 2) << 8) |
-           (uint32_t)dma_mem_read(addr + 3);
-}
-
-static uint16_t dma_mem_read16(uint32_t addr) {
-    return (uint16_t)(((uint16_t)dma_mem_read(addr) << 8) | dma_mem_read(addr + 1));
-}
-
-static void dma_raise(int ch) {
-    if (DMA[ch].CCR & 0x08) {
-        int vec = (DMA[ch].CSR & 0x10) ? (int)DMA[ch].EIV : (int)DMA[ch].NIV;
-        if (vec > 0)
-            dma_vec_store(vec);
-    }
-}
-
-/* px68k DMA_Exec, enough for ADPCM channel 3 (memory -> 0xE92003). */
-void FASTCALL DMA_Exec(int ch) {
-    if (ch < 0 || ch > 3)
-        return;
-    DMAChannelStub *d = &DMA[ch];
-    int guard = 0;
-
-    while ((d->CSR & 0x08) && !(d->CCR & 0x20) && !(d->CSR & 0x80) && d->MTC && guard < 65536) {
-        guard++;
-        int mem_to_dev = (d->OCR & 0x80) == 0;
-        uint32_t *src = mem_to_dev ? &d->MAR : &d->DAR;
-        uint32_t *dst = mem_to_dev ? &d->DAR : &d->MAR;
-        int kind = ((d->OCR >> 4) & 3) + ((d->DCR >> 1) & 4);
-        int ops = 1;
-        int mem_step = 1;
-        int dev_step = 2;
-        int width = 1;
-        switch (kind) {
-        case 0:
-        case 3:
-            break;
-        case 1:
-            ops = 2;
-            break;
-        case 2:
-            ops = 4;
-            break;
-        case 4:
-            dev_step = 1;
-            break;
-        case 5:
-            mem_step = 2;
-            dev_step = 2;
-            width = 2;
-            break;
-        case 6:
-            mem_step = 4;
-            dev_step = 4;
-            width = 4;
-            break;
-        default:
-            dev_step = 1;
-            break;
-        }
-
-        for (int n = 0; n < ops; n++) {
-            uint32_t s = *src & 0x00FFFFFFu;
-            uint32_t t = *dst & 0x00FFFFFFu;
-            if (width == 1) {
-                dma_port_write(t, dma_mem_read(s));
-            } else if (width == 2) {
-                dma_port_write(t, dma_mem_read(s));
-                dma_port_write(t + 1, dma_mem_read(s + 1));
-            } else {
-                for (int i = 0; i < 4; i++)
-                    dma_port_write(t + (uint32_t)i, dma_mem_read(s + (uint32_t)i));
-            }
-            if (d->SCR & 4) d->MAR = (d->MAR + (uint32_t)mem_step) & 0x00FFFFFFu;
-            else if (d->SCR & 8) d->MAR = (d->MAR - (uint32_t)mem_step) & 0x00FFFFFFu;
-            if (d->SCR & 1) d->DAR = (d->DAR + (uint32_t)dev_step) & 0x00FFFFFFu;
-            else if (d->SCR & 2) d->DAR = (d->DAR - (uint32_t)dev_step) & 0x00FFFFFFu;
-        }
-
-        d->MTC--;
-        if (!d->MTC) {
-            if (d->OCR & 8) {
-                if (d->OCR & 4) {
-                    if (d->BAR) {
-                        d->MAR = dma_mem_read32(d->BAR) & 0x00FFFFFFu;
-                        d->MTC = dma_mem_read16(d->BAR + 4);
-                        d->BAR = dma_mem_read32(d->BAR + 6) & 0x00FFFFFFu;
-                        if (!d->MTC)
-                            break;
-                    }
-                } else if (d->BTC) {
-                    d->BTC--;
-                    if (d->BTC) {
-                        d->MAR = dma_mem_read32(d->BAR) & 0x00FFFFFFu;
-                        d->MTC = dma_mem_read16(d->BAR + 4);
-                        d->BAR = (d->BAR + 6) & 0x00FFFFFFu;
-                        if (!d->MTC)
-                            break;
-                    }
-                }
-            } else if (d->CCR & 0x40) {
-                d->CSR |= 0x40;
-                dma_raise(ch);
-                if (d->BAR) {
-                    d->MAR = d->BAR & 0x00FFFFFFu;
-                    d->MTC = d->BTC;
-                    d->CSR |= 0x08;
-                    d->BAR = 0;
-                    d->BTC = 0;
-                    d->CCR &= 0xBF;
-                }
-            }
-            if (!d->MTC) {
-                d->CSR |= 0x80;
-                d->CSR &= 0xF7;
-                dma_raise(ch);
-            }
-        }
-        if ((d->OCR & 3) != 1)
-            break;
-    }
-}
-
-void c_dmac_push_ch3(uint8_t csr, uint8_t cer, uint8_t dcr, uint8_t ocr, uint8_t scr, uint8_t ccr,
-                     uint16_t mtc, uint32_t mar, uint32_t dar, uint16_t btc, uint32_t bar,
-                     uint8_t niv, uint8_t eiv) {
-    DMAChannelStub *d = &DMA[3];
-    d->CSR = csr;
-    d->CER = cer;
-    d->DCR = dcr;
-    d->OCR = ocr;
-    d->SCR = scr;
-    d->CCR = ccr;
-    d->MTC = mtc;
-    d->MAR = mar & 0x00FFFFFFu;
-    d->DAR = dar & 0x00FFFFFFu;
-    d->BTC = btc;
-    d->BAR = bar & 0x00FFFFFFu;
-    d->NIV = niv;
-    d->EIV = eiv;
-}
-
-void c_dmac_pull_ch3(uint8_t *csr, uint8_t *cer, uint8_t *ccr, uint16_t *mtc,
-                     uint32_t *mar, uint32_t *dar, uint16_t *btc, uint32_t *bar) {
-    DMAChannelStub *d = &DMA[3];
-    if (csr) *csr = d->CSR;
-    if (cer) *cer = d->CER;
-    if (ccr) *ccr = d->CCR;
-    if (mtc) *mtc = d->MTC;
-    if (mar) *mar = d->MAR;
-    if (dar) *dar = d->DAR;
-    if (btc) *btc = d->BTC;
-    if (bar) *bar = d->BAR;
-}
-
-void c_dmac_ack_irq(void) {
-    dma_vec_store(-1);
-}
-
-/* px68k's default levels (OPM_VOL 12 = -8 dB, PCM_VOL 15). At the maximum the OPM
-   alone exceeds 16 bits and ADPCM reaches full scale, so the mix clips. */
+/* px68k's default level (OPM_VOL 12 = -8 dB). At the maximum the OPM alone exceeds 16 bits,
+   so the mix with the ADPCM (x68k_adpcm.goose) clips. */
 #define OPM_VOLUME (-(16 - 12) * 4)
-#define ADPCM_VOLUME 15
 
 void x68k_sound_init(void) {
     if (!g_opm) {
@@ -264,8 +58,6 @@ void x68k_sound_init(void) {
         g_opm->Init(4000000, 44100);
         g_opm->SetVolume(OPM_VOLUME);
     }
-    ADPCM_Init();
-    ADPCM_SetVolume(ADPCM_VOLUME);
     g_opm_irq_flag = 0;
 }
 
@@ -276,11 +68,7 @@ void x68k_sound_reset(void) {
         g_opm->CurCount = 0;
         g_opm->SetVolume(OPM_VOLUME);
     }
-    ADPCM_Init();
-    ADPCM_SetVolume(ADPCM_VOLUME);
     g_opm_irq_flag = 0;
-    memset(DMA, 0, sizeof(DMA));
-    dma_vec_store(-1);
 }
 
 void x68k_sound_cleanup(void) {
@@ -289,8 +77,6 @@ void x68k_sound_cleanup(void) {
         g_opm = NULL;
     }
     g_opm_irq_flag = 0;
-    memset(DMA, 0, sizeof(DMA));
-    dma_vec_store(-1);
 }
 
 void x68k_sound_opm_write(uint32_t addr, uint8_t val) {
@@ -307,34 +93,18 @@ uint8_t x68k_sound_opm_read(uint32_t addr) {
     return 0;
 }
 
-void x68k_sound_adpcm_write(uint32_t addr, uint8_t val) {
-    ADPCM_Write(addr, val);
-}
-
-uint8_t x68k_sound_adpcm_read(uint32_t addr) {
-    return ADPCM_Read(addr);
-}
-
-void x68k_sound_adpcm_set_pan(uint8_t pan) {
-    ADPCM_SetPan(pan);
-}
-
 void x68k_sound_scanline_timer(uint32_t cycles) {
-    ADPCM_PreUpdate(cycles);
     if (g_opm) {
         g_opm->Count2(cycles);
     }
 }
 
-void x68k_sound_render(int16_t *out_buf, int samples) {
-    if (!out_buf || samples <= 0) return;
+// Adds the OPM output to samples that already hold the ADPCM output (interleaved stereo).
+void x68k_sound_mix(int16_t *out_buf, int samples) {
+    if (!out_buf || samples <= 0 || !g_opm) return;
     uint8_t *pbsp = (uint8_t*)out_buf;
     uint8_t *pbep = (uint8_t*)(out_buf + samples * 2);
-
-    ADPCM_Update(out_buf, samples, pbsp, pbep);
-    if (g_opm) {
-        g_opm->Mix(out_buf, samples, pbsp, pbep);
-    }
+    g_opm->Mix(out_buf, samples, pbsp, pbep);
 }
 
 int x68k_sound_poll_irq(void) {
@@ -343,9 +113,9 @@ int x68k_sound_poll_irq(void) {
     return f;
 }
 
-#define SOUND_STATE_MAGIC 0x5336384Cu
+#define SOUND_STATE_MAGIC 0x5336384Du
 
-// The state image: this header, the DMA registers, the OPM object, the ADPCM state.
+// The state image: this header, then the OPM object.
 //
 // The OPM (fmgen) is saved as the bytes of the C++ object, which holds pointers: to its own
 // members (operator outputs, the chip), and to code and tables of this program (the vtable,
@@ -356,12 +126,10 @@ struct SoundStateHeader {
     uint32_t magic;
     uint32_t total;          // bytes of the whole image
     int32_t irq;
-    int32_t dma_vec;
+    uint32_t opm_bytes;
     uint64_t opm_at;         // address of the OPM object when the image was written
     uint64_t module_at;      // address this program was loaded at
     uint64_t module_bytes;   // size of this program in memory; another build has another size
-    uint32_t opm_bytes;
-    uint32_t adpcm_bytes;
 };
 
 extern "C" void c_host_module_range(uint64_t *base, uint64_t *bytes);
@@ -371,8 +139,7 @@ static int sound_opm_bytes(void) {
 }
 
 int x68k_sound_state_size(void) {
-    return (int)(sizeof(SoundStateHeader) + sizeof(DMA)
-        + (size_t)sound_opm_bytes() + (size_t)ADPCM_StateBytes());
+    return (int)(sizeof(SoundStateHeader) + (size_t)sound_opm_bytes());
 }
 
 // Copies the saved OPM object over the live one. A word that pointed into the saved object or
@@ -394,20 +161,15 @@ static void opm_restore(const uint8_t *saved, const SoundStateHeader &h, uint64_
 static int sound_apply(const uint8_t *src, int n, int apply) {
     SoundStateHeader h;
     uint64_t module_now = 0, module_bytes = 0;
-    const uint8_t *p = src;
     if (!src || n != x68k_sound_state_size()) return 0;
-    memcpy(&h, p, sizeof(h)); p += sizeof(h);
+    memcpy(&h, src, sizeof(h));
     c_host_module_range(&module_now, &module_bytes);
     if (h.magic != SOUND_STATE_MAGIC || (int)h.total != n) return 0;
-    if ((int)h.opm_bytes != sound_opm_bytes() || h.adpcm_bytes != (uint32_t)ADPCM_StateBytes()) return 0;
+    if ((int)h.opm_bytes != sound_opm_bytes()) return 0;
     if (h.module_bytes != module_bytes) return 0;   // written by another build
     if (!apply) return 1;
     g_opm_irq_flag = h.irq;
-    dma_vec_store(h.dma_vec);
-    memcpy(DMA, p, sizeof(DMA)); p += sizeof(DMA);
-    if (h.opm_bytes && g_opm) opm_restore(p, h, module_now);
-    p += h.opm_bytes;
-    ADPCM_StateLoad(p);
+    if (h.opm_bytes && g_opm) opm_restore(src + sizeof(h), h, module_now);
     return 1;
 }
 
@@ -420,15 +182,11 @@ int x68k_sound_state_save(void *dst, int cap) {
     h.magic = SOUND_STATE_MAGIC;
     h.total = (uint32_t)n;
     h.irq = g_opm_irq_flag;
-    h.dma_vec = g_dma_vec;
+    h.opm_bytes = (uint32_t)sound_opm_bytes();
     h.opm_at = (uint64_t)(uintptr_t)g_opm;
     c_host_module_range(&h.module_at, &h.module_bytes);
-    h.opm_bytes = (uint32_t)sound_opm_bytes();
-    h.adpcm_bytes = (uint32_t)ADPCM_StateBytes();
-    memcpy(p, &h, sizeof(h)); p += sizeof(h);
-    memcpy(p, DMA, sizeof(DMA)); p += sizeof(DMA);
-    if (h.opm_bytes) { memcpy(p, g_opm, h.opm_bytes); p += h.opm_bytes; }
-    ADPCM_StateSave(p);
+    memcpy(p, &h, sizeof(h));
+    if (h.opm_bytes) memcpy(p + sizeof(h), g_opm, h.opm_bytes);
     return 1;
 }
 

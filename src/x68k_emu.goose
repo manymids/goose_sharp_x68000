@@ -11,13 +11,12 @@ import .x68k_fdc;
 import .x68k_dmac;
 import .x68k_sasi;
 import .x68k_disk;
+import .x68k_adpcm;
 import .x68k_ram;
 import .x68k_rom;
 import .x68k_session_types;
 namespace emu;
 
-// Sound writes this when the event happens. The step reads it.
-var ::g_host_dma_vec: i32 = -1;
 
 struct X68kEmulator {
     session: X68kSession = X68kSession {},
@@ -40,8 +39,7 @@ fn bind(emu: X68kEmulator&) -> bool {
     let epoch = c_machine_bind(g_x68k_ram[..], g_iplrom[..], g_cgrom[..], g_sram[..],
         emu.mmu.tvram[..], emu.mmu.gvram[..], emu.mmu.pal[..], emu.mmu.vcreg[..],
         emu.mmu.sprite[..], emu.mmu.bgreg[..], emu.mmu.bgram[..], emu.mmu.bg_chr8[..],
-        emu.mmu.bg_chr16[..], emu.ppu.fb[..], g_ram_limit, g_screen_w, g_screen_h,
-        g_host_dma_vec);
+        emu.mmu.bg_chr16[..], emu.ppu.fb[..], g_ram_limit, g_screen_w, g_screen_h);
     if epoch == 0 { return false; }
     emu.binding_epoch = epoch;
     return true;
@@ -127,15 +125,15 @@ fn step_core(emu: X68kEmulator&) -> i32 {
         }
     }
 
-    // DMAC 割り込み (Level 3)。ch0–2 は Goose。ch3 はサウンド側が g_host_dma_vec を書く。
+    // DMAC 割り込み (Level 3)。ch0–2 が先で、なければ ch3 (ADPCM)。
     var dma_vec = emu.mmu.dmac.peek_irq();
     var goose_dma = dma_vec >= 0;
     if !goose_dma {
-        dma_vec = g_host_dma_vec;
+        dma_vec = emu.mmu.dmac.adpcm_vec;
     }
     if dma_vec >= 0 {
         if emu.cpu.int_mask() < 3 {
-            if goose_dma { emu.mmu.dmac.ack_irq(); } else { c_dmac_ack_irq(); }
+            if goose_dma { emu.mmu.dmac.ack_irq(); } else { emu.mmu.dmac.adpcm_vec = -1; }
             m68k::interrupt(emu.cpu, emu.mmu, 3, dma_vec);
         }
     }
@@ -257,10 +255,9 @@ fn line_end(emu: X68kEmulator&, vline: i32, vline_total: i32, clk_line: i32) {
         emu.mmu.mfp.trigger_int(MFP_IRQ_RASTER);
     }
 
-    // 音源のタイマーを 1 ライン分進める
-    emu.mmu.dmac.sound_push();
+    // 音源を 1 ライン分進める。ADPCM は、たまっているデータが尽きる頃合いで DMA に次を運ばせる。
+    for _ in emu.mmu.adpcm.pre_update(clk_line) { dmac::exec_adpcm(emu.mmu); }
     c_sound_scanline_timer(clk_line as u32);
-    emu.mmu.dmac.sound_pull();
     if c_sound_poll_irq() != 0 {
         emu.mmu.mfp.trigger_int(MFP_IRQ_OPM);
     }
@@ -286,11 +283,30 @@ fn fast_clear(emu: X68kEmulator&, is_31k: bool) {
     }
 }
 
+let AUDIO_FRAME_MAX = 2048; // 1 フレームに作るサンプル数の上限
+
 // このフレームで合成する音のサンプル数 (44.1 kHz)。31 kHz の画面は 55.46 Hz、15 kHz の画面は 61.46 Hz。
 // 端数を持ち越すので、フレームごとに 1 サンプル違うことがある。
 fn frame_samples(total_frames: i64, is_31k: bool) -> i32 {
     let rate: i64 = if is_31k { 5546 } else { 6146 };
     return (((total_frames + 1) * 4410000) / rate - (total_frames * 4410000) / rate) as i32;
+}
+
+// 1 フレームぶんの音を作って出力へ渡す。ADPCM をここで取り出し、OPM は C++ 側 (fmgen) が同じ
+// バッファへ足し込む。
+fn mix_audio(emu: X68kEmulator&, samples: i32) {
+    if samples <= 0 { return; }
+    var buf: i16[AUDIO_FRAME_MAX * 2] = [0; AUDIO_FRAME_MAX * 2]; // 右、左の順
+    let count = min(samples, AUDIO_FRAME_MAX);
+    for i in count {
+        // データが尽きていて、続きのブロックが予約されていなければ、DMA に運ばせる
+        if emu.mmu.adpcm.empty() && (emu.mmu.dmac.ch[3].ccr & 0x40) == 0 { dmac::exec_adpcm(emu.mmu); }
+        let r, l = emu.mmu.adpcm.next_sample();
+        buf[i * 2] = r;
+        buf[i * 2 + 1] = l;
+    }
+    emu.mmu.adpcm.note_backlog();
+    c_sound_frame_mix(buf[..count * 2]);
 }
 
 // 1 フレーム分進める (px68k WinX68k_Exec と同じ走査線単位の進め方)。
@@ -335,9 +351,7 @@ fn run_frame(emu: X68kEmulator&) {
     // フレーム末の CRTC 設定を画面サイズへ反映
     ppu::apply_screen(emu.mmu);
 
-    emu.mmu.dmac.sound_push();
-    c_sound_frame_update(frame_samples(emu.total_frames, is_31k));
-    emu.mmu.dmac.sound_pull();
+    mix_audio(emu, frame_samples(emu.total_frames, is_31k));
 
     disk::media_tick((emu.mmu.ioc_int_stat & 2) != 0);
 

@@ -264,6 +264,7 @@ This public-distribution layout does not include `tools/architecture/build.ps1` 
 | [src/main.goose](src/main.goose) / [src/launch_args.goose](src/launch_args.goose) | Startup, GUI/ARCL event loop / parsing launch arguments |
 | `src/m68k_*` | CPU instructions, MMU |
 | `src/x68k_mfp/fdc/dmac/sasi/rtc.goose` | Peripherals |
+| [src/x68k_adpcm.goose](src/x68k_adpcm.goose) | ADPCM (MSM6258). The OPM (FM synthesis) is fmgen in `src/sound/` |
 | [src/x68k_disk.goose](src/x68k_disk.goose) | FD (XDF, D88, DIM) and HDD images |
 | [src/x68k_ppu.goose](src/x68k_ppu.goose) | Scanline processing and rendering composition |
 | [src/x68k_emu.goose](src/x68k_emu.goose) | Frame progression and shared reset logic |
@@ -284,7 +285,7 @@ goose build .\src\test_core.goose -o .\test_core.exe
 .\test_core.exe
 ```
 
-It prints `381 / 381 checks passed` when everything passes, and reports each failure and exits with status 1 otherwise. Building with `--debug` also enables the overflow and range checks.
+It prints `398 / 398 checks passed` when everything passes, and reports each failure and exits with status 1 otherwise. Building with `--debug` also enables the overflow and range checks.
 
 ## Troubleshooting and known limitations
 

@@ -2,7 +2,6 @@
 c_sources = [
     "x68k_bridge.c",
     "x68k_config.c",
-    "sound/adpcm.c",
     "sound/fmgen.cpp",
     "sound/fmtimer.cpp",
     "sound/opm.cpp",

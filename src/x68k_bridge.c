@@ -329,7 +329,6 @@ static void save_sram_file(void) {
 void x68k_mem_destroy(void) {
     save_sram_file();
     // Stop publications before dropping any borrowed array or scalar view.
-    c_dma_vec_bind(NULL);
     g_ram_limit_slot = NULL;
     g_screen_w_slot = g_screen_h_slot = NULL;
     g_machine_epoch = 0;
@@ -586,11 +585,9 @@ static uint64_t machine_bind_views(const X68kHostViews *v) {
         !VIEW_OK(pal, PAL_SIZE) || !VIEW_OK(vc, VCREG_SIZE) || !VIEW_OK(sprite, SPRITE_SIZE) ||
         !VIEW_OK(bgreg, BGREG_SIZE) || !VIEW_OK(bgram, BGRAM_SIZE) ||
         !VIEW_OK(chr8, 8 * 8 * 256) || !VIEW_OK(chr16, 16 * 16 * 256) ||
-        !VIEW_OK(fb, FB_MAX_PIXELS) || !v->ram_limit || !v->screen_w || !v->screen_h ||
-        !v->dma_vec) return 0;
+        !VIEW_OK(fb, FB_MAX_PIXELS) || !v->ram_limit || !v->screen_w || !v->screen_h) return 0;
 #undef VIEW_OK
     // All validation precedes registration. No allocation or callbacks here.
-    c_dma_vec_bind(NULL);
     if (!g_ram_bound) {
         memset(v->ram.data, 0, (size_t)v->ram.len);
         if (g_ram && g_ram != v->ram.data) memcpy(v->ram.data, g_ram, (size_t)g_ram_bytes);
@@ -600,7 +597,6 @@ static uint64_t machine_bind_views(const X68kHostViews *v) {
     c_video_bind(v->pal.data, v->sprite.data, v->bgreg.data, v->bgram.data, v->chr8.data, v->chr16.data);
     c_vcreg_bind(v->vc.data); c_tvram_bind(v->tvram.data); c_gvram_bind(v->gvram.data);
     c_fb_bind(v->fb.data); c_screen_bind(v->screen_w, v->screen_h);
-    c_dma_vec_bind(v->dma_vec);
     if (++g_machine_epoch_next == 0) ++g_machine_epoch_next;
     g_machine_epoch = g_machine_epoch_next;
     return g_machine_epoch;
@@ -609,9 +605,9 @@ static uint64_t machine_bind_views(const X68kHostViews *v) {
 uint64_t c_machine_bind(X68kByteView ram, X68kByteView ipl, X68kByteView cgrom, X68kByteView sram,
     X68kByteView tvram, X68kByteView gvram, X68kByteView pal, X68kByteView vc, X68kByteView sprite,
     X68kByteView bgreg, X68kByteView bgram, X68kByteView chr8, X68kByteView chr16, X68kPixelView fb,
-    int32_t *ram_limit, int32_t *screen_w, int32_t *screen_h, int32_t *dma_vec) {
+    int32_t *ram_limit, int32_t *screen_w, int32_t *screen_h) {
     X68kHostViews views = {ram, ipl, cgrom, sram, tvram, gvram, pal, vc, sprite,
-        bgreg, bgram, chr8, chr16, fb, ram_limit, screen_w, screen_h, dma_vec};
+        bgreg, bgram, chr8, chr16, fb, ram_limit, screen_w, screen_h};
     return machine_bind_views(&views);
 }
 
@@ -1639,18 +1635,6 @@ uint8_t c_sound_opm_read(uint32_t addr) {
     return x68k_sound_opm_read(addr);
 }
 
-void c_sound_adpcm_write(uint32_t addr, uint8_t val) {
-    x68k_sound_adpcm_write(addr, val);
-}
-
-uint8_t c_sound_adpcm_read(uint32_t addr) {
-    return x68k_sound_adpcm_read(addr);
-}
-
-void c_sound_adpcm_set_pan(uint8_t pan) {
-    x68k_sound_adpcm_set_pan(pan);
-}
-
 void c_machine_reset_devices(void) {
     c_sound_reset();
     c_host_input_discard();
@@ -1676,13 +1660,14 @@ void c_sound_scanline_timer(uint32_t cycles) {
     x68k_sound_scanline_timer(cycles);
 }
 
-void c_sound_frame_update(int samples) {
-    if (samples <= 0) return;
-    static int16_t s_render_buf[2048 * 2]; // max 2048 stereo samples
-    int render_samples = samples > 2048 ? 2048 : samples;
-    x68k_sound_render(s_render_buf, render_samples);
-    cap_push(s_render_buf, render_samples);
-    win32_audio_push(s_render_buf, render_samples * 2);
+// One frame of interleaved stereo samples that already hold the ADPCM output. The OPM is added
+// in place, then the frame goes to the capture buffer and the audio device.
+void c_sound_frame_mix(X68kSampleView frame) {
+    int samples = (int)(frame.len / 2);
+    if (!frame.data || samples <= 0) return;
+    x68k_sound_mix(frame.data, samples);
+    cap_push(frame.data, samples);
+    win32_audio_push(frame.data, samples * 2);
 }
 
 int c_sound_poll_irq(void) {

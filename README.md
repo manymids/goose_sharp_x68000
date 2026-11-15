@@ -263,6 +263,7 @@ Gooseがソースと同じフォルダの [src/main.build](src/main.build) を�
 | [src/main.goose](src/main.goose) / [src/launch_args.goose](src/launch_args.goose) | 起動・GUI/ARCLのイベントループ / 起動引数の解釈 |
 | `src/m68k_*` | CPU命令・MMU |
 | `src/x68k_mfp/fdc/dmac/sasi/rtc.goose` | 周辺機器 |
+| [src/x68k_adpcm.goose](src/x68k_adpcm.goose) | ADPCM（MSM6258）。OPM（FM音源）は `src/sound/` のfmgen |
 | [src/x68k_disk.goose](src/x68k_disk.goose) | FD（XDF・D88・DIM）とHDDのイメージ |
 | [src/x68k_ppu.goose](src/x68k_ppu.goose) | 走査線・描画合成 |
 | [src/x68k_emu.goose](src/x68k_emu.goose) | フレーム進行と共通リセット |
@@ -283,7 +284,7 @@ goose build .\src\test_core.goose -o .\test_core.exe
 .\test_core.exe
 ```
 
-すべて通ると `381 / 381 checks passed` と表示し、失敗があれば内容を出して終了コード1で終わります。`--debug` を付けてビルドすると、桁あふれと範囲の検査も有効になります。
+すべて通ると `398 / 398 checks passed` と表示し、失敗があれば内容を出して終了コード1で終わります。`--debug` を付けてビルドすると、桁あふれと範囲の検査も有効になります。
 
 ## 困ったとき・既知の制限
 

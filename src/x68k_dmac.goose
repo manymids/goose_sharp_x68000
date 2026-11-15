@@ -9,6 +9,7 @@ import .x68k_bridge;
 import .x68k_fdc;
 import .x68k_ram;
 import .x68k_sasi;
+import .x68k_adpcm;
 import .m68k_mmu;
 namespace dmac;
 
@@ -39,6 +40,7 @@ struct X68kDMAC {
     int_ch: i32 = 0,
     int_pending: bool = false,
     last_int: i32 = 0,
+    adpcm_vec: i32 = -1, // ch3 が要求している割り込みのベクタ。-1 は要求なし
 }
 type ::X68kDMAC = dmac::X68kDMAC;
 
@@ -72,8 +74,6 @@ fn readmem24_word(addr: u32) -> u16 {
 fn read(dmac: X68kDMAC&, addr: u32) -> u8 {
     if addr >= 0x00E84100 { return 0; }
     let ch = ((addr >> 6) & 0x03) as i32;
-    // ch3 は C 側 DMA[3] が進めた MTC/CSR を、読む前に Goose へ戻す。
-    if ch == 3 { dmac.sound_pull(); }
     let c .= dmac.ch[ch];
     match addr & 0x3F {
         0x00 => c.csr,
@@ -138,8 +138,6 @@ fn write_ccr(c: X68kDMAChannel&, data: u8) {
 fn write(dmac: X68kDMAC&, addr: u32, data: u8) {
     if addr >= 0x00E84100 { return; }
     let ch = ((addr >> 6) & 0x03) as i32;
-    // 1 バイト書きで残りのカウンタを古い Goose 値のまま C へ戻さない。
-    if ch == 3 { dmac.sound_pull(); }
     let c .= dmac.ch[ch];
     let d16: u16 = data;
     let d32: u32 = data;
@@ -172,7 +170,6 @@ fn write(dmac: X68kDMAC&, addr: u32, data: u8) {
         0x3F => { if ch == 3 { c.gcr = data; } }, // GCR は ch3 にだけある
         _ => {},
     }
-    if ch == 3 { dmac.sound_push(); }
 }
 
 // FDC と DMAC Ch 0 の DMA 転送実行。
@@ -509,19 +506,119 @@ fn exec_ch2(mmu: M68kMMU&) {
 }
 
 // ---------------------------------------------------------------
-// ch3 (ADPCM)。転送そのものは C 側の音源が行い、レジスタだけを同期する。
+// ch3 (ADPCM)。px68k の DMA_Exec を、メモリから $E92003 へ流す使い方に必要なぶんだけ移したもの。
+// ADPCM がデータを欲しがったときに呼ばれ、MTC が尽きるか 1 回ぶん送るまで進める。
+// メモリの読み書きは RAM だけを見る (I/O へは ADPCM のポート以外書かない)。
 // ---------------------------------------------------------------
 
-fn sound_push(dmac: X68kDMAC&) {
-    c_dmac_push_ch3(
-        dmac.ch[3].csr, dmac.ch[3].cer, dmac.ch[3].dcr, dmac.ch[3].ocr,
-        dmac.ch[3].scr, dmac.ch[3].ccr, dmac.ch[3].mtc, dmac.ch[3].mar,
-        dmac.ch[3].dar, dmac.ch[3].btc, dmac.ch[3].bar, dmac.ch[3].niv,
-        dmac.ch[3].eiv);
+fn adpcm_mem_read(addr: u32) -> u8 {
+    return x68k_ram_read((addr & ADDR_MASK) as! i32);
 }
 
-fn sound_pull(dmac: X68kDMAC&) {
-    c_dmac_pull_ch3(
-        dmac.ch[3].csr, dmac.ch[3].cer, dmac.ch[3].ccr, dmac.ch[3].mtc,
-        dmac.ch[3].mar, dmac.ch[3].dar, dmac.ch[3].btc, dmac.ch[3].bar);
+fn adpcm_mem_read16(addr: u32) -> u16 {
+    return ((adpcm_mem_read(addr) as u16) << 8) | adpcm_mem_read(addr + 1);
+}
+
+fn adpcm_mem_read32(addr: u32) -> u32 {
+    return ((adpcm_mem_read16(addr) as u32) << 16) | adpcm_mem_read16(addr + 2);
+}
+
+fn adpcm_port_write(mmu: M68kMMU&, addr: u32, val: u8) {
+    let a = addr & ADDR_MASK;
+    if (a & 0xFFFFFC) == 0xE92000 { mmu.adpcm.write(a, val); }
+    else { x68k_ram_write(a as! i32, val); }
+}
+
+// 完了 / エラーの割り込み。CCR の INT が立っていれば、ERR なら EIV、なければ NIV を要求する。
+fn adpcm_raise(dmac: X68kDMAC&) {
+    let c .= dmac.ch[3];
+    if (c.ccr & 0x08) == 0 { return; }
+    let vec: i32 = if (c.csr & 0x10) != 0 { c.eiv } else { c.niv };
+    if vec > 0 { dmac.adpcm_vec = vec; }
+}
+
+// 番地レジスタを 24 ビットの範囲で進める / 戻す。
+fn step24(addr: u32, up: bool, down: bool, step: u32) -> u32 {
+    if up { return (addr + step) & ADDR_MASK; }
+    if down { return ((addr & ADDR_MASK) + 0x1000000 - step) & ADDR_MASK; }
+    return addr;
+}
+
+// MTC が 0 になったあとの続き方。まだ送るものがあれば true。
+fn adpcm_next_block(mmu: M68kMMU&) -> bool {
+    let c .= mmu.dmac.ch[3];
+    if (c.ocr & 8) != 0 {
+        // チェーン: BAR の指す表から次の番地と長さを読む
+        if (c.ocr & 4) != 0 {
+            // リンクアレイ: 表の各項が次の項の番地を持つ
+            if c.bar != 0 {
+                let entry = c.bar;
+                c.mar = adpcm_mem_read32(entry) & ADDR_MASK;
+                c.mtc = adpcm_mem_read16(entry + 4);
+                c.bar = adpcm_mem_read32(entry + 6) & ADDR_MASK;
+                if c.mtc == 0 { return false; }
+            }
+        } else if c.btc != 0 {
+            // アレイ: 表の項が BTC 個並んでいる
+            c.btc -= 1;
+            if c.btc != 0 {
+                c.mar = adpcm_mem_read32(c.bar) & ADDR_MASK;
+                c.mtc = adpcm_mem_read16(c.bar + 4);
+                c.bar = (c.bar + 6) & ADDR_MASK;
+                if c.mtc == 0 { return false; }
+            }
+        }
+    } else if (c.ccr & 0x40) != 0 {
+        // コンティニュー: BAR / BTC に用意してあった次のブロックへ移る
+        c.csr |= 0x40;
+        adpcm_raise(mmu.dmac);
+        if c.bar != 0 {
+            c.mar = c.bar & ADDR_MASK;
+            c.mtc = c.btc;
+            c.csr |= 0x08;
+            c.bar = 0;
+            c.btc = 0;
+            c.ccr &= 0xBF;
+        }
+    }
+    if c.mtc == 0 {
+        // すべて送り終えた: 完了を立てて、動作中を落とす
+        c.csr |= 0x80;
+        c.csr &= 0xF7;
+        adpcm_raise(mmu.dmac);
+    }
+    return true;
+}
+
+fn exec_adpcm(mmu: M68kMMU&) {
+    let c .= mmu.dmac.ch[3];
+    var rounds = 0;
+    while (c.csr & 0x08) != 0 && (c.ccr & 0x20) == 0 && (c.csr & 0x80) == 0 && c.mtc != 0 && rounds < 65536 {
+        rounds += 1;
+        let mem_to_dev = (c.ocr & 0x80) == 0;
+        // オペランドの大きさ (OCR) とデバイスのポート幅 (DCR) の組み合わせ
+        let kind: i32 = ((c.ocr >> 4) & 3) + ((c.dcr >> 1) & 4);
+        var ops: i32 = 1;      // 1 回の転送で何回読み書きするか
+        var mem_step: u32 = 1;
+        var dev_step: u32 = 2;
+        var width: u32 = 1;    // 1 回に読み書きするバイト数
+        if kind == 1 { ops = 2; }
+        else if kind == 2 { ops = 4; }
+        else if kind == 4 || kind == 7 { dev_step = 1; }
+        else if kind == 5 { mem_step = 2; width = 2; }
+        else if kind == 6 { mem_step = 4; dev_step = 4; width = 4; }
+
+        for _ in ops {
+            let from = if mem_to_dev { c.mar } else { c.dar };
+            let to = if mem_to_dev { c.dar } else { c.mar };
+            for i: u32 in width { adpcm_port_write(mmu, to + i, adpcm_mem_read(from + i)); }
+            c.mar = step24(c.mar, (c.scr & 4) != 0, (c.scr & 8) != 0, mem_step);
+            c.dar = step24(c.dar, (c.scr & 1) != 0, (c.scr & 2) != 0, dev_step);
+        }
+
+        c.mtc -= 1;
+        if c.mtc == 0 && !adpcm_next_block(mmu) { break; }
+        // 1 回の要求で 1 単位だけ送るモードでなければ、ここで止まる
+        if (c.ocr & 3) != 1 { break; }
+    }
 }

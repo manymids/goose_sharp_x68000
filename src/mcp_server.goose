@@ -1812,37 +1812,18 @@ fn tool_irq(emu: X68kEmulator&, args: const u8[:], id_buf: const u8[:]) {
 }
 
 fn tool_dma(emu: X68kEmulator&, args: const u8[:], id_buf: const u8[:]) {
-    var c3_csr: u8 = 0;
-    var c3_cer: u8 = 0;
-    var c3_ccr: u8 = 0;
-    var c3_mtc: u16 = 0;
-    var c3_mar: u32 = 0;
-    var c3_dar: u32 = 0;
-    var c3_btc: u16 = 0;
-    var c3_bar: u32 = 0;
-    c_dmac_pull_ch3(c3_csr, c3_cer, c3_ccr, c3_mtc, c3_mar, c3_dar, c3_btc, c3_bar);
     var obj: u8[>..] = [];
     obj.append("{\"channels\":[");
     for i in 4 {
         if i != 0 { obj.append(","); }
-        var csr = emu.mmu.dmac.ch[i].csr;
-        var cer = emu.mmu.dmac.ch[i].cer;
-        var ccr = emu.mmu.dmac.ch[i].ccr;
-        var mtc = emu.mmu.dmac.ch[i].mtc;
-        var mar = emu.mmu.dmac.ch[i].mar;
-        var dar = emu.mmu.dmac.ch[i].dar;
-        var btc = emu.mmu.dmac.ch[i].btc;
-        var bar = emu.mmu.dmac.ch[i].bar;
-        if i == 3 {
-            csr = c3_csr;
-            cer = c3_cer;
-            ccr = c3_ccr;
-            mtc = c3_mtc;
-            mar = c3_mar;
-            dar = c3_dar;
-            btc = c3_btc;
-            bar = c3_bar;
-        }
+        let csr = emu.mmu.dmac.ch[i].csr;
+        let cer = emu.mmu.dmac.ch[i].cer;
+        let ccr = emu.mmu.dmac.ch[i].ccr;
+        let mtc = emu.mmu.dmac.ch[i].mtc;
+        let mar = emu.mmu.dmac.ch[i].mar;
+        let dar = emu.mmu.dmac.ch[i].dar;
+        let btc = emu.mmu.dmac.ch[i].btc;
+        let bar = emu.mmu.dmac.ch[i].bar;
         format(obj, "{\"ch\":", i, ",\"csr\":");
         push_hex_byte(obj, csr);
         obj.append(",\"cer\":");

@@ -12,11 +12,12 @@ extern "C" {
 /* A Goose slice. Paths and file names come as one of these, in UTF-8, without a terminator. */
 typedef struct { uint8_t *data; int64_t len; } X68kByteView;
 typedef struct { uint32_t *data; int64_t len; } X68kPixelView;
+typedef struct { int16_t *data; int64_t len; } X68kSampleView;
 typedef struct {
     X68kByteView ram, ipl, cgrom, sram, tvram, gvram, pal, vc;
     X68kByteView sprite, bgreg, bgram, chr8, chr16;
     X68kPixelView fb;
-    int32_t *ram_limit, *screen_w, *screen_h, *dma_vec;
+    int32_t *ram_limit, *screen_w, *screen_h;
 } X68kHostViews;
 // One active borrowed machine. Validate every view before changing registration.
 // Keep MMU/PPU owners at a stable address until replacement/unbind/destroy;
@@ -24,7 +25,7 @@ typedef struct {
 uint64_t c_machine_bind(X68kByteView ram, X68kByteView ipl, X68kByteView cgrom, X68kByteView sram,
     X68kByteView tvram, X68kByteView gvram, X68kByteView pal, X68kByteView vc, X68kByteView sprite,
     X68kByteView bgreg, X68kByteView bgram, X68kByteView chr8, X68kByteView chr16, X68kPixelView fb,
-    int32_t *ram_limit, int32_t *screen_w, int32_t *screen_h, int32_t *dma_vec);
+    int32_t *ram_limit, int32_t *screen_w, int32_t *screen_h);
 uint64_t c_machine_epoch(void);
 void c_machine_reset_devices(void);
 
@@ -135,22 +136,11 @@ void c_sound_reset(void);
 void c_sound_cleanup(void);
 void c_sound_opm_write(uint32_t addr, uint8_t val);
 uint8_t c_sound_opm_read(uint32_t addr);
-void c_sound_adpcm_write(uint32_t addr, uint8_t val);
-uint8_t c_sound_adpcm_read(uint32_t addr);
-void c_sound_adpcm_set_pan(uint8_t pan);
 void c_sound_scanline_timer(uint32_t cycles);
-void c_sound_frame_update(int samples);
+void c_sound_frame_mix(X68kSampleView frame);
 int c_sound_poll_irq(void);
 
 /* ADPCM uses DMAC channel 3. The sound core runs the transfer. */
-void c_dmac_push_ch3(uint8_t csr, uint8_t cer, uint8_t dcr, uint8_t ocr, uint8_t scr, uint8_t ccr,
-                     uint16_t mtc, uint32_t mar, uint32_t dar, uint16_t btc, uint32_t bar,
-                     uint8_t niv, uint8_t eiv);
-void c_dmac_pull_ch3(uint8_t *csr, uint8_t *cer, uint8_t *ccr, uint16_t *mtc,
-                     uint32_t *mar, uint32_t *dar, uint16_t *btc, uint32_t *bar);
-void c_dma_vec_bind(int32_t *slot);
-void c_fdd_media_bind(int32_t *slot);
-void c_dmac_ack_irq(void);
 
 #ifdef __cplusplus
 }

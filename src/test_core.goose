@@ -17,6 +17,7 @@ import .x68k_state;
 import .x68k_disk;
 import .mcp_args;
 import .launch_args;
+import .x68k_adpcm;
 
 var g_checks = 0;
 var g_failures = 0;
@@ -900,6 +901,54 @@ fn test_launch_args() {
     check("args: a path that does not fit is refused", launch::parse(list, o) == "the disk image path is too long\n");
 }
 
+// ADPCM (MSM6258) のデコーダ。
+var g_adpcm = X68kADPCM {};
+
+fn test_adpcm() {
+    // 4 ビットのデータ 1 個の変化量: 符号と、ステップ幅の 1 + 1/2 + 1/4 + 1/8 倍
+    check("adpcm: the smallest step", adpcm::delta(0, 0) == 2 && adpcm::delta(0, 8) == -2);
+    check("adpcm: every bit at the first step", adpcm::delta(0, 7) == 30 && adpcm::delta(0, 15) == -30);
+    check("adpcm: every bit at the last step", adpcm::delta(48, 7) == 2910);
+    check("adpcm: small data lowers the step, not below 0", adpcm::next_step(0, 3) == 0 && adpcm::next_step(5, 1) == 4);
+    check("adpcm: large data raises the step, not above 48", adpcm::next_step(10, 7) == 18 && adpcm::next_step(45, 15) == 48);
+
+    g_adpcm = X68kADPCM {};
+    check("adpcm: idle status", g_adpcm.read(0xE92001) == 0x40);
+    g_adpcm.write(0xE92003, 0x77);
+    check("adpcm: data while stopped is ignored", g_adpcm.empty() && g_adpcm.level == 0);
+    g_adpcm.write(0xE92001, 2);
+    check("adpcm: playing status", g_adpcm.read(0xE92001) == 0xC0 && g_adpcm.playing);
+    g_adpcm.write(0xE92003, 0x77);
+    // 下位 4 ビットが先: 7 で +30、ステップ 0 → 8 (幅 34)。次の 7 で +34 * 15 / 8 = +63、ステップ 16
+    check("adpcm: two nibbles move the level up", g_adpcm.level == 30 + 63 && g_adpcm.step == 16);
+    check("adpcm: samples reach the ring", !g_adpcm.empty());
+
+    // 出力側: たまっているぶんを読み終えたら、最後の値から 0 へ 1 ずつ戻る
+    var guard_count = 0;
+    while !g_adpcm.empty() && guard_count < 100000 { g_adpcm.next_sample(); guard_count += 1; }
+    let held = g_adpcm.held_r;
+    g_adpcm.next_sample();
+    check("adpcm: with no data the output decays toward 0", g_adpcm.held_r == held - 1 || held == 0);
+
+    // パン: bit 0 で右、bit 1 で左を切る。bit 2-3 が変わるとサンプリングの速さが変わる
+    g_adpcm = X68kADPCM {};
+    g_adpcm.set_pan(0x0B);
+    check("adpcm: the reset pan keeps the default rate", g_adpcm.clock_rate == 187500);
+    g_adpcm.set_pan(0x01);
+    check("adpcm: pan bits 2-3 choose the divider", g_adpcm.clock_rate == 93750);
+    g_adpcm.set_clock(4);
+    check("adpcm: the OPM CT1 bit halves the clock", g_adpcm.clock_rate == 46875);
+    g_adpcm.write(0xE92001, 2);
+    g_adpcm.write(0xE92003, 0x07);
+    let wr = g_adpcm.wr;
+    check("adpcm: right muted, left kept", wr > 0 && g_adpcm.right[wr - 1] == 0 && g_adpcm.left[wr - 1] != 0);
+
+    // DMA の要求: たまっている量が尽きる頃合いの回数だけ返す
+    g_adpcm = X68kADPCM {};
+    check("adpcm: a short time asks for nothing", g_adpcm.pre_update(10) == 0);
+    check("adpcm: an empty buffer asks once per unit of time", g_adpcm.pre_update(2000) > 0);
+}
+
 fn main() {
     test_flag_helpers();
     test_conditions();
@@ -922,6 +971,7 @@ fn main() {
     test_io_latches();
     test_mcp_args();
     test_launch_args();
+    test_adpcm();
     print(g_checks - g_failures, " / ", g_checks, " checks passed");
     if g_failures > 0 { exit(1); }
 }

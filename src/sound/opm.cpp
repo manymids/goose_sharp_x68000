@@ -21,6 +21,7 @@ OPM::OPM()
 {
 	lfo_count_ = 0;
 	lfo_count_prev_ = ~0;
+	lfo_step_ = 0;	// was never set, so the LFO phase depended on leftover heap contents
 	BuildLFOTable();
 	for (int i=0; i<8; i++)
 	{
@@ -130,6 +131,7 @@ void OPM::Reset()
 	Timer::Reset();
 	
 	status = 0;
+	lfo_step_ = 0;
 	noise = 12345;
 	noisecount = 0;
 	

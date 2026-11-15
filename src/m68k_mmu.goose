@@ -8,6 +8,7 @@ import .x68k_sasi;
 import .x68k_ram;
 import .x68k_rom;
 import .x68k_rtc;
+import .x68k_adpcm;
 namespace mmu;
 
 let ::ADDR_MASK = 0x00FFFFFF; // 68000 のアドレスバスは 24 bit
@@ -53,6 +54,7 @@ struct M68kMMU {
     joy2: u8 = 0xFF,
     pia_c: u8 = 0x0B,           // 8255 ポート C。bit 0-3 が ADPCM のパンとサンプリング周波数
     opm: OpmShadow = OpmShadow {},
+    adpcm: X68kADPCM = X68kADPCM {},
     // 68000 group 0 exceptions. Checks apply only while the CPU runs an instruction.
     cpu_access: bool = false,
     user_mode: bool = false,
@@ -96,7 +98,7 @@ fn crtc_word(mmu: M68kMMU&, hi: i32) -> i32 {
 fn set_pia_c(mmu: M68kMMU&, next: u8) {
     let changed = mmu.pia_c ^ next;
     mmu.pia_c = next;
-    if (changed & 0x0F) != 0 { c_sound_adpcm_set_pan(next & 0x0F); }
+    if (changed & 0x0F) != 0 { mmu.adpcm.set_pan(next & 0x0F); }
 }
 
 fn init(mmu: M68kMMU&) {
@@ -505,7 +507,7 @@ fn io_read8(mmu: M68kMMU&, a: u32) -> u8 {
 
     // 0x00E92000 - 0x00E92003: ADPCM (MSM6258)
     if (a & 0xFFFF00) == 0xE92000 {
-        return c_sound_adpcm_read(a);
+        return mmu.adpcm.read(a);
     }
 
     // 0x00E94000 - 0x00E94007: FDC (uPD72065)
@@ -683,6 +685,8 @@ fn write_opm(mmu: M68kMMU&, a: u32, val: u8) {
     } else if a == 0xE90003 {
         mmu.opm.regs[mmu.opm.addr] = val;
         if mmu.opm.addr == 0x08 { mmu.opm.key_on[val & 7] = (val >> 3) & 15; }
+        // レジスタ $1B の bit 7 (CT1) は ADPCM のクロックの切り替えにつながっている
+        if mmu.opm.addr == 0x1B { mmu.adpcm.set_clock((val >> 5) & 4); }
         c_sound_opm_write(1, val);
     }
 }
@@ -769,7 +773,7 @@ fn io_write8(mmu: M68kMMU&, a: u32, val: u8) {
 
     // 0x00E92000 - 0x00E92003: ADPCM (MSM6258)
     if (a & 0xFFFF00) == 0xE92000 {
-        c_sound_adpcm_write(a, val);
+        mmu.adpcm.write(a, val);
         return;
     }
 
