@@ -30,6 +30,31 @@ struct X68kDMAChannel {
 }
 type ::X68kDMAChannel = dmac::X68kDMAChannel;
 
+// CSR (チャネルの状態) と CCR (チャネルの制御) のビット
+let ::DMA_CSR_COC: u8 = 0x80;   // 転送が終わった
+let ::DMA_CSR_BTC: u8 = 0x40;   // ブロックの転送が終わった (コンティニュー)
+let ::DMA_CSR_ERR: u8 = 0x10;   // エラー
+let ::DMA_CSR_ACT: u8 = 0x08;   // 動作中
+let ::DMA_CCR_STR: u8 = 0x80;   // 開始
+let ::DMA_CCR_CNT: u8 = 0x40;   // 次のブロックを続ける
+let ::DMA_CCR_HLT: u8 = 0x20;   // 一時停止
+let ::DMA_CCR_INT: u8 = 0x08;   // 割り込みを使う
+
+// 動作中で、まだ終わっておらず、送る数が残っている。
+fn running(c: X68kDMAChannel&) -> bool {
+    return (c.csr & DMA_CSR_ACT) != 0 && (c.csr & DMA_CSR_COC) == 0 && c.mtc != 0;
+}
+
+fn halted(c: X68kDMAChannel&) -> bool {
+    return (c.ccr & DMA_CCR_HLT) != 0;
+}
+
+// 転送を終える: 完了を立てて、動作中を落とす。
+fn finish(c: X68kDMAChannel&) {
+    c.csr |= DMA_CSR_COC;
+    c.csr &= ~DMA_CSR_ACT;
+}
+
 struct X68kDMAC {
     ch: X68kDMAChannel[4] = [X68kDMAChannel {}; 4],
     int_ch: i32 = 0,

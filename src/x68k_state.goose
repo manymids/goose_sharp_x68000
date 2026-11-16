@@ -17,16 +17,20 @@ import .x68k_disk;
 import .x68k_input;
 namespace state;
 
-let ::STATE_SLOT = 0;
-let ::STATE_SNAPSHOT = 1;
-let ::STATE_REWIND = 2;
+// チェックポイントの置き場所の種類: 保存スロット、名前付きのスナップショット、巻き戻し。
+enum Bank { Slot, Snapshot, Rewind }
+type ::StateBank = state::Bank;
+let ::STATE_SLOT = state::Bank.Slot;
+let ::STATE_SNAPSHOT = state::Bank.Snapshot;
+let ::STATE_REWIND = state::Bank.Rewind;
 // v8: OPM を Goose 側へ移した。機械の状態はすべて Goose の値になり、C のバイト列は入らない。
 // v7: ADPCM と DMA チャンネル 3 を Goose 側へ移した。音源の状態に残るのは OPM だけ。
 // v6: 音源の状態に、書いたときの番地を入れた (別のプロセスで読んでもポインタを直せる)。
 // v5: 8255 ポート C と OPM の控えを MMU へ移した。C 側に残る状態は音源だけ。
 // v4: ディスクの状態とイメージの置き場所を Goose 側へ移した。v3: FDC の相が enum。
 // 版の違う記録は読めない。
-let ::STATE_VERSION = 8;
+// v9: バスの失敗の種類 (MMU の fault) を enum にした。
+let ::STATE_VERSION = 9;
 
 // blob の内訳。この順に並ぶ。
 struct BlobLayout {
@@ -94,21 +98,25 @@ fn blob_of(at: i32) -> u8[:] {
     return g_blob_pool[span.at..span.at + span.len];
 }
 
-fn capacity(bank: i32) -> i32 {
-    if bank == STATE_SLOT { return SAVE_SLOTS; }
-    if bank == STATE_SNAPSHOT { return SNAPSHOT_SLOTS; }
-    if bank == STATE_REWIND { return REWIND_SLOTS; }
-    return 0;
+fn capacity(bank: Bank) -> i32 {
+    match bank {
+        Slot => { return SAVE_SLOTS; },
+        Snapshot => { return SNAPSHOT_SLOTS; },
+        Rewind => { return REWIND_SLOTS; },
+    }
 }
 
-fn index(bank: i32, idx: i32) -> i32 {
+// g_checkpoints の中の位置。スロット、スナップショット、巻き戻しの順に並ぶ。範囲外は -1。
+fn index(bank: Bank, idx: i32) -> i32 {
     if idx < 0 || idx >= capacity(bank) { return -1; }
-    if bank == STATE_SLOT { return idx; }
-    if bank == STATE_SNAPSHOT { return SAVE_SLOTS + idx; }
-    return SAVE_SLOTS + SNAPSHOT_SLOTS + idx;
+    match bank {
+        Slot => { return idx; },
+        Snapshot => { return SAVE_SLOTS + idx; },
+        Rewind => { return SAVE_SLOTS + SNAPSHOT_SLOTS + idx; },
+    }
 }
 
-fn saved(bank: i32, idx: i32) -> bool {
+fn saved(bank: Bank, idx: i32) -> bool {
     let at = index(bank, idx);
     if at < 0 { return false; }
     return g_checkpoints[at].saved && g_checkpoints[at].version == STATE_VERSION;
@@ -123,7 +131,7 @@ fn record_ok(r: X68kCheckpoint&, blob: u8[:]) -> bool {
     return blob.len == total_bytes(layout);
 }
 
-fn validate(bank: i32, idx: i32) -> bool {
+fn validate(bank: Bank, idx: i32) -> bool {
     if !saved(bank, idx) { return false; }
     let at = index(bank, idx);
     return record_ok(g_checkpoints[at], blob_of(at));
@@ -141,7 +149,7 @@ fn claim_blob(at: i32, bytes: i64) -> u8[:] {
     return blob;
 }
 
-fn capture(emu: X68kEmulator&, bank: i32, idx: i32) -> bool {
+fn capture(emu: X68kEmulator&, bank: Bank, idx: i32) -> bool {
     if !emu.active() { return false; }
     let at = index(bank, idx);
     if at < 0 { return false; }
@@ -174,7 +182,7 @@ fn capture(emu: X68kEmulator&, bank: i32, idx: i32) -> bool {
     return true;
 }
 
-fn restore(emu: X68kEmulator&, bank: i32, idx: i32) -> bool {
+fn restore(emu: X68kEmulator&, bank: Bank, idx: i32) -> bool {
     if !emu.active() { return false; }
     if !validate(bank, idx) { return false; }
     let at = index(bank, idx);
@@ -204,25 +212,25 @@ fn restore(emu: X68kEmulator&, bank: i32, idx: i32) -> bool {
     return true;
 }
 
-fn drop(bank: i32, idx: i32) {
+fn drop(bank: Bank, idx: i32) {
     let at = index(bank, idx);
     if at < 0 { return; }
     release_blob(at);
     g_checkpoints[at].saved = false;
 }
 
-fn frame(bank: i32, idx: i32) -> i64 {
+fn frame(bank: Bank, idx: i32) -> i64 {
     if !saved(bank, idx) { return 0; }
     return g_checkpoints[index(bank, idx)].total_frames;
 }
 
 // 使っているバイト数: blob とこの記録。空の記録は最初から確保してあるので数えない。
-fn bytes(bank: i32, idx: i32) -> i64 {
+fn bytes(bank: Bank, idx: i32) -> i64 {
     if !saved(bank, idx) { return 0; }
     return g_spans[index(bank, idx)].len + bytes_of(g_checkpoints).len / g_checkpoints.len;
 }
 
-fn total(bank: i32) -> i64 {
+fn total(bank: Bank) -> i64 {
     var total: i64 = 0;
     for idx: i32 in capacity(bank) { total += bytes(bank, idx); }
     return total;
@@ -278,7 +286,7 @@ fn checksum(h: u64, data: const u8[:]) -> u64 {
 let ::STATE_HASH_SEED = 14695981039346656037;
 
 // スロットの内容をファイル形式のバイト列にして out に追記する。
-fn export_image(bank: i32, idx: i32, out: u8[>..]&) -> bool {
+fn export_image(bank: Bank, idx: i32, out: u8[>..]&) -> bool {
     if !validate(bank, idx) { return false; }
     let at = index(bank, idx);
     let blob = blob_of(at);
@@ -308,7 +316,7 @@ fn next_image(data: u8[:], at: i64) -> i64, bool {
 }
 
 // ファイル形式のバイト列を検証してスロットへ入れる。成功するまでスロットは変えない。
-fn import_image(bank: i32, idx: i32, data: u8[:]) -> StateFileError {
+fn import_image(bank: Bank, idx: i32, data: u8[:]) -> StateFileError {
     let at = index(bank, idx);
     if at < 0 { return StateFileError.Rejected; }
 
@@ -338,13 +346,13 @@ fn import_image(bank: i32, idx: i32, data: u8[:]) -> StateFileError {
     return StateFileError.None;
 }
 
-fn save_file(bank: i32, idx: i32, path: const u8[:]) -> bool {
+fn save_file(bank: Bank, idx: i32, path: const u8[:]) -> bool {
     var image: u8[>..] = [];
     if !export_image(bank, idx, image) { return false; }
     return write_file_atomic(path, image);
 }
 
-fn load_file(bank: i32, idx: i32, path: const u8[:]) -> StateFileError {
+fn load_file(bank: Bank, idx: i32, path: const u8[:]) -> StateFileError {
     var image: u8[>..] = [];
     if !read_file(path, image) { return StateFileError.Unreadable; }
     return import_image(bank, idx, image[..]);

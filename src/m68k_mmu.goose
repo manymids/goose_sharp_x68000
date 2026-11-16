@@ -25,6 +25,18 @@ struct OpmShadow {
     key_on: u8[8] = [0; 8],    // チャンネルごとのキーオン中のスロット (レジスタ $08 の bit 3-6)
 }
 
+// 命令の途中で起きたバスの失敗。68000 のグループ 0 例外になる。
+enum Fault { None, Bus, Address }
+
+// 失敗の種類の例外ベクタ番号 (バスエラー 2、アドレスエラー 3)。
+fn fault_vector(f: Fault) -> i32 {
+    match f {
+        Bus => { return 2; },
+        Address => { return 3; },
+        None => { return 0; },
+    }
+}
+
 struct M68kMMU {
     reset_overlay: bool = true,
     crtc_regs: u8[64] = [0; 64],
@@ -59,7 +71,7 @@ struct M68kMMU {
     // 68000 のグループ 0 例外。検査するのは CPU が命令を実行している間だけ。
     cpu_access: bool = false,
     user_mode: bool = false,
-    fault: i32 = 0,              // 0 なし、2 バスエラー、3 アドレスエラー
+    fault: Fault = Fault.None,   // 今の命令で起きたバスの失敗 (例外は命令の終わりで起こす)
     fault_addr: u32 = 0,
     fault_write: bool = false,
     cur_ir: u16 = 0,
@@ -326,8 +338,14 @@ fn sasi_note(mmu: M68kMMU&) {
     }
 }
 
-fn raise_fault(mmu: M68kMMU&, kind: i32, a: u32, write: bool) {
-    if mmu.fault == 0 {
+// この命令で失敗が起きている。
+fn failed(mmu: M68kMMU&) -> bool {
+    return mmu.fault != Fault.None;
+}
+
+// 最初の失敗だけを記録する (例外のスタックフレームに積むのはそれ)。
+fn raise_fault(mmu: M68kMMU&, kind: Fault, a: u32, write: bool) {
+    if mmu.fault == Fault.None {
         mmu.fault = kind;
         mmu.fault_addr = a;
         mmu.fault_write = write;
@@ -372,9 +390,9 @@ fn bus_error8(mmu: M68kMMU&, a: u32, write: bool) -> bool {
 
 // バイトのアクセスを機器へ届けてはいけないとき true。
 fn check8(mmu: M68kMMU&, a: u32, write: bool) -> bool {
-    if mmu.fault != 0 { return true; }
+    if mmu.failed() { return true; }
     if mmu.bus_error8(a, write) {
-        mmu.raise_fault(2, a, write);
+        mmu.raise_fault(Fault.Bus, a, write);
         return true;
     }
     return false;
@@ -382,13 +400,13 @@ fn check8(mmu: M68kMMU&, a: u32, write: bool) -> bool {
 
 // ワードとロングのアクセスで共通の検査: 失敗の保留、奇数番地、ユーザー領域。
 fn check_wide(mmu: M68kMMU&, a: u32, write: bool) -> bool {
-    if mmu.fault != 0 { return true; }
+    if mmu.failed() { return true; }
     if (a & 1) != 0 {
-        mmu.raise_fault(3, a, write);
+        mmu.raise_fault(Fault.Address, a, write);
         return true;
     }
     if mmu.user_mode && mmu.user_denied(a) {
-        mmu.raise_fault(2, a, write);
+        mmu.raise_fault(Fault.Bus, a, write);
         return true;
     }
     return false;
@@ -528,7 +546,7 @@ fn io_read8(mmu: M68kMMU&, a: u32) -> u8 {
 fn read8(mmu: M68kMMU&, addr: u32) -> u8 {
     let a = addr & ADDR_MASK;
     if mmu.cpu_access {
-        if (mmu.fault != 0 || mmu.user_mode || a >= 0xE86000) && mmu.check8(a, false) { return 0xFF; }
+        if (mmu.failed() || mmu.user_mode || a >= 0xE86000) && mmu.check8(a, false) { return 0xFF; }
         mmu.wait40 += bus_wait40(a);
     }
 
@@ -802,7 +820,7 @@ fn io_write8(mmu: M68kMMU&, a: u32, val: u8) {
 fn write8(mmu: M68kMMU&, addr: u32, val: u8) {
     let a = addr & ADDR_MASK;
     if mmu.cpu_access {
-        if (mmu.fault != 0 || mmu.user_mode || a >= 0xE86000) && mmu.check8(a, true) { return; }
+        if (mmu.failed() || mmu.user_mode || a >= 0xE86000) && mmu.check8(a, true) { return; }
         mmu.wait40 += bus_wait40(a);
     }
 
@@ -844,7 +862,7 @@ fn ram32(addr: u32) -> bool {
 // 16 ビット、ビッグエンディアンの読み出し
 fn read16(mmu: M68kMMU&, addr: u32) -> u16 {
     let a = addr & ADDR_MASK;
-    if mmu.cpu_access && (mmu.fault != 0 || (a & 1) != 0 || mmu.user_mode) && mmu.check_wide(a, false) { return 0xFFFF; }
+    if mmu.cpu_access && (mmu.failed() || (a & 1) != 0 || mmu.user_mode) && mmu.check_wide(a, false) { return 0xFFFF; }
     if !(mmu.reset_overlay && a < 8) && ram16(addr) {
         if mmu.cpu_access { mmu.wait40 += 5; }
         return x68k_ram_read16(a as i32);
@@ -865,7 +883,7 @@ fn read16(mmu: M68kMMU&, addr: u32) -> u16 {
 // 16 ビット、ビッグエンディアンの書き込み
 fn write16(mmu: M68kMMU&, addr: u32, val: u16) {
     let a = addr & ADDR_MASK;
-    if mmu.cpu_access && (mmu.fault != 0 || (a & 1) != 0 || mmu.user_mode) && mmu.check_wide(a, true) { return; }
+    if mmu.cpu_access && (mmu.failed() || (a & 1) != 0 || mmu.user_mode) && mmu.check_wide(a, true) { return; }
     if ram16(addr) {
         if mmu.cpu_access { mmu.wait40 += 5; }
         mmu.reset_overlay = false;
@@ -885,7 +903,7 @@ fn write16(mmu: M68kMMU&, addr: u32, val: u16) {
 // 32 ビット、ビッグエンディアンの読み出し
 fn read32(mmu: M68kMMU&, addr: u32) -> u32 {
     let a = addr & ADDR_MASK;
-    if mmu.cpu_access && (mmu.fault != 0 || (a & 1) != 0 || mmu.user_mode) && mmu.check_wide(a, false) { return 0xFFFFFFFF; }
+    if mmu.cpu_access && (mmu.failed() || (a & 1) != 0 || mmu.user_mode) && mmu.check_wide(a, false) { return 0xFFFFFFFF; }
     if !(mmu.reset_overlay && a < 8) && ram32(addr) {
         if mmu.cpu_access { mmu.wait40 += 10; }
         return x68k_ram_read32(a as i32);
@@ -898,7 +916,7 @@ fn read32(mmu: M68kMMU&, addr: u32) -> u32 {
 // 32 ビット、ビッグエンディアンの書き込み
 fn write32(mmu: M68kMMU&, addr: u32, val: u32) {
     let a = addr & ADDR_MASK;
-    if mmu.cpu_access && (mmu.fault != 0 || (a & 1) != 0 || mmu.user_mode) && mmu.check_wide(a, true) { return; }
+    if mmu.cpu_access && (mmu.failed() || (a & 1) != 0 || mmu.user_mode) && mmu.check_wide(a, true) { return; }
     if ram32(addr) {
         if mmu.cpu_access { mmu.wait40 += 10; }
         mmu.reset_overlay = false;

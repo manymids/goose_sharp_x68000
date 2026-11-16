@@ -24,23 +24,20 @@ fn bump(addr: u32&, scr: u8, plus_mask: u8, minus_mask: u8, step: u32) {
 
 // SASI は DMAC ch1。px68k DMA_Exec(1) が 0xE96001 をメモリ空間として読む。
 fn pump_sasi(mmu: M68kMMU&) {
-    if (mmu.dmac.ch[1].csr & 0x08) == 0 { return; }
-    if (mmu.dmac.ch[1].ccr & 0x20) != 0 { return; }
-    if (mmu.dmac.ch[1].csr & 0x80) != 0 { return; }
-    let ocr = mmu.dmac.ch[1].ocr;
-    let scr = mmu.dmac.ch[1].scr;
-    let kind = ((ocr >> 4) & 3) + ((mmu.dmac.ch[1].dcr >> 1) & 4);
-    while (mmu.dmac.ch[1].csr & 0x08) != 0 && (mmu.dmac.ch[1].csr & 0x80) == 0 && mmu.dmac.ch[1].mtc != 0 && mmu.sasi.is_ready() {
-        let dev_to_mem = (ocr & 0x80) != 0;
-        var src = if dev_to_mem { mmu.dmac.ch[1].dar } else { mmu.dmac.ch[1].mar };
-        var dst = if dev_to_mem { mmu.dmac.ch[1].mar } else { mmu.dmac.ch[1].dar };
-        var n = 1;
-        var step = 1;
-        if kind == 1 { n = 2; }
-        if kind == 2 { n = 4; }
-        if kind == 5 { n = 1; step = 2; }
-        if kind == 6 { n = 1; step = 4; }
-        for i in n {
+    let c .= mmu.dmac.ch[1];
+    if (c.csr & DMA_CSR_ACT) == 0 || c.halted() || (c.csr & DMA_CSR_COC) != 0 { return; }
+    let ocr = c.ocr;
+    let scr = c.scr;
+    let kind = ((ocr >> 4) & 3) + ((c.dcr >> 1) & 4);
+    let dev_to_mem = (ocr & 0x80) != 0;
+    let n = if kind == 1 { 2 } else if kind == 2 { 4 } else { 1 };
+    let step = if kind == 5 { 2 } else if kind == 6 { 4 } else { 1 };
+    // デバイス側の番地は、ワードのポートなら 1 バイトごとに 2 進む
+    let dev_step: u32 = if kind == 4 { step as u32 } else { (step * 2) as u32 };
+    while c.running() && mmu.sasi.is_ready() {
+        var src = if dev_to_mem { c.dar } else { c.mar };
+        var dst = if dev_to_mem { c.mar } else { c.dar };
+        for _ in n {
             if step == 2 {
                 let w = mmu.read16(src);
                 mmu.write16(dst, w);
@@ -53,26 +50,20 @@ fn pump_sasi(mmu: M68kMMU&) {
             }
             if dev_to_mem {
                 bump(dst, scr, 4, 8, step as u32);
-                bump(src, scr, 1, 2, if kind == 4 { step as u32 } else { (step * 2) as u32 });
+                bump(src, scr, 1, 2, dev_step);
+                c.mar = dst;
+                c.dar = src;
             } else {
                 bump(src, scr, 4, 8, step as u32);
-                bump(dst, scr, 1, 2, if kind == 4 { step as u32 } else { (step * 2) as u32 });
-            }
-            if dev_to_mem {
-                mmu.dmac.ch[1].mar = dst;
-                mmu.dmac.ch[1].dar = src;
-            } else {
-                mmu.dmac.ch[1].mar = src;
-                mmu.dmac.ch[1].dar = dst;
+                bump(dst, scr, 1, 2, dev_step);
+                c.mar = src;
+                c.dar = dst;
             }
         }
-        if mmu.dmac.ch[1].mtc != 0 {
-            mmu.dmac.ch[1].mtc -= 1;
-        }
-        if mmu.dmac.ch[1].mtc == 0 {
-            mmu.dmac.ch[1].csr |= 0x80;
-            mmu.dmac.ch[1].csr &= 0xF7;
-            if (mmu.dmac.ch[1].ccr & 0x08) != 0 {
+        if c.mtc != 0 { c.mtc -= 1; }
+        if c.mtc == 0 {
+            c.finish();
+            if (c.ccr & DMA_CCR_INT) != 0 {
                 mmu.dmac.int_ch |= 2;
                 mmu.dmac.int_pending = true;
             }
@@ -80,72 +71,46 @@ fn pump_sasi(mmu: M68kMMU&) {
     }
 }
 
-fn ch2_fail(mmu: M68kMMU&, err: u8) {
-    mmu.dmac.ch[2].cer = err;
-    mmu.dmac.ch[2].csr |= 0x10;
-    mmu.dmac.ch[2].csr &= 0xF7;
-    mmu.dmac.ch[2].ccr &= 0x7F;
-    if (mmu.dmac.ch[2].ccr & 0x08) != 0 {
+// ch2 の割り込み要求 (CCR の INT が立っているとき)。
+fn ch2_raise(mmu: M68kMMU&) {
+    if (mmu.dmac.ch[2].ccr & DMA_CCR_INT) != 0 {
         mmu.dmac.int_ch |= 4;
         mmu.dmac.int_pending = true;
     }
 }
 
-fn ch2_raise(mmu: M68kMMU&) {
-    if (mmu.dmac.ch[2].ccr & 0x08) != 0 {
-        mmu.dmac.int_ch |= 4;
-        mmu.dmac.int_pending = true;
-    }
+// ch2 をエラーで止める。err は CER に入るエラーの種類。
+fn ch2_fail(mmu: M68kMMU&, err: u8) {
+    let c .= mmu.dmac.ch[2];
+    c.cer = err;
+    c.csr |= DMA_CSR_ERR;
+    c.csr &= ~DMA_CSR_ACT;
+    c.ccr &= ~DMA_CCR_STR;
+    ch2_raise(mmu);
 }
 
 // px68k DMA_Exec(2)。沙羅曼蛇はスプライト 1024 バイトを ch2 のバーストで $EB0000 へ書く。
 // OCR&3==2 は Mercury の Ready 待ちなので、ここでは動かさない。
 fn ch2_unit(mmu: M68kMMU&) -> i32 {
-    let ocr = mmu.dmac.ch[2].ocr;
-    let scr = mmu.dmac.ch[2].scr;
-    let kind = ((ocr >> 4) & 3) + ((mmu.dmac.ch[2].dcr >> 1) & 4);
+    let c .= mmu.dmac.ch[2];
+    let ocr = c.ocr;
+    let scr = c.scr;
+    let kind = ((ocr >> 4) & 3) + ((c.dcr >> 1) & 4);
     let dev_to_mem = (ocr & 0x80) != 0;
-    var n: i32 = 1;
-    var mar_step: u32 = 1;
-    var dar_step: u32 = 1;
-    var width: i32 = 1;
-    if kind == 0 || kind == 3 {
-        dar_step = 2;
-    } else if kind == 1 {
-        n = 2;
-        dar_step = 2;
-    } else if kind == 2 {
-        n = 4;
-        dar_step = 2;
-    } else if kind == 4 {
-        dar_step = 1;
-    } else if kind == 5 {
-        mar_step = 2;
-        dar_step = 2;
-        width = 2;
-    } else if kind == 6 {
-        mar_step = 4;
-        dar_step = 4;
-        width = 4;
-    } else {
-        return 0;
-    }
-    for i: i32 in n {
-        var src = mmu.dmac.ch[2].mar;
-        var dst = mmu.dmac.ch[2].dar;
-        if dev_to_mem {
-            src = mmu.dmac.ch[2].dar;
-            dst = mmu.dmac.ch[2].mar;
-        }
+    // kind ごとの、1 回の転送の読み書きの回数、番地の進み方、1 回の幅
+    if kind == 7 { return 0; }
+    let n: i32 = if kind == 1 { 2 } else if kind == 2 { 4 } else { 1 };
+    let mar_step: u32 = if kind == 5 { 2 } else if kind == 6 { 4 } else { 1 };
+    let dar_step: u32 = if kind == 4 { 1 } else if kind == 6 { 4 } else { 2 };
+    let width: i32 = if kind == 5 { 2 } else if kind == 6 { 4 } else { 1 };
+    for _ in n {
+        let src = if dev_to_mem { c.dar } else { c.mar };
+        let dst = if dev_to_mem { c.mar } else { c.dar };
         if width != 1 && ((src & 1) != 0 || (dst & 1) != 0) {
-            var err: u8 = 0x05;
-            if (src & 1) != 0 {
-                if dev_to_mem { err = 0x06; }
-            } else if dev_to_mem {
-                err = 0x05;
-            } else {
-                err = 0x06;
-            }
+            // 奇数番地へのワード / ロングの転送。転送元が奇数かどうかを先に見て、
+            // 奇数の側がメモリなら 5 (メモリの番地のエラー)、デバイスなら 6 (デバイスの番地のエラー)
+            let err: u8 = if (src & 1) != 0 { if dev_to_mem { 0x06 } else { 0x05 } }
+                else { if dev_to_mem { 0x05 } else { 0x06 } };
             ch2_fail(mmu, err);
             return 1;
         }
@@ -159,66 +124,66 @@ fn ch2_unit(mmu: M68kMMU&) -> i32 {
             let b = mmu.read8(src);
             mmu.write8(dst, b);
         }
-        bump(mmu.dmac.ch[2].mar, scr, 4, 8, mar_step);
-        bump(mmu.dmac.ch[2].dar, scr, 1, 2, dar_step);
+        bump(c.mar, scr, 4, 8, mar_step);
+        bump(c.dar, scr, 1, 2, dar_step);
     }
     return 0;
 }
 
+// ch2 の MTC が 0 になったあと: チェーンなら次のブロックを読み、コンティニューなら用意したブロックへ移る。
 fn ch2_on_zero(mmu: M68kMMU&) {
-    let ocr = mmu.dmac.ch[2].ocr;
+    let c .= mmu.dmac.ch[2];
+    let ocr = c.ocr;
     if (ocr & 8) != 0 {
         if (ocr & 4) != 0 {
-            if mmu.dmac.ch[2].bar != 0 {
-                let bar = mmu.dmac.ch[2].bar;
-                mmu.dmac.ch[2].mar = mmu.read32(bar) & ADDR_MASK;
-                mmu.dmac.ch[2].mtc = mmu.read16(bar + 4);
-                mmu.dmac.ch[2].bar = mmu.read32(bar + 6) & ADDR_MASK;
-                if mmu.dmac.ch[2].mtc == 0 { ch2_fail(mmu, 0x0D); }
+            // リンクアレイ: 表の各項が次の項の番地を持つ
+            if c.bar != 0 {
+                let bar = c.bar;
+                c.mar = mmu.read32(bar) & ADDR_MASK;
+                c.mtc = mmu.read16(bar + 4);
+                c.bar = mmu.read32(bar + 6) & ADDR_MASK;
+                if c.mtc == 0 { ch2_fail(mmu, 0x0D); }
             }
         } else {
-            mmu.dmac.ch[2].btc -= 1;
-            if mmu.dmac.ch[2].btc != 0 {
-                let bar = mmu.dmac.ch[2].bar;
-                mmu.dmac.ch[2].mar = mmu.read32(bar) & ADDR_MASK;
-                mmu.dmac.ch[2].mtc = mmu.read16(bar + 4);
-                mmu.dmac.ch[2].bar = bar + 6;
-                if mmu.dmac.ch[2].mtc == 0 { ch2_fail(mmu, 0x0D); }
+            // アレイ: 表の項が BTC 個並んでいる
+            c.btc -= 1;
+            if c.btc != 0 {
+                let bar = c.bar;
+                c.mar = mmu.read32(bar) & ADDR_MASK;
+                c.mtc = mmu.read16(bar + 4);
+                c.bar = bar + 6;
+                if c.mtc == 0 { ch2_fail(mmu, 0x0D); }
             }
         }
-    } else if (mmu.dmac.ch[2].ccr & 0x40) != 0 {
-        mmu.dmac.ch[2].csr |= 0x40;
+    } else if (c.ccr & DMA_CCR_CNT) != 0 {
+        c.csr |= DMA_CSR_BTC;
         ch2_raise(mmu);
-        if mmu.dmac.ch[2].bar != 0 {
-            mmu.dmac.ch[2].mar = mmu.dmac.ch[2].bar;
-            mmu.dmac.ch[2].mtc = mmu.dmac.ch[2].btc;
-            mmu.dmac.ch[2].csr |= 0x08;
-            mmu.dmac.ch[2].bar = 0;
-            mmu.dmac.ch[2].btc = 0;
-            mmu.dmac.ch[2].ccr &= 0xBF;
-            if mmu.dmac.ch[2].mtc == 0 { ch2_fail(mmu, 0x0D); }
+        if c.bar != 0 {
+            c.mar = c.bar;
+            c.mtc = c.btc;
+            c.csr |= DMA_CSR_ACT;
+            c.bar = 0;
+            c.btc = 0;
+            c.ccr &= ~DMA_CCR_CNT;
+            if c.mtc == 0 { ch2_fail(mmu, 0x0D); }
         }
     }
-    if mmu.dmac.ch[2].mtc == 0 && (mmu.dmac.ch[2].csr & 0x10) == 0 {
-        mmu.dmac.ch[2].csr |= 0x80;
-        mmu.dmac.ch[2].csr &= 0xF7;
+    if c.mtc == 0 && (c.csr & DMA_CSR_ERR) == 0 {
+        c.finish();
         ch2_raise(mmu);
     }
 }
 
 fn exec_ch2(mmu: M68kMMU&) {
-    if (mmu.dmac.ch[2].ocr & 3) == 2 { return; }
+    let c .= mmu.dmac.ch[2];
+    if (c.ocr & 3) == 2 { return; }
     var left: i32 = 65536;
-    while left > 0 && (mmu.dmac.ch[2].csr & 0x08) != 0 && (mmu.dmac.ch[2].ccr & 0x20) == 0 && (mmu.dmac.ch[2].csr & 0x80) == 0 && mmu.dmac.ch[2].mtc != 0 {
+    while left > 0 && c.running() && !c.halted() {
         left -= 1;
         if ch2_unit(mmu) != 0 { return; }
-        if mmu.dmac.ch[2].mtc != 0 {
-            mmu.dmac.ch[2].mtc -= 1;
-        }
-        if mmu.dmac.ch[2].mtc == 0 {
-            ch2_on_zero(mmu);
-        }
-        if (mmu.dmac.ch[2].ocr & 3) != 1 { return; }
+        if c.mtc != 0 { c.mtc -= 1; }
+        if c.mtc == 0 { ch2_on_zero(mmu); }
+        if (c.ocr & 3) != 1 { return; }
     }
 }
 
@@ -272,9 +237,8 @@ fn adpcm_next_block(mmu: M68kMMU&) -> bool {
         }
     }
     if c.mtc == 0 {
-        // すべて送り終えた: 完了を立てて、動作中を落とす
-        c.csr |= 0x80;
-        c.csr &= 0xF7;
+        // すべて送り終えた
+        c.finish();
         dmac::adpcm_raise(mmu.dmac);
     }
     return true;
@@ -283,7 +247,7 @@ fn adpcm_next_block(mmu: M68kMMU&) -> bool {
 fn exec_adpcm(mmu: M68kMMU&) {
     let c .= mmu.dmac.ch[3];
     var rounds = 0;
-    while (c.csr & 0x08) != 0 && (c.ccr & 0x20) == 0 && (c.csr & 0x80) == 0 && c.mtc != 0 && rounds < 65536 {
+    while c.running() && !c.halted() && rounds < 65536 {
         rounds += 1;
         let mem_to_dev = (c.ocr & 0x80) == 0;
         // オペランドの大きさ (OCR) とデバイスのポート幅 (DCR) の組み合わせ

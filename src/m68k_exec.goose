@@ -180,7 +180,7 @@ fn ea_write_for_rmw(cpu: M68kCPU&, mmu: M68kMMU&, mode: i32, reg: i32, size: i32
         return;
     }
     if mode == 1 { // An
-        if mmu.fault != 0 { return; }
+        if mmu.failed() { return; }
         if size == 2 {
             cpu.a[reg] = ((val as! i16)) as! u32;
         } else {
@@ -220,7 +220,7 @@ fn ea_write(cpu: M68kCPU&, mmu: M68kMMU&, mode: i32, reg: i32, size: i32, val: u
         return;
     }
     if mode == 1 { // An
-        if mmu.fault != 0 { return; }
+        if mmu.failed() { return; }
         if size == 2 {
             cpu.a[reg] = ((val as! i16)) as! u32;
         } else {
@@ -666,7 +666,7 @@ fn exec_op0(cpu: M68kCPU&, mmu: M68kMMU&, op: u16) -> i32 {
 }
 
 fn trigger_exception(cpu: M68kCPU&, mmu: M68kMMU&, vector: i32, return_pc: u32) {
-    if mmu.fault != 0 { return; }
+    if mmu.failed() { return; }
     cpu.took_exception = true;
     mmu.user_mode = false;
     if !cpu.is_supervisor() {
@@ -793,7 +793,7 @@ fn op4_stack(cpu: M68kCPU&, mmu: M68kMMU&, op: u16) -> i32, bool {
         let areg: i32 = op & 0x07;
         cpu.a[REG_A7] = cpu.a[areg];
         let saved = pop32(cpu, mmu);
-        if mmu.fault == 0 { cpu.a[areg] = saved; }
+        if !mmu.failed() { cpu.a[areg] = saved; }
         return 12, true;
     }
 
@@ -870,15 +870,15 @@ fn op4_movem_ext(cpu: M68kCPU&, mmu: M68kMMU&, op: u16) -> i32, bool {
                     if is_long {
                         let val = mmu.read32(addr);
                         addr += 4;
-                        if i < 8 { cpu.d[i] = val; } else if mmu.fault == 0 { cpu.a[i - 8] = val; }
+                        if i < 8 { cpu.d[i] = val; } else if !mmu.failed() { cpu.a[i - 8] = val; }
                     } else {
                         let val = (mmu.read16(addr) as! i16) as! u32;
                         addr += 2;
-                        if i < 8 { cpu.d[i] = val; } else if mmu.fault == 0 { cpu.a[i - 8] = val; }
+                        if i < 8 { cpu.d[i] = val; } else if !mmu.failed() { cpu.a[i - 8] = val; }
                     }
                 }
             }
-            if mode == 3 && mmu.fault == 0 { // (An)+: ポストインクリメント
+            if mode == 3 && !mmu.failed() { // (An)+: ポストインクリメント
                 cpu.a[reg] = addr;
             }
             return movem_cycles(is_long, nregs, mode, false, reg), true;
@@ -1254,7 +1254,7 @@ fn exec_add_sub(cpu: M68kCPU&, mmu: M68kMMU&, op: u16, is_add: bool) -> i32 {
         let is_long = (opmode == 7);
         let src = ea_read(cpu, mmu, mode, reg, if is_long { 4 } else { 2 });
         let ext_src = if is_long { src } else { (src as! i16) as! u32 };
-        if mmu.fault == 0 {
+        if !mmu.failed() {
             cpu.a[reg_field] = if is_add { cpu.a[reg_field] + ext_src } else { cpu.a[reg_field] - ext_src };
         }
         return adda_cycles(is_long, mode, reg);
@@ -1657,10 +1657,10 @@ fn step_core(cpu: M68kCPU&, mmu: M68kMMU&) -> i32 {
 // XEiJ と同じく、データレジスタと SR は元に戻し、失敗の前にしたアドレスレジスタの更新は
 // 残す。スタックフレームには命令コードと命令の番地を積む。
 fn group0(cpu: M68kCPU&, mmu: M68kMMU&, d: u32[8], sr: u16) {
-    let vector = mmu.fault;
+    let vector = mmu::fault_vector(mmu.fault);
     let addr = mmu.fault_addr;
     let write = mmu.fault_write;
-    mmu.fault = 0;
+    mmu.fault = mmu::Fault.None;
     mmu.user_mode = false;
     cpu.d = d;
     cpu.set_sr(sr);
@@ -1673,8 +1673,8 @@ fn group0(cpu: M68kCPU&, mmu: M68kMMU&, d: u32[8], sr: u16) {
     push16(cpu, mmu, mmu.cur_ir);
     push32(cpu, mmu, addr);
     push16(cpu, mmu, if write { 0 } else { 0x10 });
-    if mmu.fault != 0 { // スタックに積む途中で失敗した: 68000 は停止する
-        mmu.fault = 0;
+    if mmu.failed() { // スタックに積む途中で失敗した: 68000 は停止する
+        mmu.fault = mmu::Fault.None;
         cpu.halted = true;
         return;
     }
@@ -1693,10 +1693,10 @@ fn step(cpu: M68kCPU&, mmu: M68kMMU&) -> i32 {
     mmu.cpu_access = true;
     var cycles = step_core(cpu, mmu);
     // 奇数番地へのジャンプは、ジャンプした命令で失敗する。
-    if mmu.fault == 0 && (cpu.pc & 1) != 0 && !cpu.halted {
-        mmu.raise_fault(3, cpu.pc & ADDR_MASK, false);
+    if !mmu.failed() && (cpu.pc & 1) != 0 && !cpu.halted {
+        mmu.raise_fault(mmu::Fault.Address, cpu.pc & ADDR_MASK, false);
     }
-    if mmu.fault != 0 {
+    if mmu.failed() {
         group0(cpu, mmu, d, sr);
         cycles += 50;
     } else if traced && !cpu.took_exception && !cpu.halted {
