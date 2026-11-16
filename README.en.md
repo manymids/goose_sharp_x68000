@@ -88,6 +88,10 @@ The actual on-screen resolution can change after boot depending on the guest's C
 
 In addition to keyboard input, the arrow keys plus `Z` / `X` and Space / Enter are mapped to port 1 joypad input. Mouse and SCC are not supported.
 
+## Save states (State menu)
+
+The State menu's Save Slot 1-3 writes the machine state to `state1.x68s` .. `state3.x68s` in the working directory, and Load Slot 1-3 reads it back. They are files, so they survive exiting. A file saved by another version of the emulator is refused with a warning that names the file's version and this build's version.
+
 ## Saving GUI settings and priority order
 
 By default, the GUI reads `arcl_windows_x68k_goose.ini` from the current directory. Settings are saved when you change the clock, display, or disks from the menu, and on normal exit.

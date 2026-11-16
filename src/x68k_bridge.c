@@ -750,6 +750,9 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
                 g_settings_changed = 1;
                 return 0;
             }
+            // State menu: 701-703 save slot 1-3, 711-713 load slot 1-3 (commands 11-13 and 21-23)
+            if (id >= 701 && id <= 703) { g_pending_cmd = 11 + (int)(id - 701); return 0; }
+            if (id >= 711 && id <= 713) { g_pending_cmd = 21 + (int)(id - 711); return 0; }
             switch (id) {
                 case 103: g_pending_cmd = 3; break; // Reset
                 case 104: g_is_open = false; DestroyWindow(hwnd); break;
@@ -1059,6 +1062,17 @@ bool win32_ui_init(X68kByteView title_bytes, int w, int h, int scale) {
     AppendMenuA(hMenuBar, MF_POPUP, (UINT_PTR)g_ahead_menu, "Run-&Ahead");
     run_ahead_check_menu();
 
+    // State Menu (the slots are files state1.x68s .. state3.x68s in the working directory)
+    HMENU hStateMenu = CreatePopupMenu();
+    AppendMenuA(hStateMenu, MF_STRING, 701, "&Save Slot 1");
+    AppendMenuA(hStateMenu, MF_STRING, 702, "Save Slot &2");
+    AppendMenuA(hStateMenu, MF_STRING, 703, "Save Slot &3");
+    AppendMenuA(hStateMenu, MF_SEPARATOR, 0, NULL);
+    AppendMenuA(hStateMenu, MF_STRING, 711, "&Load Slot 1");
+    AppendMenuA(hStateMenu, MF_STRING, 712, "Load Slot 2");
+    AppendMenuA(hStateMenu, MF_STRING, 713, "Load Slot 3");
+    AppendMenuA(hMenuBar, MF_POPUP, (UINT_PTR)hStateMenu, "&State");
+
     // Help Menu
     HMENU hHelpMenu = CreatePopupMenu();
     AppendMenuA(hHelpMenu, MF_STRING, 301, "&About Goose X68000...");
@@ -1212,6 +1226,15 @@ void win32_ui_wait_until_us(uint64_t target_us) {
     while (win32_ui_get_time_us() < target_us) {
         YieldProcessor();
     }
+}
+
+// A warning box for a failed menu action (the text is UTF-8 from Goose; it is ASCII here).
+void c_ui_warning(X68kByteView text) {
+    char buf[512];
+    int n = (int)(text.len < (int64_t)sizeof(buf) - 1 ? text.len : (int64_t)sizeof(buf) - 1);
+    memcpy(buf, text.data, (size_t)n);
+    buf[n] = 0;
+    MessageBoxA(g_hwnd, buf, "Goose X68000", MB_OK | MB_ICONWARNING);
 }
 
 int win32_ui_get_command(void) {

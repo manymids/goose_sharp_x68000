@@ -126,9 +126,49 @@ fn mount_saved_media() {
     mount_saved(GUI_HDD, hdd);
 }
 
+// State メニュー: 11〜13 はスロット 1〜3 へ保存、21〜23 はスロット 1〜3 から読み込み。
+// スロットは作業ディレクトリのファイル state1.x68s〜state3.x68s で、終了しても残る。
+let UI_COMMAND_SAVE_SLOT = 11;
+let UI_COMMAND_LOAD_SLOT = 21;
+let UI_STATE_SLOTS = 3;
+
+fn slot_path(out: u8[>..]&, slot: i32) {
+    format(out, "state", slot, ".x68s");
+}
+
+// ステートの保存と読み込みのメニューを行う。うまくいかなければ理由を出す。
+// session の保存と読み込みは機械を止める (MCP はそれを待って次の指示を出す)。ウィンドウではすぐ再開する。
+fn apply_state_command(emu: X68kEmulator&, command: i32) {
+    let was_paused = emu.is_paused;
+    var path: u8[>..] = [];
+    if command >= UI_COMMAND_SAVE_SLOT && command < UI_COMMAND_SAVE_SLOT + UI_STATE_SLOTS {
+        let slot = command - UI_COMMAND_SAVE_SLOT + 1;
+        slot_path(path, slot);
+        if !session::save_file(emu, slot, path) {
+            c_ui_warning(str("Could not save the state to ", path, "."));
+        }
+    } else if command >= UI_COMMAND_LOAD_SLOT && command < UI_COMMAND_LOAD_SLOT + UI_STATE_SLOTS {
+        let slot = command - UI_COMMAND_LOAD_SLOT + 1;
+        slot_path(path, slot);
+        let e = session::load_file(emu, slot, path);
+        if e == state::StateFileError.WrongVersion {
+            var why: u8[>..] = [];
+            state::version_error_text(why);
+            c_ui_warning(str("Could not load ", path, ": ", why, "."));
+        } else if e != state::StateFileError.None {
+            c_ui_warning(str("Could not load ", path, ": ", state::file_error_text(e), "."));
+        }
+    } else {
+        return;
+    }
+    if !was_paused { session::resume(emu, win32_ui_get_ticks_ms()); }
+}
+
 // リセットの操作 (メニュー / F5) か、起動し直しの要るディスクの出し入れがあったか。
-fn reset_requested() -> bool {
+// emu を渡すと (ウィンドウで遊ぶとき)、State メニューもここで行う。
+fn reset_requested(emu: X68kEmulator&, with_state: bool) -> bool {
     let command = win32_ui_get_command();
+    if with_state { apply_state_command(emu, command); }
     return apply_menu_media() || command == UI_COMMAND_RESET;
 }
 
@@ -153,7 +193,7 @@ fn run_mcp(emu: X68kEmulator&, want_window: bool, screen_w: i32, screen_h: i32, 
         if window_ok && win32_ui_is_open() {
             win32_ui_poll();
             pump_host_keys(emu);
-            if reset_requested() { mcp::reset(emu); }
+            if reset_requested(emu, false) { mcp::reset(emu); }
         }
 
         let wait_ms: i32 = if emu.is_paused { 20 } else { 0 };
@@ -190,7 +230,7 @@ fn run_gui(emu: X68kEmulator&, screen_w: i32, screen_h: i32, scale: i32, max_fra
         emu.mmu.joy1 = c_host_joy_byte() as u8;
         config::sync_from_host();
 
-        if reset_requested() {
+        if reset_requested(emu, true) {
             session::reset(emu);
             win32_ui_render_fb();
             session::resume(emu, win32_ui_get_ticks_ms()); // GUI は再開する。MCP は止めたまま。

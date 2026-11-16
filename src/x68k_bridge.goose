@@ -26,6 +26,7 @@ extern fn win32_ui_get_ticks_ms() -> u64;
 extern fn win32_ui_get_time_us() -> u64;
 extern fn win32_ui_wait_until_us(target_us: u64);
 extern fn win32_ui_get_command() -> i32;
+extern fn c_ui_warning(text: const u8[:]);
 extern fn win32_ui_get_key_scancode() -> i32;
 extern fn c_host_joy_byte() -> i32;
 extern fn c_set_cpu_mhz(mhz: i32) -> i32;

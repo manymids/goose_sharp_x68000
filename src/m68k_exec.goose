@@ -164,7 +164,7 @@ fn ea_read_for_rmw(cpu: M68kCPU&, mmu: M68kMMU&, mode: i32, reg: i32, size: i32)
         return EAResult { addr: 0, val: v };
     }
     if mode == 1 { // An
-        let v = if size == 2 { ((cpu.a[reg] as! i16)) as! u32 }
+        let v = if size == 2 { sext16_u32(cpu.a[reg]) }
                 else { cpu.a[reg] };
         return EAResult { addr: 0, val: v };
     }
@@ -182,7 +182,7 @@ fn ea_write_for_rmw(cpu: M68kCPU&, mmu: M68kMMU&, mode: i32, reg: i32, size: i32
     if mode == 1 { // An
         if mmu.failed() { return; }
         if size == 2 {
-            cpu.a[reg] = ((val as! i16)) as! u32;
+            cpu.a[reg] = sext16_u32(val);
         } else {
             cpu.a[reg] = val;
         }
@@ -199,7 +199,7 @@ fn ea_read(cpu: M68kCPU&, mmu: M68kMMU&, mode: i32, reg: i32, size: i32) -> u32 
         return cpu.d[reg];
     }
     if mode == 1 { // An
-        if size == 2 { return ((cpu.a[reg] as! i16)) as! u32; }
+        if size == 2 { return sext16_u32(cpu.a[reg]); }
         return cpu.a[reg];
     }
     if mode == 7 && reg == 4 { // 即値 #<data>
@@ -222,7 +222,7 @@ fn ea_write(cpu: M68kCPU&, mmu: M68kMMU&, mode: i32, reg: i32, size: i32, val: u
     if mode == 1 { // An
         if mmu.failed() { return; }
         if size == 2 {
-            cpu.a[reg] = ((val as! i16)) as! u32;
+            cpu.a[reg] = sext16_u32(val);
         } else {
             cpu.a[reg] = val;
         }
@@ -511,7 +511,7 @@ fn bcd_sub(cpu: M68kCPU&, dst: u32, src: u32) -> u32 {
 fn exec_movep(cpu: M68kCPU&, mmu: M68kMMU&, op: u16) -> i32 {
     let dreg: i32 = (op >> 9) & 0x07;
     let areg: i32 = op & 0x07;
-    let disp: i32 = fetch16(cpu, mmu) as! i16;
+    let disp: i32 = sext16(fetch16(cpu, mmu));
     let adr = addr_add(cpu.a[areg], disp);
     let kind: i32 = (op >> 6) & 0x03;
     if kind == 0 {
@@ -782,7 +782,7 @@ fn op4_stack(cpu: M68kCPU&, mmu: M68kMMU&, op: u16) -> i32, bool {
     // LINK (0100 1110 0101 0rrr)
     if (op & 0xFFF8) == 0x4E50 {
         let areg: i32 = op & 0x07;
-        let disp: i32 = fetch16(cpu, mmu) as! i16;
+        let disp: i32 = sext16(fetch16(cpu, mmu));
         push32(cpu, mmu, cpu.a[areg]);
         cpu.a[areg] = cpu.a[REG_A7];
         cpu.a[REG_A7] = addr_add(cpu.a[REG_A7], disp);
@@ -872,7 +872,7 @@ fn op4_movem_ext(cpu: M68kCPU&, mmu: M68kMMU&, op: u16) -> i32, bool {
                         addr += 4;
                         if i < 8 { cpu.d[i] = val; } else if !mmu.failed() { cpu.a[i - 8] = val; }
                     } else {
-                        let val = (mmu.read16(addr) as! i16) as! u32;
+                        let val = sext16_u32(mmu.read16(addr));
                         addr += 2;
                         if i < 8 { cpu.d[i] = val; } else if !mmu.failed() { cpu.a[i - 8] = val; }
                     }
@@ -890,7 +890,7 @@ fn op4_movem_ext(cpu: M68kCPU&, mmu: M68kMMU&, op: u16) -> i32, bool {
         let is_long = (op & 0x0040) != 0;
         let dreg: i32 = op & 0x07;
         if is_long {
-            let val = (cpu.d[dreg] as! i16) as! u32;
+            let val = sext16_u32(cpu.d[dreg]);
             cpu.d[dreg] = val;
             cpu.set_nz(4, val);
         } else {
@@ -1005,8 +1005,8 @@ fn op4_unary(cpu: M68kCPU&, mmu: M68kMMU&, op: u16) -> i32, bool {
     if (op & 0xF1C0) == 0x4180 {
         guard ea_is_data(mode, reg) else { return raise_illegal(cpu, mmu), true; }
         let dn: i32 = (op >> 9) & 0x07;
-        let x: i32 = ea_read(cpu, mmu, mode, reg, 2) as! i16;
-        let y: i32 = cpu.d[dn] as! i16;
+        let x: i32 = sext16(ea_read(cpu, mmu, mode, reg, 2));
+        let y: i32 = sext16(cpu.d[dn]);
         let z: i32 = (x - y) as! i16;
         var ccr = cpu.sr & SR_X;
         if y < 0 { ccr |= SR_N; }
@@ -1107,7 +1107,7 @@ fn exec_op8_or_div(cpu: M68kCPU&, mmu: M68kMMU&, op: u16) -> i32 {
         return cycles;
     }
     if opmode == 7 { // DIVS.W
-        let src: i32 = ea_read(cpu, mmu, mode, reg, 2) as! i16;
+        let src: i32 = sext16(ea_read(cpu, mmu, mode, reg, 2));
         let dst = cpu.d[dreg] as! i32;
         let cycles = divs_cycles(mode, reg, dst, src);
         // ゼロ除算とオーバーフローでは Dq を変えない。N/Z/V は 68000 と同じに立てる (XEiJ)。
@@ -1211,8 +1211,8 @@ fn exec_opC_and_mul_exg(cpu: M68kCPU&, mmu: M68kMMU&, op: u16) -> i32 {
         return mul_cycles(mode, reg, src, false);
     }
     if opmode == 7 { // MULS.W
-        let src: i32 = ea_read(cpu, mmu, mode, reg, 2) as! i16;
-        let dst: i32 = cpu.d[dreg] as! i16;
+        let src: i32 = sext16(ea_read(cpu, mmu, mode, reg, 2));
+        let dst: i32 = sext16(cpu.d[dreg]);
         let res = (dst * src) as! u32;
         cpu.d[dreg] = res;
         cpu.set_nz(4, res);
@@ -1253,7 +1253,7 @@ fn exec_add_sub(cpu: M68kCPU&, mmu: M68kMMU&, op: u16, is_add: bool) -> i32 {
     if opmode == 3 || opmode == 7 {
         let is_long = (opmode == 7);
         let src = ea_read(cpu, mmu, mode, reg, if is_long { 4 } else { 2 });
-        let ext_src = if is_long { src } else { (src as! i16) as! u32 };
+        let ext_src = if is_long { src } else { sext16_u32(src) };
         if !mmu.failed() {
             cpu.a[reg_field] = if is_add { cpu.a[reg_field] + ext_src } else { cpu.a[reg_field] - ext_src };
         }
@@ -1320,7 +1320,7 @@ fn exec_opB_cmp_eor(cpu: M68kCPU&, mmu: M68kMMU&, op: u16) -> i32 {
     if opmode == 3 || opmode == 7 {
         let is_long = (opmode == 7);
         let src = ea_read(cpu, mmu, mode, reg, if is_long { 4 } else { 2 });
-        let ext_src = if is_long { src } else { ((src as! i16)) as! u32 };
+        let ext_src = if is_long { src } else { sext16_u32(src) };
         let dst = cpu.a[reg_field];
         let res = dst - ext_src;
         cpu.flags_sub(4, ext_src, dst, res, false);
@@ -1485,7 +1485,7 @@ fn exec_op5(cpu: M68kCPU&, mmu: M68kMMU&, op: u16) -> i32 {
     if (op & 0xF0F8) == 0x50C8 {
         let cond: i32 = (op >> 8) & 0x0F;
         let dreg: i32 = op & 0x07;
-        let disp: i32 = fetch16(cpu, mmu) as! i16;
+        let disp: i32 = sext16(fetch16(cpu, mmu));
         if !cpu.check_condition(cond) {
             let count = (cpu.d[dreg] & 0xFFFF) as i32 - 1;
             cpu.d[dreg] = (cpu.d[dreg] & 0xFFFF0000) | ((count & 0xFFFF) as u32);
@@ -1540,9 +1540,9 @@ fn exec_op5(cpu: M68kCPU&, mmu: M68kMMU&, op: u16) -> i32 {
 fn exec_branch(cpu: M68kCPU&, mmu: M68kMMU&, op: u16) -> i32 {
     let cond: i32 = (op >> 8) & 0x0F;
     let base_pc = cpu.pc;
-    var disp: i32 = (op & 0xFF) as! i8;
+    var disp: i32 = sext8(op & 0xFF);
     if disp == 0 {
-        disp = (fetch16(cpu, mmu) as! i16);
+        disp = sext16(fetch16(cpu, mmu));
     }
 
     let target = addr_add(base_pc, disp);

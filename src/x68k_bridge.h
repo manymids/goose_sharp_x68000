@@ -44,6 +44,7 @@ uint64_t win32_ui_get_ticks_ms(void);
 uint64_t win32_ui_get_time_us(void);
 void win32_ui_wait_until_us(uint64_t target_us);
 int win32_ui_get_command(void);
+void c_ui_warning(X68kByteView text);
 int win32_ui_get_key_scancode(void);
 void c_host_key_joy(int vk, int down);
 void c_host_joy_reset(void);
