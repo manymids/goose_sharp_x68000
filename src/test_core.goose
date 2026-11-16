@@ -629,6 +629,11 @@ fn test_state_file() {
     var old_image: u8[>..] = [];
     to_bytes(old, old_image);
     check("another version is refused", state::import_image(STATE_SLOT, 0, old_image[..]) == state::StateFileError.WrongVersion);
+    var why: u8[>..] = [];
+    state::version_error_text(why);
+    var expect: u8[>..] = [];
+    format(expect, "the state file is version ", STATE_VERSION - 1, "; this build reads version ", STATE_VERSION);
+    check("the refusal names both versions", why[..] == expect[..]);
     check("a slot outside the bank is refused", state::import_image(STATE_SLOT, 99, image[..]) == state::StateFileError.Rejected);
 
     var h: u64 = state::checksum(STATE_HASH_SEED, "a");

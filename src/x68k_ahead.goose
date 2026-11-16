@@ -117,9 +117,10 @@ fn restore(emu: X68kEmulator&) {
     emu = g_saved.emu;
 }
 
-// emu を frames フレーム先まで進める。画面を出したら必ず end で元に戻すこと。
-// ブレークポイントに当たればそこで止める。end のあとの emu は begin の前とまったく同じ。
-fn begin(emu: X68kEmulator&, frames: i32) -> bool {
+// emu を frames フレーム先まで進めて SHOW を呼び (先の画面を出す)、そのあと元に戻す。
+// ブレークポイントに当たればそこで止める。戻したあとの emu は呼ぶ前とまったく同じ。
+// 進められない (frames が 0、機械が止まっている) ときは SHOW を呼ばずに false を返す。
+fn peek<SHOW: fn()>(emu: X68kEmulator&, frames: i32) -> bool {
     if frames < 1 || !emu.active() { return false; }
     save(emu);
     emu.hit_break = false;
@@ -128,11 +129,9 @@ fn begin(emu: X68kEmulator&, frames: i32) -> bool {
         emu.audio_samples = 0;
         if emu.hit_break { break; }
     }
-    return true;
-}
-
-fn end(emu: X68kEmulator&) {
+    SHOW();
     restore(emu);
+    return true;
 }
 
 // ---------------------------------------------------------------

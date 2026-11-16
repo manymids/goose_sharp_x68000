@@ -265,6 +265,18 @@ type ::StateFileHeader = state::StateFileHeader;
 // 読み込みに失敗した理由
 enum StateFileError { None, Unreadable, NotAStateFile, WrongVersion, Corrupt, Rejected }
 
+// 最後に WrongVersion で断ったファイルの版。版が同じで中身の大きさが違う (同じ版の別のビルド) ときは STATE_VERSION のまま。
+var g_refused_version: i32 = 0;
+
+// WrongVersion を、ファイルの版とこのビルドの版を入れた文にする。
+fn version_error_text(out: u8[>..]&) {
+    if g_refused_version == STATE_VERSION {
+        format(out, "the state file was written by another build of version ", STATE_VERSION, " (the machine state has a different size)");
+    } else {
+        format(out, "the state file is version ", g_refused_version, "; this build reads version ", STATE_VERSION);
+    }
+}
+
 fn file_error_text(e: StateFileError) -> const u8[:] {
     match e {
         None => "",
@@ -324,6 +336,7 @@ fn import_image(bank: Bank, idx: i32, data: u8[:]) -> StateFileError {
     guard ok1 else { return StateFileError.NotAStateFile; }
     var header, header_ok = from_bytes<StateFileHeader[>..]>(data[..end1]);
     if !header_ok || header.len != 1 || header[0].magic != STATE_FILE_MAGIC { return StateFileError.NotAStateFile; }
+    g_refused_version = header[0].version;
     if header[0].version != STATE_VERSION { return StateFileError.WrongVersion; }
 
     let end2, ok2 = next_image(data, end1);

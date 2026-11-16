@@ -212,13 +212,14 @@ fn run_gui(emu: X68kEmulator&, screen_w: i32, screen_h: i32, scale: i32, max_fra
         // 先読みを使うなら、本当のフレームの代わりに run_ahead フレーム先の画面を出す (x68k_ahead)。
         // メニューの値は上限。実時間に間に合う数まで pace が下げる (高いクロックでは減る)。
         let run_ahead = pace.frames;
-        if !emu.is_paused && run_ahead > 0 && ahead::begin(emu, run_ahead) {
-            c_set_screen_mode(emu.ppu.screen_w, emu.ppu.screen_h);
-            win32_ui_render_fb();
-            ahead::end(emu);
-        } else {
-            win32_ui_render_fb();
+        var shown = false;
+        if !emu.is_paused {
+            shown = ahead::peek(emu, run_ahead) {
+                c_set_screen_mode(emu.ppu.screen_w, emu.ppu.screen_h);
+                win32_ui_render_fb();
+            };
         }
+        if !shown { win32_ui_render_fb(); }
 
         // CRTC の設定から決まる 1 フレーム (768x512 31 kHz で約 18031 us、55.46 Hz)。
         let frame_period_us: u64 = (emu::frame_cycles10(emu.mmu) / 10) as u64;
@@ -248,7 +249,7 @@ fn run_headless(emu: X68kEmulator&, frames: i64, dump_path: const u8[:], run_ahe
     for _ in frames {
         session::follow_host_clock(emu);
         session::run_frame(emu);
-        if run_ahead > 0 && ahead::begin(emu, run_ahead) { ahead::end(emu); }
+        ahead::peek(emu, run_ahead) {};
     }
     if dump_path.len > 0 { write_dump(emu, dump_path); }
     write_stderr(str("frames: ", emu.total_frames, "\n"));

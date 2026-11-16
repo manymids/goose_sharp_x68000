@@ -52,7 +52,7 @@ let ALGO_TABLE: u8[48] = [
     0, 1, 2, 2, 2, 1,   0, 1, 0, 1, 0, 1,
     0, 1, 2, 1, 2, 1,   1, 0, 1, 0, 1, 0,
 ];
-let SL_TABLE: u32[16] = [0, 4, 8, 12, 16, 20, 24, 28, 32, 36, 40, 44, 48, 52, 56, 124];
+let SL_TABLE: i32[16] = [0, 4, 8, 12, 16, 20, 24, 28, 32, 36, 40, 44, 48, 52, 56, 124];
 let SLOT_TABLE: u32[4] = [0, 2, 1, 3];
 
 // fmgen.cpp の固定の表 (ソースから機械的に写したもの)
@@ -365,12 +365,12 @@ struct FmOperator {
     eg_phase: i32 = 0,
     ams_row: i32 = 0,           // g_am の行 (種類 * 4 + AMS)
     ms: u32 = 0,
-    tl: u32 = 0,
-    tl_latch: u32 = 0,
+    tl: i32 = 0,
+    tl_latch: i32 = 0,
     ar: u32 = 0,
     dr: u32 = 0,
     sr: u32 = 0,
-    sl: u32 = 0,
+    sl: i32 = 0,
     rr: u32 = 0,
     ks: u32 = 0,
     keyon: bool = false,
@@ -406,7 +406,7 @@ fn shift_phase(op: FmOperator&, chip: FmChip&, next: i32) {
     if phase == PH_DECAY {
         if op.sl != 0 {
             op.eg_level = 0;
-            op.eg_next = (op.sl * 8) as i32;
+            op.eg_next = op.sl * 8;
             set_eg_rate(op, chip, if op.dr != 0 { rate_limit(op.dr, op.ksr) } else { 0 });
             op.eg_phase = PH_DECAY;
             return;
@@ -414,7 +414,7 @@ fn shift_phase(op: FmOperator&, chip: FmChip&, next: i32) {
         phase = PH_SUSTAIN;
     }
     if phase == PH_SUSTAIN {
-        op.eg_level = (op.sl * 8) as i32;
+        op.eg_level = op.sl * 8;
         op.eg_next = 0x400;
         set_eg_rate(op, chip, if op.sr != 0 { rate_limit(op.sr, op.ksr) } else { 0 });
         op.eg_phase = PH_SUSTAIN;
@@ -451,12 +451,12 @@ fn op_prepare(op: FmOperator&, chip: FmChip&) {
     op.pg_diff = (op.dp + (DT_TABLE[(op.detune + op.bn) & 255] as! u32)) * chip.multable[(op.detune2 * 16 + op.multiple) & 63];
     op.pg_diff_lfo = (op.pg_diff >> 11) as i32;
     op.ksr = op.bn >> (3 - op.ks);
-    op.tl_out = if op.mute { 0x3ff } else { (op.tl * 8) as i32 };
+    op.tl_out = if op.mute { 0x3ff } else { op.tl * 8 };
     if op.eg_phase == PH_ATTACK {
         set_eg_rate(op, chip, if op.ar != 0 { rate_limit(op.ar, op.ksr) } else { 0 });
     } else if op.eg_phase == PH_DECAY {
         set_eg_rate(op, chip, if op.dr != 0 { rate_limit(op.dr, op.ksr) } else { 0 });
-        op.eg_next = (op.sl * 8) as i32;
+        op.eg_next = op.sl * 8;
     } else if op.eg_phase == PH_SUSTAIN {
         set_eg_rate(op, chip, if op.sr != 0 { rate_limit(op.sr, op.ksr) } else { 0 });
     } else if op.eg_phase == PH_RELEASE {
@@ -872,10 +872,10 @@ fn set_parameter(o: X68kOPM&, addr: u32, data: u32) {
         op.multiple = data & 0x0F;
     } else if group == 3 {  // 60-7F TL。CSM モード中はキーオンまで保留する
         if (o.regtc & 0x80) == 0 {
-            op.tl = data & 0x7F;
+            op.tl = (data & 0x7F) as i32;
             op.param_changed = true;
         }
-        op.tl_latch = data & 0x7F;
+        op.tl_latch = (data & 0x7F) as i32;
         return;
     } else if group == 4 {  // 80-9F KS / AR
         op.ks = (data >> 6) & 3;

@@ -941,6 +941,12 @@ fn tool_load_state(emu: X68kEmulator&, args: const u8[:], id_buf: const u8[:]) {
     let from_file = extract_json_str(args, "path", path);
     if from_file {
         let e = session::load_file(emu, slot, path);
+        if e == state::StateFileError.WrongVersion {
+            var msg: u8[>..] = [];
+            state::version_error_text(msg);
+            write_text(id_buf, msg, true);
+            return;
+        }
         if e != state::StateFileError.None {
             write_text(id_buf, state::file_error_text(e), true);
             return;
