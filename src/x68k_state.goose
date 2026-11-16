@@ -127,12 +127,12 @@ fn record_ok(r: X68kCheckpoint&, blob: u8[:]) -> bool {
     let layout .= r.layout;
     if layout.ram_bytes != x68k_ram_limit() { return false; }
     if c_cpu_mhz_ok(r.clock_mhz) == 0 { return false; }
-    if !disk::state_ok(r.disk, layout.image_bytes) { return false; }
+    guard disk::state_ok(r.disk, layout.image_bytes) else { return false; }
     return blob.len == total_bytes(layout);
 }
 
 fn validate(bank: Bank, idx: i32) -> bool {
-    if !saved(bank, idx) { return false; }
+    guard saved(bank, idx) else { return false; }
     let at = index(bank, idx);
     return record_ok(g_checkpoints[at], blob_of(at));
 }
@@ -150,7 +150,7 @@ fn claim_blob(at: i32, bytes: i64) -> u8[:] {
 }
 
 fn capture(emu: X68kEmulator&, bank: Bank, idx: i32) -> bool {
-    if !emu.active() { return false; }
+    guard emu.active() else { return false; }
     let at = index(bank, idx);
     if at < 0 { return false; }
 
@@ -183,8 +183,8 @@ fn capture(emu: X68kEmulator&, bank: Bank, idx: i32) -> bool {
 }
 
 fn restore(emu: X68kEmulator&, bank: Bank, idx: i32) -> bool {
-    if !emu.active() { return false; }
-    if !validate(bank, idx) { return false; }
+    guard emu.active() else { return false; }
+    guard validate(bank, idx) else { return false; }
     let at = index(bank, idx);
     let slot .= g_checkpoints[at];
     let blob = blob_of(at);
@@ -220,13 +220,13 @@ fn drop(bank: Bank, idx: i32) {
 }
 
 fn frame(bank: Bank, idx: i32) -> i64 {
-    if !saved(bank, idx) { return 0; }
+    guard saved(bank, idx) else { return 0; }
     return g_checkpoints[index(bank, idx)].total_frames;
 }
 
 // 使っているバイト数: blob とこの記録。空の記録は最初から確保してあるので数えない。
 fn bytes(bank: Bank, idx: i32) -> i64 {
-    if !saved(bank, idx) { return 0; }
+    guard saved(bank, idx) else { return 0; }
     return g_spans[index(bank, idx)].len + bytes_of(g_checkpoints).len / g_checkpoints.len;
 }
 
@@ -287,7 +287,7 @@ let ::STATE_HASH_SEED = 14695981039346656037;
 
 // スロットの内容をファイル形式のバイト列にして out に追記する。
 fn export_image(bank: Bank, idx: i32, out: u8[>..]&) -> bool {
-    if !validate(bank, idx) { return false; }
+    guard validate(bank, idx) else { return false; }
     let at = index(bank, idx);
     let blob = blob_of(at);
     var record: X68kCheckpoint[>..] = [];
@@ -321,13 +321,13 @@ fn import_image(bank: Bank, idx: i32, data: u8[:]) -> StateFileError {
     if at < 0 { return StateFileError.Rejected; }
 
     let end1, ok1 = next_image(data, 0);
-    if !ok1 { return StateFileError.NotAStateFile; }
+    guard ok1 else { return StateFileError.NotAStateFile; }
     var header, header_ok = from_bytes<StateFileHeader[>..]>(data[..end1]);
     if !header_ok || header.len != 1 || header[0].magic != STATE_FILE_MAGIC { return StateFileError.NotAStateFile; }
     if header[0].version != STATE_VERSION { return StateFileError.WrongVersion; }
 
     let end2, ok2 = next_image(data, end1);
-    if !ok2 { return StateFileError.Corrupt; }
+    guard ok2 else { return StateFileError.Corrupt; }
     var record, parsed = from_bytes<X68kCheckpoint[>..]>(data[end1..end2]);
     if !parsed || record.len != 1 { return StateFileError.Corrupt; }
     if bytes_of(record).len != header[0].record_bytes { return StateFileError.WrongVersion; }
@@ -336,7 +336,7 @@ fn import_image(bank: Bank, idx: i32, data: u8[:]) -> StateFileError {
     if checksum(checksum(STATE_HASH_SEED, bytes_of(record)), blob) != header[0].checksum {
         return StateFileError.Corrupt;
     }
-    if !record_ok(record[0], blob) { return StateFileError.Rejected; }
+    guard record_ok(record[0], blob) else { return StateFileError.Rejected; }
 
     release_blob(at);
     copy_into(claim_blob(at, blob.len), blob);
@@ -348,12 +348,12 @@ fn import_image(bank: Bank, idx: i32, data: u8[:]) -> StateFileError {
 
 fn save_file(bank: Bank, idx: i32, path: const u8[:]) -> bool {
     var image: u8[>..] = [];
-    if !export_image(bank, idx, image) { return false; }
+    guard export_image(bank, idx, image) else { return false; }
     return write_file_atomic(path, image);
 }
 
 fn load_file(bank: Bank, idx: i32, path: const u8[:]) -> StateFileError {
     var image: u8[>..] = [];
-    if !read_file(path, image) { return StateFileError.Unreadable; }
+    guard read_file(path, image) else { return StateFileError.Unreadable; }
     return import_image(bank, idx, image[..]);
 }

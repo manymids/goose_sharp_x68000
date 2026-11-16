@@ -38,6 +38,20 @@ let ::MFP_IRQ_TIMER_C = 10;
 let ::MFP_IRQ_TIMER_D = 11;
 let ::MFP_IRQ_OPM = 12;     // GPIP3: FM 音源
 
+// GPIP (入力ポート) のビット。X68000 での配線 (px68k mfp.c GetGPIP)。
+let ::MFP_GPIP_FIXED: u8 = 0x23;    // bit 0, 1, 5 は常に 1
+let ::MFP_GPIP_VDISP: u8 = 0x10;    // 垂直表示期間なら 1
+let ::MFP_GPIP_RASTER: u8 = 0x40;   // CRTC のラスタ割り込みの行でなければ 1
+let ::MFP_GPIP_HSYNC: u8 = 0x80;    // 水平の表示期間の外なら 1
+
+let ::MFP_AER_VDISP: u8 = 0x10;     // 垂直表示の立ち上がりで数える (タイマ A のイベントカウント)
+let ::MFP_VR_S: u8 = 0x08;          // ソフトウェア EOI (受け付けたら ISR を立てる)
+let ::MFP_VR_BASE: u8 = 0xF0;       // ベクタ番号の上位 4 bit
+let ::MFP_RSR_BF: u8 = 0x80;        // 受信バッファが空 (X68000 では立っていると空)
+let ::MFP_TSR_BE: u8 = 0x80;        // 送信バッファが空 (常に空として扱う)
+let ::MFP_TCR_EVENT: i32 = 8;       // タイマ制御の 8: イベントカウント
+let ::MFP_TCR_DELAY: i32 = 7;       // タイマ制御の 1〜7: ディレイモード (プリスケーラの番号)
+
 struct X68kMFP {
     regs: u8[24] = [0; 24],
     timer_reload: u8[4] = [0; 4],
@@ -109,22 +123,18 @@ fn read(mfp: X68kMFP&, reg_idx: i32) -> u8 {
         // bit 5: 常に 1 (0x20)
         // bit 6: 1 (vline != CRTC_IntLine)
         // bit 7: H-SYNC (hpos がアクティブ領域外なら 0x80、アクティブなら 0x00)
-        var ret: u8 = 0x20;
-        if mfp.in_vdisp {
-            ret |= 0x13;
-        } else {
-            ret |= 0x03;
-        }
+        var ret: u8 = MFP_GPIP_FIXED;
+        if mfp.in_vdisp { ret |= MFP_GPIP_VDISP; }
 
         let hpos = if mfp.hsync_clk > 0 { mfp.line_cycles % mfp.hsync_clk } else { 0 };
         if hpos >= mfp.hsync_start && hpos < mfp.hsync_end {
-            ret &= 0x7F;
+            ret &= ~MFP_GPIP_HSYNC;
         } else {
-            ret |= 0x80;
+            ret |= MFP_GPIP_HSYNC;
         }
 
         if mfp.cur_vline != mfp.crtc_intline {
-            ret |= 0x40;
+            ret |= MFP_GPIP_RASTER;
         }
         return ret;
     }
@@ -136,9 +146,9 @@ fn read(mfp: X68kMFP&, reg_idx: i32) -> u8 {
     if reg_idx == MFP_RSR {
         // バッファに残りがあるとき bit7 を落とす。空なら立てる。
         if mfp.key_wp != mfp.key_rp {
-            return mfp.regs[MFP_RSR] & 0x7F;
+            return mfp.regs[MFP_RSR] & ~MFP_RSR_BF;
         }
-        return mfp.regs[MFP_RSR] | 0x80;
+        return mfp.regs[MFP_RSR] | MFP_RSR_BF;
     }
     return mfp.regs[reg_idx];
 }
@@ -170,7 +180,7 @@ fn write(mfp: X68kMFP&, reg_idx: i32, val: u8) {
         return;
     }
     if reg_idx == MFP_TSR {
-        mfp.regs[reg_idx] = val | 0x80;
+        mfp.regs[reg_idx] = val | MFP_TSR_BE;
         return;
     }
     mfp.regs[reg_idx] = val;
@@ -198,10 +208,10 @@ fn ack_interrupt(mfp: X68kMFP&) -> i32 {
     while flag != 0 {
         if (mfp.regs[MFP_IPRA] & flag) != 0 && (mfp.regs[MFP_IMRA] & flag) != 0 && (mfp.regs[MFP_ISRA] & flag) == 0 {
             mfp.regs[MFP_IPRA] &= ~flag;
-            if (mfp.regs[MFP_VR] & 8) != 0 {
+            if (mfp.regs[MFP_VR] & MFP_VR_S) != 0 {
                 mfp.regs[MFP_ISRA] |= flag;
             }
-            return ((mfp.regs[MFP_VR] & 0xF0)) | vect;
+            return (mfp.regs[MFP_VR] & MFP_VR_BASE) | vect;
         }
         flag >>= 1;
         vect--;
@@ -212,10 +222,10 @@ fn ack_interrupt(mfp: X68kMFP&) -> i32 {
     while flag != 0 {
         if (mfp.regs[MFP_IPRB] & flag) != 0 && (mfp.regs[MFP_IMRB] & flag) != 0 && (mfp.regs[MFP_ISRB] & flag) == 0 {
             mfp.regs[MFP_IPRB] &= ~flag;
-            if (mfp.regs[MFP_VR] & 8) != 0 {
+            if (mfp.regs[MFP_VR] & MFP_VR_S) != 0 {
                 mfp.regs[MFP_ISRB] |= flag;
             }
-            return ((mfp.regs[MFP_VR] & 0xF0)) | vect;
+            return (mfp.regs[MFP_VR] & MFP_VR_BASE) | vect;
         }
         flag >>= 1;
         vect--;
@@ -233,9 +243,9 @@ fn has_pending_int(mfp: X68kMFP&) -> bool {
 
 // タイマ A イベントカウント (走査線ごとに呼び出し: px68k MFP_TimerA 準拠)
 fn timer_a(mfp: X68kMFP&, vline: i32, vstart: i32, vend: i32, vline_total: i32) {
-    if (mfp.regs[MFP_TACR] & 15) == 8 {
+    if (mfp.regs[MFP_TACR] & 15) == MFP_TCR_EVENT {
         var dec = false;
-        if (mfp.regs[MFP_AER] & 0x10) != 0 {
+        if (mfp.regs[MFP_AER] & MFP_AER_VDISP) != 0 {
             if vline == vstart { dec = true; }
         } else {
             if vend >= vline_total {
@@ -256,7 +266,7 @@ fn timer_a(mfp: X68kMFP&, vline: i32, vstart: i32, vend: i32, vline_total: i32) 
 
 // タイマ B HSYNC イベントカウント (走査線ごとに呼び出し: px68k モード 8 準拠)
 fn timer_b_hsync(mfp: X68kMFP&) {
-    if (mfp.regs[MFP_TBCR] & 15) == 8 {
+    if (mfp.regs[MFP_TBCR] & 15) == MFP_TCR_EVENT {
         mfp.regs[MFP_TBDR]--;
         if mfp.regs[MFP_TBDR] == 0 {
             mfp.regs[MFP_TBDR] = mfp.timer_reload[1];
@@ -277,11 +287,11 @@ fn step_timers(mfp: X68kMFP&, cycles: i32) {
         else if chan == 2 { mode = (mfp.regs[MFP_TCDCR] >> 4); }
         else { mode = (mfp.regs[MFP_TCDCR] & 0x0F); }
 
-        if chan == 0 && (mode & 8) != 0 {
+        if chan == 0 && (mode & MFP_TCR_EVENT) != 0 {
             continue; // イベントカウントモードは走査線で実行
         }
 
-        if (mode & 7) != 0 {
+        if (mode & MFP_TCR_DELAY) != 0 {
             let prescaler = get_prescaler(mode);
             mfp.timer_tick[chan] += cycles;
 

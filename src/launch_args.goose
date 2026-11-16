@@ -61,28 +61,28 @@ fn apply_value(opt: Options&, name: const u8[:], value: const u8[:]) -> const u8
         else { return "--mode must be 512 or 768\n"; }
         opt.mode_set = true;
     } else if name == "--system-dir" {
-        if !set_path(opt.sys_dir, value) { return "--system-dir: the path is too long\n"; }
+        guard set_path(opt.sys_dir, value) else { return "--system-dir: the path is too long\n"; }
         opt.sys_set = true;
     } else if name == "--clock" {
         let n, ok = number(value, 1, 250);
-        if !ok { return "invalid --clock value\n"; }
+        guard ok else { return "invalid --clock value\n"; }
         opt.clock_mhz = n as i32;
         opt.clock_set = true;
     } else if name == "--scale" {
         let n, ok = number(value, 1, 2);
-        if !ok { return "--scale must be 1 or 2\n"; }
+        guard ok else { return "--scale must be 1 or 2\n"; }
         opt.scale = n as i32;
         opt.scale_set = true;
     } else if name == "--frames" {
         let n, ok = number(value, 1, 0x7FFFFFFFFFFFFFFF);
-        if !ok { return "--frames must be a positive integer\n"; }
+        guard ok else { return "--frames must be a positive integer\n"; }
         opt.max_frames = n;
         opt.frames_set = true;
     } else if name == "--dump-frame" {
-        if !set_path(opt.dump_path, value) { return "--dump-frame: the path is too long\n"; }
+        guard set_path(opt.dump_path, value) else { return "--dump-frame: the path is too long\n"; }
     } else if name == "--dump-after-frames" {
         let n, ok = number(value, 1, 0x7FFFFFFFFFFFFFFF);
-        if !ok { return "--dump-after-frames must be positive\n"; }
+        guard ok else { return "--dump-after-frames must be positive\n"; }
         opt.dump_after = n;
     } else if name == "--mcp-layers" {
         let mask = mcp::parse_layers(value);
@@ -90,7 +90,7 @@ fn apply_value(opt: Options&, name: const u8[:], value: const u8[:]) -> const u8
         opt.layers = mask;
     } else if name == "--run-ahead" {
         let n, ok = number(value, 0, AHEAD_SHOW_MAX);
-        if !ok { return "--run-ahead must be 0 to 4\n"; }
+        guard ok else { return "--run-ahead must be 0 to 4\n"; }
         opt.run_ahead = n as i32;
         opt.ahead_set = true;
     } else if name == "--ram" {
@@ -131,7 +131,7 @@ fn parse(args: const u8[:][:], opt: Options&) -> const u8[:] {
             if !positional && arg.len > 0 && arg[0] == '-' {
                 return "unknown option or missing option value (use --help)\n";
             }
-            if !set_path(opt.content_path, arg) { return "the disk image path is too long\n"; }
+            guard set_path(opt.content_path, arg) else { return "the disk image path is too long\n"; }
             opt.content_set = true;
         }
     }

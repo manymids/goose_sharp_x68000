@@ -205,10 +205,10 @@ fn frame_cycles10(mmu: M68kMMU&) -> i64 {
     let oscs: i64[3] = [38863632, 69551900, 50349800];
     let osc_of: i32[16] = [0, 0, 0, 0, 1, 1, 1, 2, 0, 0, 0, 0, 1, 1, 1, 2];
     let div_of: i64[16] = [8, 4, 8, 8, 6, 3, 2, 2, 8, 4, 8, 8, 8, 4, 2, 2];
-    let r20: i32 = mmu.crtc_regs[0x29];
+    let r20: i32 = mmu.crtc_regs[CRTC_R20_LO];
     let hrl: i32 = (mmu.sysport_keyctrl >> 1) & 1;
     let k = (hrl << 3) | ((r20 >> 2) & 4) | (r20 & 3);
-    let columns = (mmu.crtc_regs[0x01] as i64) + 1;
+    let columns = (mmu.crtc_regs[CRTC_R00_LO] as i64) + 1;
     let lines: i64 = frame_lines(mmu);
     if columns < 2 { return if (r20 & 0x10) != 0 { 180310 } else { 162707 }; }
     return 8 * div_of[k] * columns * lines * 10000000 / oscs[osc_of[k]];
@@ -250,7 +250,7 @@ fn line_start(emu: X68kEmulator&, vline: i32, vline_total: i32) {
 
 // 表示期間の走査線 1 本を描く。px68k WinDraw_DrawLine と同じく、ラインの終わりのレジスタで描く。
 fn draw_scanline(emu: X68kEmulator&, vline: i32, crtc_vstart: i32) {
-    let mode29 = emu.mmu.crtc_regs[0x29];
+    let mode29 = emu.mmu.crtc_regs[CRTC_R20_LO];
     let vstep: i32 = if (mode29 & 0x14) == 0x10 { 1 } else if (mode29 & 0x14) == 0x04 { 4 } else { 2 };
     let sy = ((vline - crtc_vstart) * vstep) / 2;
     if vstep == 1 {
@@ -301,7 +301,7 @@ fn fast_clear(emu: X68kEmulator&, is_31k: bool) {
         emu.mmu.crtc_fast_clr = if is_31k { 1 } else { 2 };
         let sx = (emu.mmu.crtc_word(CRTC_GRP_X) & 511) as u32;
         let sy = (emu.mmu.crtc_word(CRTC_GRP_Y) & 511) as u32;
-        emu.mmu.gvram_fast_clear(emu.mmu.crtc_regs[0x2B], emu.mmu.crtc_regs[0x29], sx, sy);
+        emu.mmu.gvram_fast_clear(emu.mmu.crtc_regs[CRTC_R21_LO], emu.mmu.crtc_regs[CRTC_R20_LO], sx, sy);
     }
 }
 
@@ -350,7 +350,7 @@ fn present(emu: X68kEmulator&) {
 fn run_frame(emu: X68kEmulator&) {
     assert(emu.active());
     // bit4 が立っているのは 31kHz（px68k VID_MODE = MODE_HIGH）。サイクル予算の数値はそのまま。
-    let is_31k = (emu.mmu.crtc_regs[0x29] & 0x10) != 0;
+    let is_31k = (emu.mmu.crtc_regs[CRTC_R20_LO] & 0x10) != 0;
     // 1 フレームの長さ (0.1 us 単位 = 10 MHz のクロック数)
     let frame_len10: i32 = frame_cycles10(emu.mmu) as i32;
     let mhz = if emu.clock_mhz > 0 { emu.clock_mhz } else { 10 };
@@ -358,10 +358,10 @@ fn run_frame(emu: X68kEmulator&) {
     let vline_total = frame_lines(emu.mmu);
 
     let hsync_clk = clk_total / vline_total;
-    let htotal = if emu.mmu.crtc_regs[0x01] > 0 { emu.mmu.crtc_regs[0x01] as i32 } else { 137 };
+    let htotal = if emu.mmu.crtc_regs[CRTC_R00_LO] > 0 { emu.mmu.crtc_regs[CRTC_R00_LO] as i32 } else { 137 };
     // GPIP7 は水平同期パルスの間だけ high (XEiJ): R00 + 1 桁のうち R01 + 1 桁。
     emu.mmu.mfp.hsync_clk = hsync_clk;
-    emu.mmu.mfp.hsync_start = (((emu.mmu.crtc_regs[0x03] as i32) + 1) * hsync_clk) / (htotal + 1);
+    emu.mmu.mfp.hsync_start = (((emu.mmu.crtc_regs[CRTC_R01_LO] as i32) + 1) * hsync_clk) / (htotal + 1);
     emu.mmu.mfp.hsync_end = hsync_clk;
 
     emu.ppu.begin_frame(emu.mmu);

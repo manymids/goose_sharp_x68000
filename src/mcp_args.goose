@@ -70,7 +70,7 @@ fn extract_json_str(obj: const u8[:], key: const u8[:], out: u8[>..]&) -> bool {
 // 数値のメンバを f64 で読む。キーが無いか、値が数値でなければ false。
 fn json_number(obj: const u8[:], key: const u8[:]) -> f64, bool {
     let value, found = json_member(obj, key);
-    if !found || !starts_number(value) { return 0.0, false; }
+    guard found && starts_number(value) else { return 0.0, false; }
     var r = json::reader(value);
     let v = json::read_number(r);
     return v, r.error.len == 0;
@@ -135,7 +135,7 @@ fn parse_addr_text(text: const u8[:]) -> u32, bool {
 // 戻り値は、値、キーがあったか、32 bit の値として正しいか (キーが無ければ true)。
 fn json_addr_parse(obj: const u8[:], key: const u8[:]) -> u32, bool, bool {
     let value, found = json_member(obj, key);
-    if !found { return 0, false, true; }
+    guard found else { return 0, false, true; }
     if value[0] == '"' {
         var text: u8[>..] = [];
         extract_json_str(obj, key, text);

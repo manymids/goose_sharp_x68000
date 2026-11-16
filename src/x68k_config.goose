@@ -197,7 +197,7 @@ fn render(out: u8[>..]&) {
 fn open(allow_file: bool) {
     g_settings = Settings {};
     set_path(GUI_BIOS, ".\\keropi");
-    if !allow_file { return; }   // ARCL ではファイルを見もしない
+    guard allow_file else { return; }   // ARCL ではファイルを見もしない
     g_settings.enabled = true;
     var contents: u8[>..] = [];
     if read_file(CONFIG_FILE, contents) { parse(contents); }
@@ -205,7 +205,7 @@ fn open(allow_file: bool) {
 
 // ファイルへ書く。古い中身か新しい中身のどちらかが必ず残る。
 fn save() -> bool {
-    if !g_settings.enabled { return true; }
+    guard g_settings.enabled else { return true; }
     var text: u8[>..] = [];
     render(text);
     return write_file_atomic(CONFIG_FILE, text);

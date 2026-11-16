@@ -231,7 +231,7 @@ fn dis_group0(mmu: M68kMMU&, cur: DisCursor&, out: u8[>..]&, op: u16) -> bool {
     if out[out.len - 1] == ' ' { out.pop(); }
     dis_size(out, size);
     out.append(" ");
-    if !dis_ea(mmu, cur, out, 7, 4, size) { return false; }
+    guard dis_ea(mmu, cur, out, 7, 4, size) else { return false; }
     out.push(',');
     return dis_ea(mmu, cur, out, mode, reg, size);
 }
@@ -249,7 +249,7 @@ fn dis_move(mmu: M68kMMU&, cur: DisCursor&, out: u8[>..]&, op: u16) -> bool {
     }
     dis_size(out, size);
     out.push(' ');
-    if !dis_ea(mmu, cur, out, (op >> 3) & 7, op & 7, size) { return false; }
+    guard dis_ea(mmu, cur, out, (op >> 3) & 7, op & 7, size) else { return false; }
     out.push(',');
     if dst_mode == 7 && dst_reg > 1 { return false; }
     return dis_ea(mmu, cur, out, dst_mode, dst_reg, size);
@@ -303,7 +303,7 @@ fn dis_group4(mmu: M68kMMU&, cur: DisCursor&, out: u8[>..]&, op: u16) -> bool {
     if (op & 0xF1C0) == 0x41C0 {
         if mode < 2 || mode == 3 || mode == 4 || (mode == 7 && reg == 4) { return false; }
         out.append("LEA ");
-        if !dis_ea(mmu, cur, out, mode, reg, 4) { return false; }
+        guard dis_ea(mmu, cur, out, mode, reg, 4) else { return false; }
         out.push(',');
         dis_areg(out, (op >> 9) & 7);
         return true;
@@ -311,7 +311,7 @@ fn dis_group4(mmu: M68kMMU&, cur: DisCursor&, out: u8[>..]&, op: u16) -> bool {
     if (op & 0xF1C0) == 0x4180 {
         if mode == 1 { return false; }
         out.append("CHK ");
-        if !dis_ea(mmu, cur, out, mode, reg, 2) { return false; }
+        guard dis_ea(mmu, cur, out, mode, reg, 2) else { return false; }
         out.push(',');
         dis_dreg(out, (op >> 9) & 7);
         return true;
@@ -338,7 +338,7 @@ fn dis_group4(mmu: M68kMMU&, cur: DisCursor&, out: u8[>..]&, op: u16) -> bool {
         out.push(' ');
         let mask = dis_next16(mmu, cur);
         if to_regs {
-            if !dis_ea(mmu, cur, out, mode, reg, size) { return false; }
+            guard dis_ea(mmu, cur, out, mode, reg, size) else { return false; }
             out.push(',');
             dis_reglist(out, mask, false);
             return true;
@@ -355,7 +355,7 @@ fn dis_group4(mmu: M68kMMU&, cur: DisCursor&, out: u8[>..]&, op: u16) -> bool {
     if (op & 0xFFC0) == 0x44C0 || (op & 0xFFC0) == 0x46C0 {
         if mode == 1 { return false; }
         out.append("MOVE ");
-        if !dis_ea(mmu, cur, out, mode, reg, 2) { return false; }
+        guard dis_ea(mmu, cur, out, mode, reg, 2) else { return false; }
         out.append(if (op & 0x0200) != 0 { ",SR" } else { ",CCR" });
         return true;
     }
@@ -451,7 +451,7 @@ fn dis_alu(mmu: M68kMMU&, cur: DisCursor&, out: u8[>..]&, op: u16, name: const u
         return dis_ea(mmu, cur, out, mode, reg, size);
     }
     if mode == 1 && size == 1 { return false; }
-    if !dis_ea(mmu, cur, out, mode, reg, size) { return false; }
+    guard dis_ea(mmu, cur, out, mode, reg, size) else { return false; }
     out.push(',');
     dis_dreg(out, (op >> 9) & 7);
     return true;
@@ -474,7 +474,7 @@ fn dis_addr_op(mmu: M68kMMU&, cur: DisCursor&, out: u8[>..]&, op: u16, name: con
     out.append(name);
     dis_size(out, size);
     out.push(' ');
-    if !dis_ea(mmu, cur, out, (op >> 3) & 7, op & 7, size) { return false; }
+    guard dis_ea(mmu, cur, out, (op >> 3) & 7, op & 7, size) else { return false; }
     out.push(',');
     dis_areg(out, (op >> 9) & 7);
     return true;
@@ -484,7 +484,7 @@ fn dis_mul_div(mmu: M68kMMU&, cur: DisCursor&, out: u8[>..]&, op: u16, name: con
     if ((op >> 3) & 7) == 1 { return false; }
     out.append(name);
     out.append(if (op & 0x0100) != 0 { "S " } else { "U " });
-    if !dis_ea(mmu, cur, out, (op >> 3) & 7, op & 7, 2) { return false; }
+    guard dis_ea(mmu, cur, out, (op >> 3) & 7, op & 7, 2) else { return false; }
     out.push(',');
     dis_dreg(out, (op >> 9) & 7);
     return true;
@@ -541,7 +541,7 @@ fn dis_group_b(mmu: M68kMMU&, cur: DisCursor&, out: u8[>..]&, op: u16) -> bool {
         dis_size(out, size);
         out.push(' ');
         if ((op >> 3) & 7) == 1 && size == 1 { return false; }
-        if !dis_ea(mmu, cur, out, (op >> 3) & 7, op & 7, size) { return false; }
+        guard dis_ea(mmu, cur, out, (op >> 3) & 7, op & 7, size) else { return false; }
         out.push(',');
         dis_dreg(out, (op >> 9) & 7);
         return true;

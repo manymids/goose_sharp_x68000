@@ -37,6 +37,19 @@ fn fault_vector(f: Fault) -> i32 {
     }
 }
 
+// CRTC のレジスタは 16 bit で、crtc_regs はそのバイト列 (R00 が 0, 1)。HI が上位バイト、LO が下位バイト。
+let ::CRTC_R00_LO = 0x01;    // 水平の総数
+let ::CRTC_R01_LO = 0x03;    // 水平同期の終わり
+let ::CRTC_R06_LO = 0x0D;    // 垂直表示の始まり
+let ::CRTC_R20_HI = 0x28;    // メモリモード (グラフィックの色数など)
+let ::CRTC_R20_LO = 0x29;    // 解像度 (bit 4 が 31 kHz、bit 2, 3 が縦の大きさ)
+let ::CRTC_R21_HI = 0x2A;    // テキストの同時アクセス
+let ::CRTC_R21_LO = 0x2B;    // テキストのプレーン選択とラスタコピー、高速クリアの面
+let ::CRTC_R22_HI = 0x2C;    // ラスタコピーの元のライン
+let ::CRTC_R22_LO = 0x2D;    // ラスタコピーの先のライン
+let ::CRTC_R23_HI = 0x2E;    // テキストのビットマスク
+let ::CRTC_R23_LO = 0x2F;
+
 struct M68kMMU {
     reset_overlay: bool = true,
     crtc_regs: u8[64] = [0; 64],
@@ -338,6 +351,11 @@ fn sasi_note(mmu: M68kMMU&) {
     }
 }
 
+// 31 kHz で縦 1024 ライン (インターレース) のモード。描画は 1 ラインおきの面を重ねる。
+fn crtc_1024_lines(mmu: M68kMMU&) -> bool {
+    return (mmu.crtc_regs[CRTC_R20_LO] & 0x1C) == 0x1C;
+}
+
 // この命令で失敗が起きている。
 fn failed(mmu: M68kMMU&) -> bool {
     return mmu.fault != Fault.None;
@@ -365,7 +383,7 @@ fn byte_port(a: u32) -> bool {
 
 // ドットクロックが 25 MHz 以上 (R20 %1xx1x) のとき、スプライトの RAM とレジスタは応答しない。
 fn sprite_absent(mmu: M68kMMU&, a: u32) -> bool {
-    if (mmu.crtc_regs[0x29] & 0x12) != 0x12 { return false; }
+    if (mmu.crtc_regs[CRTC_R20_LO] & 0x12) != 0x12 { return false; }
     return a < 0xEB0800 || (a >= 0xEB0840 && a < 0xEB4000) || a >= 0xEB8000;
 }
 
@@ -515,14 +533,14 @@ fn io_read8(mmu: M68kMMU&, a: u32) -> u8 {
         // チャネル A のコントロールは送信バッファが空 (bit 2) とだけ答える
         PAGE_SCC => { return if in_first_256(a) && (a & 7) == 5 { 4 } else { 0 }; },
         PAGE_PIA => {
-            if !in_first_256(a) { return 0; }
+            guard in_first_256(a) else { return 0; }
             if a == 0xE9A001 { return mmu.joy1; }
             if a == 0xE9A003 { return mmu.joy2; }
             if a == 0xE9A005 { return mmu.pia_c; }
             return 0xFF;
         },
         PAGE_IOC => {
-            if !in_first_256(a) { return 0; }
+            guard in_first_256(a) else { return 0; }
             return if a == 0xE9C001 { mmu.ioc_int_stat } else { 0xFF };
         },
         // 書き込み専用だが、XEiJ と同じく書いた値を読み返せる
@@ -563,7 +581,7 @@ fn read8(mmu: M68kMMU&, addr: u32) -> u8 {
 
     // 0xC00000-0xDFFFFF: GVRAM (プレーンの番地付けで最大 2 MB)
     if a < 0xE00000 {
-        return mmu.gvram_cpu_read((a - 0xC00000) as i32, mmu.crtc_regs[0x28]);
+        return mmu.gvram_cpu_read((a - 0xC00000) as i32, mmu.crtc_regs[CRTC_R20_HI]);
     }
 
     // 0xE00000 - 0xE7FFFF: TVRAM (512KB)
@@ -590,9 +608,9 @@ fn peek8(mmu: M68kMMU&, addr: u32) -> u8 {
 // 0xE80000 以上への 8 bit 書き込み。番地順。応答しない番地は何もしない。
 // テキスト VRAM のラスタコピー (CRTC R22 の転送元 / 転送先、R21 のプレーン選択)。
 fn crtc_raster_copy(mmu: M68kMMU&) {
-    let src_line: u32 = mmu.crtc_regs[0x2C];
-    let dst_line: u32 = mmu.crtc_regs[0x2D];
-    mmu.tvram_raster_copy(src_line, dst_line, mmu.crtc_regs[0x2B]);
+    let src_line: u32 = mmu.crtc_regs[CRTC_R22_HI];
+    let dst_line: u32 = mmu.crtc_regs[CRTC_R22_LO];
+    mmu.tvram_raster_copy(src_line, dst_line, mmu.crtc_regs[CRTC_R21_LO]);
 }
 
 // CRTC への書き込み。0xE80481 は操作ポートで、bit 3 がラスタコピー、bit 1 が高速クリア。
@@ -636,10 +654,10 @@ fn fdc_dma(dmac: X68kDMAC&, fdc: X68kFDC&, mmu: M68kMMU&) -> bool {
             } else if dmac::in_ram(addr, 1) {
                 x68k_ram_write(addr as! i32, b);
             } else if addr >= 0xC00000 && addr < 0xE00000 {
-                mmu.gvram_cpu_write((addr - 0xC00000) as! i32, b, mmu.crtc_regs[0x28]);
+                mmu.gvram_cpu_write((addr - 0xC00000) as! i32, b, mmu.crtc_regs[CRTC_R20_HI]);
             } else if addr >= 0xE00000 && addr < 0xE80000 {
                 let off = (addr - 0xE00000) as! i32;
-                mmu.write_tvram_access(off, b, mmu.crtc_regs[0x2A], mmu.crtc_regs[0x2B], mmu.crtc_regs[0x2E], mmu.crtc_regs[0x2F]);
+                mmu.write_tvram_access(off, b, mmu.crtc_regs[CRTC_R21_HI], mmu.crtc_regs[CRTC_R21_LO], mmu.crtc_regs[CRTC_R23_HI], mmu.crtc_regs[CRTC_R23_LO]);
             }
             if (dmac.ch[0].scr & 8) != 0 {
                 dmac.ch[0].mar--;
@@ -833,14 +851,14 @@ fn write8(mmu: M68kMMU&, addr: u32, val: u8) {
 
     // 0xC00000-0xDFFFFF: GVRAM
     if a < 0xE00000 {
-        mmu.gvram_cpu_write((a - 0xC00000) as i32, val, mmu.crtc_regs[0x28]);
+        mmu.gvram_cpu_write((a - 0xC00000) as i32, val, mmu.crtc_regs[CRTC_R20_HI]);
         return;
     }
 
     // 0xE00000 - 0xE7FFFF: TVRAM (512KB)
     if a < 0xE80000 {
         let off = (a - 0xE00000) as i32;
-        mmu.write_tvram_access(off, val, mmu.crtc_regs[0x2A], mmu.crtc_regs[0x2B], mmu.crtc_regs[0x2E], mmu.crtc_regs[0x2F]);
+        mmu.write_tvram_access(off, val, mmu.crtc_regs[CRTC_R21_HI], mmu.crtc_regs[CRTC_R21_LO], mmu.crtc_regs[CRTC_R23_HI], mmu.crtc_regs[CRTC_R23_LO]);
         return;
     }
 

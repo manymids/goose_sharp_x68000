@@ -64,7 +64,7 @@ fn civil_from_days(z0: i64) -> i64, i64, i64 {
 }
 
 fn seconds(rtc: X68kRTC&) -> i64 {
-    if !rtc.running { return rtc.base; }
+    guard rtc.running else { return rtc.base; }
     return rtc.base + div_euclid(rtc.now - rtc.run_origin, RTC_UNITS_PER_SEC);
 }
 

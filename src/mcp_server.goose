@@ -375,7 +375,7 @@ fn command_line(emu: X68kEmulator&, out: u8[>..]&) {
         if i == full.len { break; }
         i += 1;
     }
-    if !found { return; }
+    guard found else { return; }
     for k in best_len {
         out.push(full[best_start + k]);
     }

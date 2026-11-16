@@ -446,7 +446,7 @@ fn op_reset(op: FmOperator&, chip: FmChip&) {
 }
 
 fn op_prepare(op: FmOperator&, chip: FmChip&) {
-    if !op.param_changed { return; }
+    guard op.param_changed else { return; }
     op.param_changed = false;
     op.pg_diff = (op.dp + (DT_TABLE[(op.detune + op.bn) & 255] as! u32)) * chip.multable[(op.detune2 * 16 + op.multiple) & 63];
     op.pg_diff_lfo = (op.pg_diff >> 11) as i32;
@@ -479,7 +479,7 @@ fn key_on(op: FmOperator&, chip: FmChip&) {
 }
 
 fn key_off(op: FmOperator&, chip: FmChip&) {
-    if !op.keyon { return; }
+    guard op.keyon else { return; }
     op.keyon = false;
     shift_phase(op, chip, PH_RELEASE);
 }

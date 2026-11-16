@@ -212,7 +212,7 @@ fn take_sasi_reset() -> bool {
 
 // セクタの位置。1 = イメージの中、0 = イメージの外、-1 = イメージが無い。
 fn hdd_sector_at(sector: u32) -> i32, i64 {
-    if !hdd_unit_ok() { return -1, 0; }
+    guard hdd_unit_ok() else { return -1, 0; }
     let at: i64 = (sector as i64) << 8;
     if at + HDD_SECTOR_BYTES > g_hdd.len { return 0, 0; }
     return 1, at;
@@ -326,7 +326,7 @@ fn d88_match(img: const u8[:], top: i64, c: i32, h: i32, r: i32, n: i32) -> i64,
 
 // ヘッドを trk へ動かす。イメージにそのトラックが無ければ false。
 fn fd_seek(drive: i32, trk: i32) -> bool {
-    if !fd_loaded(drive) { return false; }
+    guard fd_loaded(drive) else { return false; }
     let img = fd_image(drive);
     let d .= g_disk.fd[drive];
     match d.kind {
@@ -336,12 +336,12 @@ fn fd_seek(drive: i32, trk: i32) -> bool {
             if d.trk != trk { d.cur = 0; }
         },
         Dim => {
-            if !dim_track_ok(img, trk) { return false; }
+            guard dim_track_ok(img, trk) else { return false; }
             if d.trk != trk { d.cur = 0; }
         },
         D88 => {
             let ptr, ok = d88_track_ptr(img, trk);
-            if !ok { return false; }
+            guard ok else { return false; }
             if d.d88_top != ptr {
                 d.d88_top = ptr as u32;
                 d.d88_cur = ptr as u32;
@@ -355,7 +355,7 @@ fn fd_seek(drive: i32, trk: i32) -> bool {
 // ID が (c, h, r, n) のセクタを探し、イメージの中の位置とバイト数を返す。
 // 見つかれば READ ID の位置を次のセクタへ進める。バイト数 0 は見つからなかったことを表す。
 fn fd_locate(drive: i32, trk: i32, c: i32, h: i32, r: i32, n: i32) -> i64, i64 {
-    if !fd_seek(drive, trk) { return 0, 0; }
+    guard fd_seek(drive, trk) else { return 0, 0; }
     let img = fd_image(drive);
     let d .= g_disk.fd[drive];
     match d.kind {
@@ -376,7 +376,7 @@ fn fd_locate(drive: i32, trk: i32, c: i32, h: i32, r: i32, n: i32) -> i64, i64 {
         },
         D88 => {
             let at, size, next, ok = d88_match(img, d.d88_top, c, h, r, n);
-            if !ok { return 0, 0; }
+            guard ok else { return 0, 0; }
             d.d88_cur = next as u32;
             let wanted: i64 = if n > 0 && n < 16 { 128 << n } else { 1024 };
             return at, min(wanted, size);
@@ -405,7 +405,7 @@ fn fd_write(drive: i32, trk: i32, c: i32, h: i32, r: i32, n: i32, src: const u8[
 
 // READ ID が返す、ヘッドの下に次に来るセクタの ID (C, H, R, N)。
 fn fd_current_id(drive: i32) -> bool, u8, u8, u8, u8 {
-    if !fd_loaded(drive) { return false, 0, 0, 0, 0; }
+    guard fd_loaded(drive) else { return false, 0, 0, 0, 0; }
     let img = fd_image(drive);
     let d .= g_disk.fd[drive];
     let cyl = (d.trk >> 1) as! u8;
@@ -418,7 +418,7 @@ fn fd_current_id(drive: i32) -> bool, u8, u8, u8, u8 {
             return true, cyl, head as u8, sector as! u8, 3;
         },
         Dim => {
-            if !dim_track_ok(img, d.trk) { return false, 0, 0, 0, 0; }
+            guard dim_track_ok(img, d.trk) else { return false, 0, 0, 0, 0; }
             let kind = img[0];
             let first = d.trk == 0 && d.cur == 0; // 2HS / 2HDE でも最初のセクタだけは 2HD と同じ ID
             if kind == 1 && !first { return true, cyl, head as u8, (sector + 9) as! u8, 3; }
@@ -454,7 +454,7 @@ fn undo_begin() {
 }
 
 fn note_write(which: i64, at: i64, len: i64) {
-    if !g_undo_on { return; }
+    guard g_undo_on else { return; }
     g_undo.push(UndoEntry { which: which, at: at, len: len });
     g_undo_bytes.append(image(which)[at..at + len]);
 }

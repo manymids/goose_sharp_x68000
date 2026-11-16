@@ -40,8 +40,8 @@ fn sprites_to_line(ppu: X68kPPU&, mmu: M68kMMU&, pri: i32, width: i32, sy: i32) 
     assert(width >= 0 && width <= 1024);
     let crtc_hstart = mmu.crtc_word(CRTC_HSTART) & 1023;
     let crtc_vstart = mmu.crtc_word(CRTC_VSTART) & 1023;
-    let reg0d: i32 = mmu.crtc_regs[0x0D];
-    let reg29: i32 = mmu.crtc_regs[0x29];
+    let reg0d: i32 = mmu.crtc_regs[CRTC_R06_LO];
+    let reg29: i32 = mmu.crtc_regs[CRTC_R20_LO];
     let bgreg_0d: i32 = mmu.bgreg[0x0D];
     let bgreg_0f: i32 = mmu.bgreg[0x0F];
     let bgreg_11: i32 = mmu.bgreg[0x11];
@@ -303,14 +303,19 @@ fn grp4_store(ppu: X68kPPU&, mmu: M68kMMU&, sx: i32, v: u16, high: bool, opaq: b
     }
 }
 
+// 画面の行 sy が VRAM の何ライン目か (スクロールを足す前)。31 kHz の 1024 ラインのモードでは 1 行が 2 ライン進む。
+fn scan_y(mmu: M68kMMU&, sy: i32) -> u32 {
+    let line = sy as u32;
+    return if mmu.crtc_1024_lines() { line * 2 } else { line };
+}
+
 fn grp4_line(ppu: X68kPPU&, mmu: M68kMMU&, page: i32, sy: i32, width: i32, opaq: bool) {
     assert(width >= 0 && width <= 1024);
     let p = page & 3;
     let scroll_x = crtc_pair(mmu, grp_xhi(p)) & grp_mask(p);
     let scroll_y = crtc_pair(mmu, grp_yhi(p)) & grp_mask(p);
     let high = (p & 1) != 0;
-    var y = scroll_y + (sy as u32);
-    if (mmu.crtc_regs[0x29] & 0x1C) == 0x1C { y += sy as u32; }
+    var y = scroll_y + scan_y(mmu, sy);
     y = (y & 0x1FF) << 10;
     let xs = scroll_x & 0x1FF;
     var off = y + xs * 2 + ((p >> 1) as u32);
@@ -336,8 +341,7 @@ fn grp4_sp_line(ppu: X68kPPU&, mmu: M68kMMU&, page: i32, sy: i32, width: i32) {
     let p = page & 3;
     let scroll_x = crtc_pair(mmu, grp_xhi(p)) & grp_mask(p);
     let scroll_y = crtc_pair(mmu, grp_yhi(p)) & grp_mask(p);
-    var y = scroll_y + (sy as u32);
-    if (mmu.crtc_regs[0x29] & 0x1C) == 0x1C { y += sy as u32; }
+    var y = scroll_y + scan_y(mmu, sy);
     y = (y & 0x1FF) << 10;
     let x = scroll_x & 0x1FF;
     let add: u32 = if (p & 2) != 0 { 1 } else { 0 };
@@ -367,8 +371,7 @@ fn grp4_tr_line(ppu: X68kPPU&, mmu: M68kMMU&, page: i32, sy: i32, width: i32, op
     let p = page & 3;
     let scroll_x = crtc_pair(mmu, grp_xhi(p)) & grp_mask(p);
     let scroll_y = crtc_pair(mmu, grp_yhi(p)) & grp_mask(p);
-    var y = scroll_y + (sy as u32);
-    if (mmu.crtc_regs[0x29] & 0x1C) == 0x1C { y += sy as u32; }
+    var y = scroll_y + scan_y(mmu, sy);
     y = (y & 0x1FF) << 10;
     y += ((p >> 1) as u32);
     let high = (p & 1) != 0;
@@ -403,8 +406,7 @@ fn grp4h_line(ppu: X68kPPU&, mmu: M68kMMU&, sy: i32, width: i32, special: bool) 
     assert(width >= 0 && width <= 1024);
     let scroll_x = crtc_pair(mmu, CRTC_GRP_X) & 1023;
     let scroll_y = crtc_pair(mmu, CRTC_GRP_Y) & 1023;
-    var y = scroll_y + (sy as u32);
-    if (mmu.crtc_regs[0x29] & 0x1C) == 0x1C { y += sy as u32; }
+    var y = scroll_y + scan_y(mmu, sy);
     y &= 0x3FF;
     var bits: u32 = 0;
     if (y & 0x200) == 0 {
@@ -449,12 +451,8 @@ fn grp8_line(ppu: X68kPPU&, mmu: M68kMMU&, page: i32, sy: i32, width: i32, opaq:
     let p = page & 1;
     let p0 = p * 2;
     let p1 = p0 + 1;
-    var y = (crtc_pair(mmu, grp_yhi(p0)) & grp_mask(p0)) + (sy as u32);
-    var y0 = (crtc_pair(mmu, grp_yhi(p1)) & grp_mask(p1)) + (sy as u32);
-    if (mmu.crtc_regs[0x29] & 0x1C) == 0x1C {
-        y += (sy as u32);
-        y0 += (sy as u32);
-    }
+    var y = (crtc_pair(mmu, grp_yhi(p0)) & grp_mask(p0)) + scan_y(mmu, sy);
+    var y0 = (crtc_pair(mmu, grp_yhi(p1)) & grp_mask(p1)) + scan_y(mmu, sy);
     y = ((y & 0x1FF) << 10) + (p as u32);
     y0 = ((y0 & 0x1FF) << 10) + (p as u32);
     let x = (crtc_pair(mmu, grp_xhi(p0)) & grp_mask(p0)) & 0x1FF;
@@ -486,12 +484,8 @@ fn grp8_sp_line(ppu: X68kPPU&, mmu: M68kMMU&, page: i32, sy: i32, width: i32) {
     let p = page & 1;
     let p0 = p * 2;
     let p1 = p0 + 1;
-    var y = (crtc_pair(mmu, grp_yhi(p0)) & grp_mask(p0)) + (sy as u32);
-    var y0 = (crtc_pair(mmu, grp_yhi(p1)) & grp_mask(p1)) + (sy as u32);
-    if (mmu.crtc_regs[0x29] & 0x1C) == 0x1C {
-        y += (sy as u32);
-        y0 += (sy as u32);
-    }
+    var y = (crtc_pair(mmu, grp_yhi(p0)) & grp_mask(p0)) + scan_y(mmu, sy);
+    var y0 = (crtc_pair(mmu, grp_yhi(p1)) & grp_mask(p1)) + scan_y(mmu, sy);
     y = (y & 0x1FF) << 10;
     y0 = (y0 & 0x1FF) << 10;
     let x = (crtc_pair(mmu, grp_xhi(p0)) & grp_mask(p0)) & 0x1FF;
@@ -526,8 +520,7 @@ fn pal16_adr(b: i32) -> i32 {
 
 fn grp16_line(ppu: X68kPPU&, mmu: M68kMMU&, sy: i32, width: i32) {
     assert(width >= 0 && width <= 1024);
-    var y = (crtc_pair(mmu, CRTC_GRP_Y) & 1023) + (sy as u32);
-    if (mmu.crtc_regs[0x29] & 0x1C) == 0x1C { y += sy as u32; }
+    var y = (crtc_pair(mmu, CRTC_GRP_Y) & 1023) + scan_y(mmu, sy);
     y = (y & 0x1FF) << 10;
     let x = (crtc_pair(mmu, CRTC_GRP_X) & 1023) & 0x1FF;
     var src = y + x * 2;
@@ -556,8 +549,7 @@ fn grp16_line(ppu: X68kPPU&, mmu: M68kMMU&, sy: i32, width: i32) {
 
 fn grp16_sp_line(ppu: X68kPPU&, mmu: M68kMMU&, sy: i32, width: i32) {
     assert(width >= 0 && width <= 1024);
-    var y = (crtc_pair(mmu, CRTC_GRP_Y) & 1023) + (sy as u32);
-    if (mmu.crtc_regs[0x29] & 0x1C) == 0x1C { y += sy as u32; }
+    var y = (crtc_pair(mmu, CRTC_GRP_Y) & 1023) + scan_y(mmu, sy);
     y = (y & 0x1FF) << 10;
     let x = (crtc_pair(mmu, CRTC_GRP_X) & 1023) & 0x1FF;
     var off = y + x * 2;
@@ -758,10 +750,7 @@ fn text_one_line(ppu: X68kPPU&, mmu: M68kMMU&, width: i32, sy: i32, opaq: bool) 
     assert(width >= 0 && width <= 1024);
     let scroll_y = crtc_pair(mmu, CRTC_TEXT_Y) & 1023;
     let scroll_x = crtc_pair(mmu, CRTC_TEXT_X) & 1023;
-    var vram_y = ((sy as u32) + scroll_y) & 1023;
-    if (mmu.crtc_regs[0x29] & 0x1C) == 0x1C {
-        vram_y = (vram_y + (sy as u32)) & 1023;
-    }
+    let vram_y = (scroll_y + scan_y(mmu, sy)) & 1023;
     let line_base = (vram_y as i32) * 128;
     let col_bytes = width / 8;
     let start_col = ((scroll_x / 8) & 127) as i32;
@@ -928,7 +917,7 @@ fn apply_screen(ppu: X68kPPU&, mmu: M68kMMU&) {
     let vstart = mmu.crtc_word(CRTC_VSTART) & 1023;
     let vend = mmu.crtc_word(CRTC_VEND) & 1023;
     if vend > vstart { dot_y = vend - vstart; }
-    let mode: i32 = mmu.crtc_regs[0x29];
+    let mode: i32 = mmu.crtc_regs[CRTC_R20_LO];
     if (mode & 0x14) == 0x10 {
         dot_y = dot_y / 2;
     } else if (mode & 0x14) == 0x04 {

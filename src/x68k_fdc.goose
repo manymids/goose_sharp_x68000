@@ -21,6 +21,21 @@ let ::FDC_SCAN_EQUAL = 17;
 let ::FDC_SCAN_LOW_OR_EQUAL = 25;
 let ::FDC_SCAN_HIGH_OR_EQUAL = 29;
 
+// ステータスレジスタのビット (uPD72065)
+let ::FDC_ST0_IC: u8 = 0x80;     // 無効なコマンド (割り込みの要因なし)
+let ::FDC_ST0_AT: u8 = 0x40;     // 異常終了
+let ::FDC_ST0_SE: u8 = 0x20;     // シーク終了
+let ::FDC_ST0_EC: u8 = 0x10;     // 装置の異常 (ドライブなし)
+let ::FDC_ST0_NR: u8 = 0x08;     // ノットレディ (ディスクなし)
+let ::FDC_ST1_ND: u8 = 0x04;     // データなし (セクタが見つからない)
+let ::FDC_ST3_T0: u8 = 0x10;     // トラック 0
+let ::FDC_ST3_RY: u8 = 0x20;     // レディ
+let ::FDC_MSR_RQM: u8 = 0x80;    // データレジスタを読み書きできる
+let ::FDC_MSR_DIO: u8 = 0x40;    // 向きが FDC → CPU
+let ::FDC_MSR_CB: u8 = 0x10;     // コマンドを処理中
+let ::FDC_US_HD: u8 = 0x04;      // US バイトの面 (ヘッド) のビット
+let ::FDC_US_MT: u8 = 0x80;      // コマンドバイトのマルチトラック
+
 // コマンドバイトに続くパラメータのバイト数 (px68k CMD_TABLE)。添字はコマンド番号。
 fn cmd_prm_len(cmd: i32) -> i32 {
     let table: u8[32] = [
@@ -127,34 +142,34 @@ fn exec_cmd(fdc: X68kFDC&) {
             let us = (fdc.prm_buf[1] & 7);
             fdc.st0 = us;
             var st3: u8 = us;
-            if fdc.cyl == 0 { st3 |= 0x10; } // トラック 0
-            if disk::fd_loaded(fdc.drv) { st3 |= 0x20; } // レディ
+            if fdc.cyl == 0 { st3 |= FDC_ST3_T0; }
+            if disk::fd_loaded(fdc.drv) { st3 |= FDC_ST3_RY; }
             fdc.rsp_buf[0] = st3;
         },
         FDC_RECALIBRATE => {
             fdc.st0 = (fdc.prm_buf[1] & 7);
             fdc.cyl = 0;
             if !disk::fd_loaded(fdc.drv) {
-                fdc.st0 |= 0x48; // no FD
+                fdc.st0 |= FDC_ST0_AT | FDC_ST0_NR; // ディスクなし
             } else if fdc.drv >= 0 && fdc.drv < 2 {
-                fdc.st0 |= 0x20; // ディスクとドライブあり
+                fdc.st0 |= FDC_ST0_SE; // ディスクとドライブあり
             } else {
-                fdc.st0 |= 0x50; // ドライブなし
+                fdc.st0 |= FDC_ST0_AT | FDC_ST0_EC; // ドライブなし
             }
             fdc.int_pending = true;
         },
         FDC_SENSE_INT => {
             fdc.rsp_buf[0] = fdc.st0;
             fdc.rsp_buf[1] = fdc.cyl as u8;
-            fdc.st0 = 0x80;
+            fdc.st0 = FDC_ST0_IC;
         },
         FDC_SEEK => {
             fdc.st0 = (fdc.prm_buf[1] & 7);
             if disk::fd_loaded(fdc.drv) {
                 fdc.cyl = fdc.prm_buf[2];
-                fdc.st0 |= 0x20;
+                fdc.st0 |= FDC_ST0_SE;
             } else {
-                fdc.st0 |= 0x48;
+                fdc.st0 |= FDC_ST0_AT | FDC_ST0_NR;
             }
             fdc.int_pending = true;
         },
@@ -170,7 +185,7 @@ fn exec_cmd(fdc: X68kFDC&) {
                 fdc.rsp_buf[5] = 1; // セクタ番号は 1 から
                 fdc.rsp_buf[6] = 3; // 1024 バイト (2HD)
             } else {
-                fdc.st0 |= 0x48;
+                fdc.st0 |= FDC_ST0_AT | FDC_ST0_NR;
                 fdc.rsp_buf[0] = fdc.st0;
                 fdc.rsp_buf[1] = fdc.st1;
                 fdc.rsp_buf[2] = fdc.st2;
@@ -188,8 +203,8 @@ fn exec_cmd(fdc: X68kFDC&) {
                 let trk = fdc.cyl * 2 + hd;
                 let n: i32 = fdc.prm_buf[5];
                 if !disk::fd_seek(fdc.drv, trk) {
-                    fdc.st0 |= 0x40;
-                    fdc.st1 |= 0x04;
+                    fdc.st0 |= FDC_ST0_AT;
+                    fdc.st1 |= FDC_ST1_ND;
                     fdc.ephase_end();
                 } else {
                     let sec_size = if n > 0 { (128 << n) as i32 } else { 1024 };
@@ -197,7 +212,7 @@ fn exec_cmd(fdc: X68kFDC&) {
                     fdc.write_pos = 0;
                 }
             } else {
-                fdc.st0 |= 0x48;
+                fdc.st0 |= FDC_ST0_AT | FDC_ST0_NR;
                 fdc.ephase_end();
             }
         },
@@ -217,18 +232,18 @@ fn exec_cmd(fdc: X68kFDC&) {
                     fdc.phase = FdcPhase.Exec { len: sec_size, writing: false };
                     fdc.read_pos = 0;
                 } else {
-                    fdc.st0 |= 0x40; // 異常終了
-                    fdc.st1 |= 0x04; // データなし
+                    fdc.st0 |= FDC_ST0_AT;
+                    fdc.st1 |= FDC_ST1_ND;
                     fdc.ephase_end();
                 }
             } else {
-                fdc.st0 |= 0x48;
+                fdc.st0 |= FDC_ST0_AT | FDC_ST0_NR;
                 fdc.ephase_end();
             }
         },
         _ => {
             // 未サポートコマンド
-            fdc.st0 |= 0x80; // 無効なコマンド
+            fdc.st0 |= FDC_ST0_IC;
         },
     }
 }
@@ -239,11 +254,11 @@ fn next_track(fdc: X68kFDC&) {
     let eot = fdc.prm_buf[6];
     if r == eot {
         let us = fdc.prm_buf[1];
-        let mt = (us & 0x80) != 0;
-        let hd = (us & 0x04) != 0;
+        let mt = (us & FDC_US_MT) != 0;
+        let hd = (us & FDC_US_HD) != 0;
         let h = fdc.prm_buf[3];
         if mt && !hd && h == 0 {
-            fdc.prm_buf[1] = (us | 4);
+            fdc.prm_buf[1] = us | FDC_US_HD;
             fdc.prm_buf[3] = 1;
             fdc.prm_buf[4] = 1;
         } else {
@@ -259,19 +274,20 @@ fn next_track(fdc: X68kFDC&) {
 // FDC レジスタ読み込み (0x00E94001 .. 0x00E94007)
 fn read(fdc: X68kFDC&, reg: i32) -> u8 {
     if reg == 1 { // 0x00E94001: メインステータスレジスタ (MSR)
-        // bit7 RQM (常に受け付け可)、bit6 DIO (1 = FDC → CPU)、bit4 CB (コマンド処理中)
+        // RQM は常に立てる (いつでも受け付ける)
+        let to_cpu = FDC_MSR_RQM | FDC_MSR_DIO | FDC_MSR_CB;
         match fdc.phase {
-            Idle => { return 0x80; },
-            Command c => { return 0x90; },
+            Idle => { return FDC_MSR_RQM; },
+            Command c => { return FDC_MSR_RQM | FDC_MSR_CB; },
             Exec e => {
                 // 結果のあるコマンドだけが実行相に入る。読み出し中は DIO も立つ。
-                if cmd_rsp_len(fdc.cmd) == 0 { return 0x80; }
-                return if e.writing { 0x90 } else { 0xD0 };
+                if cmd_rsp_len(fdc.cmd) == 0 { return FDC_MSR_RQM; }
+                return if e.writing { FDC_MSR_RQM | FDC_MSR_CB } else { to_cpu };
             },
             Result r => {
                 // SenseIntStatus の最後の 1 バイトでは DIO と CB を落とす (px68k)。
-                if r.left == 1 && fdc.cmd == FDC_SENSE_INT { return 0x80; }
-                return 0xD0;
+                if r.left == 1 && fdc.cmd == FDC_SENSE_INT { return FDC_MSR_RQM; }
+                return to_cpu;
             },
         }
     } else if reg == 3 { // 0x00E94003: データレジスタ (FIFO)
@@ -329,8 +345,8 @@ fn write_buffer(fdc: X68kFDC&, last: bool) {
         let r: i32 = fdc.prm_buf[4];
         let n: i32 = fdc.prm_buf[5];
         if !disk::fd_write(fdc.drv, trk, c, h, r, n, fdc.data_buf[..]) {
-            fdc.st0 |= 0x40;
-            fdc.st1 |= 0x04;
+            fdc.st0 |= FDC_ST0_AT;
+            fdc.st1 |= FDC_ST1_ND;
             fdc.ephase_end();
         } else if last {
             fdc.ephase_end();

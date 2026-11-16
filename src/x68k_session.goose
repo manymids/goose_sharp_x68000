@@ -21,7 +21,7 @@ fn run_frame(emu: X68kEmulator&) {
     let s .= emu.session;
     if !s.rewind_on || s.rewind_interval < 1 || emu.total_frames <= 0 { return; }
     if (emu.total_frames % (s.rewind_interval)) != 0 { return; }
-    if !state::capture(emu, STATE_REWIND, s.rewind_next) { return; }
+    guard state::capture(emu, STATE_REWIND, s.rewind_next) else { return; }
     s.rewind_next = (s.rewind_next + 1) % REWIND_SLOTS;
     if s.rewind_count < REWIND_SLOTS { s.rewind_count += 1; }
 }
@@ -83,7 +83,7 @@ fn speed(emu: X68kEmulator&, now: u64) -> i32, i32, bool {
 fn reset(emu: X68kEmulator&) { emu.reset(); }
 
 fn save(emu: X68kEmulator&, slot: i32) -> bool {
-    if !state::capture(emu, STATE_SLOT, slot) { return false; }
+    guard state::capture(emu, STATE_SLOT, slot) else { return false; }
     emu.is_paused = true;
     return true;
 }
@@ -113,7 +113,7 @@ fn snapshot_find(emu: X68kEmulator&, name: const u8[:]) -> i32 {
 }
 
 fn snapshot_name(emu: X68kEmulator&, idx: i32, out: u8[>..]&) {
-    if !state::saved(STATE_SNAPSHOT, idx) { return; }
+    guard state::saved(STATE_SNAPSHOT, idx) else { return; }
     out.append(emu.session.snapshot_names[idx]);
 }
 
@@ -129,7 +129,7 @@ fn snapshot_create(emu: X68kEmulator&, name: const u8[:]) -> i32 {
         }
     }
     if idx < 0 { return SNAPSHOT_FULL; }
-    if !state::capture(emu, STATE_SNAPSHOT, idx) { return SNAPSHOT_CAPTURE_FAILED; }
+    guard state::capture(emu, STATE_SNAPSHOT, idx) else { return SNAPSHOT_CAPTURE_FAILED; }
     // 取り込みに成功してから情報を書き込む (上書きに失敗した場合も含む)。
     emu.session.snapshot_names[idx] = name;
     emu.is_paused = true;
@@ -169,7 +169,7 @@ fn rewind_restore(emu: X68kEmulator&, steps: i32) -> bool {
     if steps < 1 || steps > s.rewind_count { return false; }
     var idx = s.rewind_next - steps;
     while idx < 0 { idx += REWIND_SLOTS; }
-    if !state::restore(emu, STATE_REWIND, idx) { return false; }
+    guard state::restore(emu, STATE_REWIND, idx) else { return false; }
     s.rewind_count -= steps;
     s.rewind_next = idx;
     return true;
@@ -200,7 +200,7 @@ fn key_tap(emu: X68kEmulator&, code: i32, frames: i32) -> bool {
 
 fn joy_tap(emu: X68kEmulator&, port: i32, mask: u8, frames: i32) -> bool {
     if frames < 1 || frames > 3600 { return false; }
-    if !input::joy(emu, port, mask, true) { return false; }
+    guard input::joy(emu, port, mask, true) else { return false; }
     for _ in frames { run_frame(emu); }
     input::joy(emu, port, mask, false);
     return true;

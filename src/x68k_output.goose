@@ -158,7 +158,7 @@ fn capture_status() -> Capture {
 
 // 1 フレームぶんの音 (左右交互) を録音に足す
 fn capture_push(samples: const i16[:]) {
-    if !g_capture.active { return; }
+    guard g_capture.active else { return; }
     let room = CAPTURE_FRAMES - g_capture.frames;
     let frames = samples.len / 2;
     let n = clamp(frames, 0, room);

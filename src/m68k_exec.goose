@@ -473,10 +473,10 @@ fn raise_illegal(cpu: M68kCPU&, mmu: M68kMMU&) -> i32 {
 // N は結果の最上位ビット、V は 10 進補正を足したときのオーバーフロー。
 fn bcd_flags(cpu: M68kCPU&, t: i32, z: i32, carry: bool) {
     if carry { cpu.sr |= SR_C | SR_X; } else { cpu.sr &= ~(SR_C | SR_X); }
-    if z != 0 { cpu.sr &= ~(SR_Z as! u16); }
-    if (z & 0x80) != 0 { cpu.sr |= SR_N; } else { cpu.sr &= ~(SR_N as! u16); }
+    if z != 0 { cpu.sr &= ~SR_Z; }
+    if (z & 0x80) != 0 { cpu.sr |= SR_N; } else { cpu.sr &= ~SR_N; }
     let a = z - t;
-    if (((t ^ z) & (a ^ z)) & 0x80) != 0 { cpu.sr |= SR_V; } else { cpu.sr &= ~(SR_V as! u16); }
+    if (((t ^ z) & (a ^ z)) & 0x80) != 0 { cpu.sr |= SR_V; } else { cpu.sr &= ~SR_V; }
 }
 
 fn bcd_add(cpu: M68kCPU&, dst: u32, src: u32) -> u32 {
@@ -551,7 +551,7 @@ fn exec_bit_op(cpu: M68kCPU&, mmu: M68kMMU&, op: u16, bit: u32, is_static: bool)
     if mode == 0 { // データレジスタ: 32 ビット
         let b = bit & 31;
         let mask = (1 as! u32) << b;
-        if (cpu.d[reg] & mask) == 0 { cpu.sr |= SR_Z; } else { cpu.sr &= ~(SR_Z as! u16); }
+        if (cpu.d[reg] & mask) == 0 { cpu.sr |= SR_Z; } else { cpu.sr &= ~SR_Z; }
         if op_type == 1 { cpu.d[reg] ^= mask; }
         else if op_type == 2 { cpu.d[reg] &= ~mask; }
         else if op_type == 3 { cpu.d[reg] |= mask; }
@@ -563,12 +563,12 @@ fn exec_bit_op(cpu: M68kCPU&, mmu: M68kMMU&, op: u16, bit: u32, is_static: bool)
     if op_type == 0 {
         // BTST は読むだけなので、即値や PC 相対も指定できる
         let cur = ea_read(cpu, mmu, mode, reg, 1) as! u8;
-        if (cur & mask) == 0 { cpu.sr |= SR_Z; } else { cpu.sr &= ~(SR_Z as! u16); }
+        if (cur & mask) == 0 { cpu.sr |= SR_Z; } else { cpu.sr &= ~SR_Z; }
         return bit_cycles(op_type, is_static, mode, reg, 0);
     }
     let addr = ea_calc_addr(cpu, mmu, mode, reg, 1);
     let cur = mmu.read8(addr);
-    if (cur & mask) == 0 { cpu.sr |= SR_Z; } else { cpu.sr &= ~(SR_Z as! u16); }
+    if (cur & mask) == 0 { cpu.sr |= SR_Z; } else { cpu.sr &= ~SR_Z; }
     if op_type == 1 { mmu.write8(addr, cur ^ mask); }
     else if op_type == 2 { mmu.write8(addr, cur & ~mask); }
     else { mmu.write8(addr, cur | mask); }
@@ -586,7 +586,7 @@ fn exec_immediate(cpu: M68kCPU&, mmu: M68kMMU&, op: u16) -> i32 {
         let size: i32 = if sz_code == 0 { 1 } else if sz_code == 1 { 2 } else { 4 };
         // ORI/ANDI/EORI to SR はユーザーモードで Vector 8。即値は読まない（C68K と同じ）。
         if size == 2 && mode == 7 && reg == 4 && (imm_op == 0 || imm_op == 1 || imm_op == 5) {
-            if !cpu.is_supervisor() { return privilege_violation(cpu, mmu); }
+            guard cpu.is_supervisor() else { return privilege_violation(cpu, mmu); }
         }
         let imm_val = if size == 1 { (fetch16(cpu, mmu) & 0xFF) as u32 }
                       else if size == 2 { fetch16(cpu, mmu) as! u32 }
@@ -676,7 +676,7 @@ fn trigger_exception(cpu: M68kCPU&, mmu: M68kMMU&, vector: i32, return_pc: u32) 
     push32(cpu, mmu, return_pc);
     push16(cpu, mmu, cpu.sr);
     cpu.sr |= SR_S;
-    cpu.sr &= ~(SR_T as! u16);
+    cpu.sr &= ~SR_T;
     let vec_addr = ((vector & 0xFF) * 4) as! u32;
     cpu.pc = mmu.read32(vec_addr);
 }
@@ -701,18 +701,18 @@ fn op4_flow(cpu: M68kCPU&, mmu: M68kMMU&, op: u16) -> i32, bool {
         0x4E71 => { return 4, true; },                                    // NOP
         0x4E70 => {                                                       // RESET
             // px68k の Reset_CallBack は C68k_Reset_Dummy で、周辺は変えない。
-            if !cpu.is_supervisor() { return privilege_violation(cpu, mmu), true; }
+            guard cpu.is_supervisor() else { return privilege_violation(cpu, mmu), true; }
             return 132, true;
         },
         0x4E72 => {                                                       // STOP #imm
-            if !cpu.is_supervisor() { return privilege_violation(cpu, mmu), true; }
+            guard cpu.is_supervisor() else { return privilege_violation(cpu, mmu), true; }
             let imm = fetch16(cpu, mmu);
             cpu.set_sr(imm);
             cpu.halted = true;
             return 4, true;
         },
         0x4E73 => {                                                       // RTE
-            if !cpu.is_supervisor() { return privilege_violation(cpu, mmu), true; }
+            guard cpu.is_supervisor() else { return privilege_violation(cpu, mmu), true; }
             let new_sr = pop16(cpu, mmu);
             let new_pc = pop32(cpu, mmu);
             cpu.set_sr(new_sr);
@@ -799,7 +799,7 @@ fn op4_stack(cpu: M68kCPU&, mmu: M68kMMU&, op: u16) -> i32, bool {
 
     // MOVE USP (0100 1110 0110 drrr)
     if (op & 0xFFF0) == 0x4E60 {
-        if !cpu.is_supervisor() { return privilege_violation(cpu, mmu), true; }
+        guard cpu.is_supervisor() else { return privilege_violation(cpu, mmu), true; }
         let areg: i32 = op & 0x07;
         let to_usp = (op & 0x08) == 0;
         if to_usp { cpu.usp = cpu.a[areg]; } else { cpu.a[areg] = cpu.usp; }
@@ -910,7 +910,7 @@ fn op4_status(cpu: M68kCPU&, mmu: M68kMMU&, op: u16) -> i32, bool {
 
     // MOVE to SR (0100 0110 11 eee eee)
     if (op & 0xFFC0) == 0x46C0 {
-        if !cpu.is_supervisor() { return privilege_violation(cpu, mmu), true; }
+        guard cpu.is_supervisor() else { return privilege_violation(cpu, mmu), true; }
         let val = ea_read(cpu, mmu, mode, reg, 2) as! u16;
         cpu.set_sr(val);
         return 12 + ea_bw_extra(mode, reg), true;
@@ -993,7 +993,7 @@ fn op4_unary(cpu: M68kCPU&, mmu: M68kMMU&, op: u16) -> i32, bool {
 
     // NBCD (0100 1000 00 eee eee): 0 - <ea> - X。フラグは SBCD と同じ。
     if (op & 0xFFC0) == 0x4800 {
-        if !ea_is_alterable(mode, reg) { return raise_illegal(cpu, mmu), true; }
+        guard ea_is_alterable(mode, reg) else { return raise_illegal(cpu, mmu), true; }
         let ea_res = ea_read_for_rmw(cpu, mmu, mode, reg, 1);
         let res = bcd_sub(cpu, 0, ea_res.val);
         ea_write_for_rmw(cpu, mmu, mode, reg, 1, ea_res.addr, res);
@@ -1003,7 +1003,7 @@ fn op4_unary(cpu: M68kCPU&, mmu: M68kMMU&, op: u16) -> i32, bool {
 
     // CHK.W (0100 rrr1 10 eee eee): 符号付きの範囲検査。N/Z は Dn から、V/C は 上限 - Dn から (XEiJ)。
     if (op & 0xF1C0) == 0x4180 {
-        if !ea_is_data(mode, reg) { return raise_illegal(cpu, mmu), true; }
+        guard ea_is_data(mode, reg) else { return raise_illegal(cpu, mmu), true; }
         let dn: i32 = (op >> 9) & 0x07;
         let x: i32 = ea_read(cpu, mmu, mode, reg, 2) as! i16;
         let y: i32 = cpu.d[dn] as! i16;
@@ -1023,11 +1023,11 @@ fn op4_unary(cpu: M68kCPU&, mmu: M68kMMU&, op: u16) -> i32, bool {
 
     // TAS (0100 1010 11 eee eee)。4AFC など無効 EA は Illegal。
     if (op & 0xFFC0) == 0x4AC0 {
-        if !ea_is_alterable(mode, reg) { return raise_illegal(cpu, mmu), true; }
+        guard ea_is_alterable(mode, reg) else { return raise_illegal(cpu, mmu), true; }
         let ea_res = ea_read_for_rmw(cpu, mmu, mode, reg, 1);
         let cur = ea_res.val & 0xFF;
-        if (cur & 0x80) != 0 { cpu.sr |= SR_N; } else { cpu.sr &= ~(SR_N as! u16); }
-        if cur == 0 { cpu.sr |= SR_Z; } else { cpu.sr &= ~(SR_Z as! u16); }
+        if (cur & 0x80) != 0 { cpu.sr |= SR_N; } else { cpu.sr &= ~SR_N; }
+        if cur == 0 { cpu.sr |= SR_Z; } else { cpu.sr &= ~SR_Z; }
         cpu.sr &= ~(SR_V | SR_C);
         ea_write_for_rmw(cpu, mmu, mode, reg, 1, ea_res.addr, cur | 0x80);
         if mode == 0 { return 4, true; }
@@ -1400,7 +1400,7 @@ fn shift_flags(cpu: M68kCPU&, size: i32, result: u32, kind: i32, carry: bool, si
     let cx: u16 = if kind == SHIFT_RO { SR_C } else { SR_C | SR_X };
     if carry { cpu.sr |= cx; } else { cpu.sr &= ~cx; }
     cpu.set_nz_only(size, result);
-    if sign_changed { cpu.sr |= SR_V; } else { cpu.sr &= ~(SR_V as! u16); }
+    if sign_changed { cpu.sr |= SR_V; } else { cpu.sr &= ~SR_V; }
 }
 
 // メモリのシフト: ワード、1 ビットだけ。
@@ -1431,8 +1431,8 @@ fn shift_register(cpu: M68kCPU&, op: u16) -> i32 {
 
     if count == 0 {
         // 値は変わらない。C は ROX のとき X を写し、それ以外は落ちる。
-        if kind == SHIFT_ROX && cpu.flag_x() { cpu.sr |= SR_C; } else { cpu.sr &= ~(SR_C as! u16); }
-        cpu.sr &= ~(SR_V as! u16);
+        if kind == SHIFT_ROX && cpu.flag_x() { cpu.sr |= SR_C; } else { cpu.sr &= ~SR_C; }
+        cpu.sr &= ~SR_V;
         cpu.set_nz_only(size, cpu.d[dreg]);
         return shift_reg_cycles(size, 0);
     }
@@ -1679,7 +1679,7 @@ fn group0(cpu: M68kCPU&, mmu: M68kMMU&, d: u32[8], sr: u16) {
         return;
     }
     cpu.sr |= SR_S;
-    cpu.sr &= ~(SR_T as! u16);
+    cpu.sr &= ~SR_T;
     cpu.pc = mmu.read32(((vector * 4) as! u32));
 }
 
@@ -1724,7 +1724,7 @@ fn interrupt(cpu: M68kCPU&, mmu: M68kMMU&, level: i32, vector: i32) {
 
     // スーパーバイザフラグをセット、トレースをオフ
     cpu.sr |= SR_S;
-    cpu.sr &= ~(SR_T as! u16);
+    cpu.sr &= ~SR_T;
 
     // 割込マスクを更新 (レベルを設定)
     cpu.sr = (cpu.sr & ~0x0700) | (((level & 7) as u16) << 8);

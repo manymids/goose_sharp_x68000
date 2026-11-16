@@ -194,7 +194,7 @@ fn write(dmac: X68kDMAC&, addr: u32, data: u8) {
 
 // 割り込み要求中の ch0–2 のうち、前回受け付けた次から巡回して最初のもの。なければ -1。
 fn irq_channel(dmac: X68kDMAC&) -> i32 {
-    if !dmac.int_pending { return -1; }
+    guard dmac.int_pending else { return -1; }
     let start = if dmac.last_int < 0 || dmac.last_int > 2 { 0 } else { dmac.last_int };
     for n: i32 in 3 {
         let i = (start + n) % 3;
