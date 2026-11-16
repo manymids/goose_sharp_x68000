@@ -30,7 +30,8 @@ let ::STATE_REWIND = state::Bank.Rewind;
 // v4: ディスクの状態とイメージの置き場所を Goose 側へ移した。v3: FDC の相が enum。
 // 版の違う記録は読めない。
 // v9: バスの失敗の種類 (MMU の fault) を enum にした。
-let ::STATE_VERSION = 9;
+// v10: MMU に SCC (マウス) を足した。
+let ::STATE_VERSION = 10;
 
 // blob の内訳。この順に並ぶ。
 struct BlobLayout {

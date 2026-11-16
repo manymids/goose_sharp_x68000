@@ -29,6 +29,7 @@ extern fn win32_ui_get_command() -> i32;
 extern fn c_ui_warning(text: const u8[:]);
 extern fn win32_ui_get_key_scancode() -> i32;
 extern fn c_host_joy_byte() -> i32;
+extern fn c_host_mouse(dx: i32&, dy: i32&, buttons: i32&) -> bool;
 extern fn c_set_cpu_mhz(mhz: i32) -> i32;
 extern fn c_get_cpu_mhz() -> i32;
 extern fn c_get_scale() -> i32;

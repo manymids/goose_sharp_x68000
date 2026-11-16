@@ -49,6 +49,7 @@ int win32_ui_get_key_scancode(void);
 void c_host_key_joy(int vk, int down);
 void c_host_joy_reset(void);
 int c_host_joy_byte(void);
+bool c_host_mouse(int32_t *dx, int32_t *dy, int32_t *buttons);
 int c_set_cpu_mhz(int mhz);
 int c_get_cpu_mhz(void);
 int c_cpu_mhz_ok(int mhz);

@@ -133,7 +133,7 @@ fn step_core(emu: X68kEmulator&) -> i32 {
 // 下の take_interrupt の個々の判定を省ける。
 fn interrupt_waiting(emu: X68kEmulator&) -> bool {
     return emu.mmu.mfp.has_pending_int() || emu.mmu.dmac.int_pending || emu.mmu.dmac.adpcm_vec >= 0
-        || (emu.mmu.ioc_int_stat & 0x80) != 0 || emu.mmu.sasi_irq || g_disk.media_pending;
+        || (emu.mmu.ioc_int_stat & 0x80) != 0 || emu.mmu.sasi_irq || g_disk.media_pending || emu.mmu.scc.irq;
 }
 
 // 要求の出ている割り込みを、CPU のマスクが許せば受け付ける。
@@ -146,6 +146,12 @@ fn take_interrupt(emu: X68kEmulator&) {
                 m68k::interrupt(emu.cpu, emu.mmu, 6, vect);
             }
         }
+    }
+
+    // SCC (マウス) 割り込み (Level 5)
+    if emu.mmu.scc.irq && emu.cpu.int_mask() < SCC_IRQ_LEVEL {
+        let vect = emu.mmu.scc.ack();
+        if vect >= 0 { m68k::interrupt(emu.cpu, emu.mmu, SCC_IRQ_LEVEL, vect); }
     }
 
     // DMAC 割り込み (Level 3)。ch0–2 が先で、なければ ch3 (ADPCM)。
@@ -286,6 +292,7 @@ fn line_end(emu: X68kEmulator&, vline: i32, vline_total: i32, clk_line: i32) {
 
     if vline >= crtc_vstart && vline < crtc_vend { draw_scanline(emu, vline, crtc_vstart); }
     emu.mmu.mfp.key_scanline(vline_total);
+    emu.mmu.scc.scanline(vline_total);
 }
 
 // CRTC の高速クリア。指示のあったフレームの終わりに GVRAM を消し、数フレーム後にビットを落とす。

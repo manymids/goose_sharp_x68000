@@ -9,6 +9,7 @@ import .x68k_ram;
 import .x68k_rom;
 import .x68k_rtc;
 import .x68k_adpcm;
+import .x68k_scc;
 import .x68k_opm;
 namespace mmu;
 
@@ -99,6 +100,7 @@ struct M68kMMU {
     inst_pc: u32 = 0,
     // 電池で保持される: mmu::init は機械のリセットをまたいで動かし続ける。
     rtc: X68kRTC = X68kRTC {},
+    scc: X68kSCC = X68kSCC {},
 }
 type ::M68kMMU = mmu::M68kMMU;
 
@@ -531,7 +533,7 @@ fn io_read8(mmu: M68kMMU&, a: u32) -> u8 {
             return v;
         },
         // チャネル A のコントロールは送信バッファが空 (bit 2) とだけ答える
-        PAGE_SCC => { return if in_first_256(a) && (a & 7) == 5 { 4 } else { 0 }; },
+        PAGE_SCC => { return if (a & 0x1FF8) == 0 { mmu.scc.read(a) } else { 0 }; },
         PAGE_PIA => {
             guard in_first_256(a) else { return 0; }
             if a == 0xE9A001 { return mmu.joy1; }
@@ -810,7 +812,7 @@ fn io_write8(mmu: M68kMMU&, a: u32, val: u8) {
             mmu.sasi.write(a, val);
             mmu.sasi_note();
         },
-        PAGE_SCC => {},   // マウスと RS-232C は未実装。書き込みは捨てる
+        PAGE_SCC => { if (a & 0x1FF8) == 0 { mmu.scc.write(a, val); } },   // マウスだけ (RS-232C は未実装)
         PAGE_PIA => { if in_first_256(a) { mmu.write_pia(a, val); } },
         PAGE_IOC => {
             if a == 0xE9C001 {

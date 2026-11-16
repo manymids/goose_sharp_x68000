@@ -126,6 +126,17 @@ fn mount_saved_media() {
     mount_saved(GUI_HDD, hdd);
 }
 
+// ウィンドウで捕まえているマウスの動きとボタンを、機械のマウス (SCC) へ渡す。
+fn pump_host_mouse(emu: X68kEmulator&) {
+    var dx: i32 = 0;
+    var dy: i32 = 0;
+    var buttons: i32 = 0;
+    let captured = c_host_mouse(dx, dy, buttons);
+    if !captured { emu.mmu.scc.set_buttons(false, false); return; }
+    emu.mmu.scc.move(dx, dy);
+    emu.mmu.scc.set_buttons((buttons & 1) != 0, (buttons & 2) != 0);
+}
+
 // State メニュー: 11〜13 はスロット 1〜3 へ保存、21〜23 はスロット 1〜3 から読み込み。
 // スロットは作業ディレクトリのファイル state1.x68s〜state3.x68s で、終了しても残る。
 let UI_COMMAND_SAVE_SLOT = 11;
@@ -228,6 +239,7 @@ fn run_gui(emu: X68kEmulator&, screen_w: i32, screen_h: i32, scale: i32, max_fra
 
         pump_host_keys(emu);
         emu.mmu.joy1 = c_host_joy_byte() as u8;
+        pump_host_mouse(emu);
         config::sync_from_host();
 
         if reset_requested(emu, true) {

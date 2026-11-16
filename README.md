@@ -85,7 +85,9 @@ Set-Location C:\work\goose_sharp_x68000
 
 画面の実際の解像度は、ゲスト側のCRTC設定により起動後も変化します。Initial Screen は初期表示の設定であり、ゲストの映像モードを固定する機能ではありません。
 
-キーボード入力に加え、方向キーと `Z` / `X`、Space / Enter を1ポート目のジョイパッド入力に対応させています。マウス/SCCは未対応です。
+キーボード入力に加え、方向キーと `Z` / `X`、Space / Enter を1ポート目のジョイパッド入力に対応させています。
+
+マウスは、ウィンドウの中を中クリックするか、メニューの Mouse → Capture Mouse で捕まえると、X68000 のマウス（SCC）になります。捕まえている間はカーソルが消え、左右のボタンも機械に届きます。もう一度中クリックするか、ウィンドウからフォーカスが外れると放します。速さは Mouse メニューで Slow（1/4）、Normal（1/2、初期値）、Fast（1/1）から選べます。SCC はマウスだけで、RS-232C は未対応です。
 
 ## ステートの保存（State メニュー）
 
@@ -165,7 +167,7 @@ stdio対応のMCPクライアントから、次のように起動します。初
 | 分類 | 主なツール |
 |---|---|
 | 実行制御 | `arcl_status`、`arcl_run`、`arcl_pause`、`arcl_resume`、`arcl_reset` |
-| 入力・画面（L0） | `arcl_key`、`arcl_type`、`arcl_joypad`、`arcl_clear_input`、`arcl_input_state`、`arcl_input_macro`、`arcl_screenshot` |
+| 入力・画面（L0） | `arcl_key`、`arcl_type`、`arcl_joypad`、`arcl_mouse`、`arcl_clear_input`、`arcl_input_state`、`arcl_input_macro`、`arcl_screenshot` |
 | コンソール（L1） | `arcl_console_read`、`arcl_command`、`arcl_mount` |
 | デバッグ（L2） | `arcl_registers`、`arcl_read_mem`、`arcl_write_mem`、`arcl_step`、`arcl_breakpoint`、`arcl_disasm`、`arcl_run_ahead` |
 | 機器観測（L3） | `arcl_video`、`arcl_irq`、`arcl_dma`、`arcl_vram`、`x68k_opm` |
@@ -325,7 +327,7 @@ goose build .\src\test_core.goose -o .\test_core.exe
 - パスはUTF-8で扱うので日本語を含んでいても開けますが、長さにはWin32の `MAX_PATH`（260文字）の制約があります。
 - `arcl_screenshot` は、パスが `.png` で終わっていればPNG、それ以外はBMPで書きます。拡大・切り出し・インライン返却は未対応です。
 - `arcl_console_read` が読めるのは半角文字だけで、漢字やかなは `?` になります。
-- 単一の登録中機械を前提としています。複数インスタンスのコア共有、マウス、すべてのVRAMモード・ソフトの完全互換は未対応または未保証です。
+- 単一の登録中機械を前提としています。複数インスタンスのコア共有、RS-232C、すべてのVRAMモード・ソフトの完全互換は未対応または未保証です。
 - CPUのトレース（SRのTビット）は、1命令ごとにトレース例外へ入ります。TRAPなど命令自身が例外に入った場合は、実機と違ってトレース例外を重ねません。
 
 不具合報告には、ビルド種別、Windows環境、起動引数、イメージ形式、再現操作、ログや画面を添えてください。BIOSやゲーム本体を添付する必要はありません。

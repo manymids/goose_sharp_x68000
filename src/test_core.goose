@@ -22,6 +22,7 @@ import .x68k_opm;
 import .x68k_output;
 import .x68k_config;
 import .x68k_ahead;
+import .x68k_scc;
 
 var g_checks = 0;
 var g_failures = 0;
@@ -1140,6 +1141,35 @@ fn test_config() {
 }
 
 // 先読みのフレーム数の自動調整 (x68k_ahead)。1 フレームは 18000 us とする。
+// マウスの SCC: RTS を上げると 3 バイト (ボタン、X、Y) が来て、受信割り込みのベクタが出る。
+fn test_scc_mouse() {
+    var scc = X68kSCC {};
+    // ポート B: WR3 受信可、WR1 受信ごとに割り込み。ポート A から WR2 ベクタ $50、WR9 MIE
+    scc.write(0xE98001, 3); scc.write(0xE98001, 1);
+    scc.write(0xE98001, 1); scc.write(0xE98001, 0x10);
+    scc.write(0xE98005, 2); scc.write(0xE98005, 0x50);
+    scc.write(0xE98005, 9); scc.write(0xE98005, 0x08);
+    scc.move(5, -3);
+    scc.set_buttons(true, false);
+    check("no data before RTS", (scc.read(0xE98001) & 1) == 0);
+    scc.write(0xE98001, 5); scc.write(0xE98001, 0x02);
+    check("data after RTS rises", (scc.read(0xE98001) & 1) != 0);
+    scc.int_check();
+    check("receive interrupt requested", scc.irq);
+    check("vector is WR2", scc.ack() == 0x50 && !scc.irq);
+    check("first byte is the buttons", scc.read(0xE98003) == 1);
+    check("then X", scc.read(0xE98003) == 5);
+    check("then Y (two's complement)", scc.read(0xE98003) == 0xFD);
+    check("all bytes read", (scc.read(0xE98001) & 1) == 0);
+    // 大きく動いたら切り詰めて、はみ出しの印を立てる
+    scc.write(0xE98001, 5); scc.write(0xE98001, 0x00);
+    scc.move(300, -300);
+    scc.write(0xE98001, 5); scc.write(0xE98001, 0x02);
+    check("overflow flags", scc.read(0xE98003) == (1 | 0x10 | 0x80));
+    check("X clamps to 127", scc.read(0xE98003) == 127);
+    check("Y clamps to -128", scc.read(0xE98003) == 0x80);
+}
+
 fn test_ahead_pace() {
     let period: u64 = 18000;
     var p = AheadPace { frames: 4, .. };
@@ -1177,6 +1207,7 @@ fn main() {
     test_peek();
     test_dmac();
     test_rtc();
+    test_scc_mouse();
     test_disasm();
     test_state_file();
     test_disk_paths();

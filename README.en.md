@@ -86,7 +86,9 @@ You can also specify an alternate BIOS directory or a boot disk directly.
 
 The actual on-screen resolution can change after boot depending on the guest's CRTC settings. Initial Screen only controls the initial display size; it does not lock the guest's video mode.
 
-In addition to keyboard input, the arrow keys plus `Z` / `X` and Space / Enter are mapped to port 1 joypad input. Mouse and SCC are not supported.
+In addition to keyboard input, the arrow keys plus `Z` / `X` and Space / Enter are mapped to port 1 joypad input.
+
+The mouse becomes the X68000 mouse (on the SCC) once captured: middle-click in the window, or choose Mouse > Capture Mouse. While captured the cursor is hidden and the left and right buttons reach the machine. Middle-click again, or move the focus away from the window, to release it. The Mouse menu sets the speed: Slow (1/4), Normal (1/2, the default) or Fast (1/1). The SCC handles the mouse only; RS-232C is not supported.
 
 ## Save states (State menu)
 
@@ -166,7 +168,7 @@ The layers exposed by default are L0 and L1. To use debugging, device observatio
 | Category | Main tools |
 |---|---|
 | Execution control | `arcl_status`, `arcl_run`, `arcl_pause`, `arcl_resume`, `arcl_reset` |
-| Input / Display (L0) | `arcl_key`, `arcl_type`, `arcl_joypad`, `arcl_clear_input`, `arcl_input_state`, `arcl_input_macro`, `arcl_screenshot` |
+| Input / Display (L0) | `arcl_key`, `arcl_type`, `arcl_joypad`, `arcl_mouse`, `arcl_clear_input`, `arcl_input_state`, `arcl_input_macro`, `arcl_screenshot` |
 | Console (L1) | `arcl_console_read`, `arcl_command`, `arcl_mount` |
 | Debugging (L2) | `arcl_registers`, `arcl_read_mem`, `arcl_write_mem`, `arcl_step`, `arcl_breakpoint`, `arcl_disasm`, `arcl_run_ahead` |
 | Device observation (L3) | `arcl_video`, `arcl_irq`, `arcl_dma`, `arcl_vram`, `x68k_opm` |
@@ -326,7 +328,7 @@ It prints `459 / 459 checks passed` when everything passes, and reports each fai
 - Paths are handled as UTF-8, so non-ASCII names open, but their length is limited by Win32 `MAX_PATH` (260 characters).
 - `arcl_screenshot` writes PNG when the path ends in `.png` and BMP otherwise. Scaling, cropping and inline results are not supported.
 - `arcl_console_read` reads half-width characters only; kanji and kana come back as `?`.
-- The emulator assumes a single registered machine instance. Core sharing across multiple instances, a mouse, and full compatibility with every VRAM mode/piece of software are unsupported or unverified.
+- The emulator assumes a single registered machine instance. Core sharing across multiple instances, RS-232C, and full compatibility with every VRAM mode/piece of software are unsupported or unverified.
 - CPU tracing (the T bit in SR) takes a trace exception after each instruction. When the instruction itself enters an exception, such as TRAP, no trace exception follows, unlike the real CPU.
 
 When reporting a bug, please include the build type, Windows environment, launch arguments, image format, reproduction steps, and logs or screenshots. There's no need to attach the BIOS or the game itself.

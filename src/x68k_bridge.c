@@ -550,7 +550,7 @@ static uint8_t vk_to_x68k_code(WPARAM vk, LPARAM lp) {
         case VK_ESCAPE:     return 0x01;
         case VK_OEM_MINUS:  return 0x0C;
         case VK_OEM_7:      return 0x0D; // ^
-        case VK_OEM_5:      return 0x0E; // yen / \
+        case VK_OEM_5:      return 0x0E; // yen / backslash key (no backslash at the end: it would join the next line)
         case VK_BACK:       return 0x0F; // Backspace
         case VK_TAB:        return 0x10;
         case VK_OEM_3:      return 0x1B; // @
@@ -632,6 +632,72 @@ void c_host_key_joy(int vk, int down) {
     default: return;
     }
     *slot = v;
+}
+
+// ---------------------------------------------------------------
+// Mouse (X68000 mouse on the SCC). While captured, the cursor is hidden and kept at the
+// centre of the window, and each move away from the centre is a relative motion for the machine.
+// A middle click or the menu toggles capture; losing focus releases it.
+// ---------------------------------------------------------------
+static bool g_mouse_captured = false;
+static int32_t g_mouse_dx = 0, g_mouse_dy = 0;
+static int g_mouse_buttons = 0;   // bit 0 left, bit 1 right
+static HMENU g_mouse_menu = NULL;
+// Speed: host pixels per X68000 count is g_mouse_div (4, 2 or 1). The remainder carries over,
+// so slow movements are not lost. Menu items 811-813.
+static int g_mouse_div = 2;
+static int32_t g_mouse_rest_x = 0, g_mouse_rest_y = 0;
+
+static void mouse_check_speed_menu(void) {
+    if (g_mouse_menu) {
+        int id = g_mouse_div == 4 ? 811 : g_mouse_div == 2 ? 812 : 813;
+        CheckMenuRadioItem(g_mouse_menu, 811, 813, id, MF_BYCOMMAND);
+    }
+}
+
+static POINT mouse_centre(HWND hwnd) {
+    RECT r; GetClientRect(hwnd, &r);
+    POINT p = { (r.right - r.left) / 2, (r.bottom - r.top) / 2 };
+    return p;
+}
+
+static void mouse_recentre(HWND hwnd) {
+    POINT p = mouse_centre(hwnd);
+    ClientToScreen(hwnd, &p);
+    SetCursorPos(p.x, p.y);
+}
+
+static void mouse_set_capture(HWND hwnd, bool on) {
+    if (on == g_mouse_captured) return;
+    g_mouse_captured = on;
+    g_mouse_dx = g_mouse_dy = 0;
+    g_mouse_buttons = 0;
+    if (on) {
+        RECT r; GetClientRect(hwnd, &r);
+        POINT tl = { r.left, r.top }, br = { r.right, r.bottom };
+        ClientToScreen(hwnd, &tl); ClientToScreen(hwnd, &br);
+        RECT clip = { tl.x, tl.y, br.x, br.y };
+        ClipCursor(&clip);
+        SetCapture(hwnd);
+        while (ShowCursor(FALSE) >= 0) {}
+        mouse_recentre(hwnd);
+    } else {
+        ClipCursor(NULL);
+        ReleaseCapture();
+        while (ShowCursor(TRUE) < 0) {}
+    }
+    if (g_mouse_menu) CheckMenuItem(g_mouse_menu, 801, MF_BYCOMMAND | (on ? MF_CHECKED : MF_UNCHECKED));
+}
+
+// Motion since the last call and the buttons held. Returns false when the mouse is not captured.
+bool c_host_mouse(int32_t *dx, int32_t *dy, int32_t *buttons) {
+    int32_t x = g_mouse_rest_x + g_mouse_dx, y = g_mouse_rest_y + g_mouse_dy;
+    g_mouse_dx = g_mouse_dy = 0;
+    *dx = x / g_mouse_div; *dy = y / g_mouse_div;      // toward zero; the rest waits for the next call
+    g_mouse_rest_x = x - *dx * g_mouse_div;
+    g_mouse_rest_y = y - *dy * g_mouse_div;
+    *buttons = g_mouse_buttons;
+    return g_mouse_captured;
 }
 
 int c_host_joy_byte(void) {
@@ -751,6 +817,13 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
                 return 0;
             }
             // State menu: 701-703 save slot 1-3, 711-713 load slot 1-3 (commands 11-13 and 21-23)
+            if (id == 801) { mouse_set_capture(hwnd, !g_mouse_captured); return 0; }
+            if (id >= 811 && id <= 813) {
+                g_mouse_div = id == 811 ? 4 : id == 812 ? 2 : 1;
+                g_mouse_rest_x = g_mouse_rest_y = 0;
+                mouse_check_speed_menu();
+                return 0;
+            }
             if (id >= 701 && id <= 703) { g_pending_cmd = 11 + (int)(id - 701); return 0; }
             if (id >= 711 && id <= 713) { g_pending_cmd = 21 + (int)(id - 711); return 0; }
             switch (id) {
@@ -803,7 +876,26 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
             return 0; // keys reach the machine as scan codes (WM_KEYDOWN / WM_KEYUP)
         case WM_KILLFOCUS:
             c_host_joy_reset();
+            mouse_set_capture(hwnd, false);
             return 0;
+        case WM_MBUTTONDOWN:
+            mouse_set_capture(hwnd, !g_mouse_captured);
+            return 0;
+        case WM_MOUSEMOVE:
+            if (g_mouse_captured) {
+                POINT c = mouse_centre(hwnd);
+                int x = (short)LOWORD(lParam), y = (short)HIWORD(lParam);
+                if (x != c.x || y != c.y) {
+                    g_mouse_dx += x - c.x;
+                    g_mouse_dy += y - c.y;
+                    mouse_recentre(hwnd);
+                }
+            }
+            return 0;
+        case WM_LBUTTONDOWN: if (g_mouse_captured) g_mouse_buttons |= 1; return 0;
+        case WM_LBUTTONUP:   g_mouse_buttons &= ~1; return 0;
+        case WM_RBUTTONDOWN: if (g_mouse_captured) g_mouse_buttons |= 2; return 0;
+        case WM_RBUTTONUP:   g_mouse_buttons &= ~2; return 0;
         case WM_KEYDOWN:
         case WM_KEYUP: {
             bool down = (msg == WM_KEYDOWN);
@@ -1073,6 +1165,16 @@ bool win32_ui_init(X68kByteView title_bytes, int w, int h, int scale) {
     AppendMenuA(hStateMenu, MF_STRING, 713, "Load Slot 3");
     AppendMenuA(hMenuBar, MF_POPUP, (UINT_PTR)hStateMenu, "&State");
 
+    // Mouse Menu
+    g_mouse_menu = CreatePopupMenu();
+    AppendMenuA(g_mouse_menu, MF_STRING, 801, "&Capture Mouse\tMiddle Click");
+    AppendMenuA(g_mouse_menu, MF_SEPARATOR, 0, NULL);
+    AppendMenuA(g_mouse_menu, MF_STRING, 811, "Speed: &Slow (1/4)");
+    AppendMenuA(g_mouse_menu, MF_STRING, 812, "Speed: &Normal (1/2)");
+    AppendMenuA(g_mouse_menu, MF_STRING, 813, "Speed: &Fast (1/1)");
+    mouse_check_speed_menu();
+    AppendMenuA(hMenuBar, MF_POPUP, (UINT_PTR)g_mouse_menu, "&Mouse");
+
     // Help Menu
     HMENU hHelpMenu = CreatePopupMenu();
     AppendMenuA(hHelpMenu, MF_STRING, 301, "&About Goose X68000...");
@@ -1184,6 +1286,8 @@ void win32_ui_destroy(void) {
     }
     g_clock_menu = NULL;
     g_ahead_menu = NULL;
+    g_mouse_menu = NULL;
+    g_mouse_captured = false;
     g_is_open = false;
 }
 

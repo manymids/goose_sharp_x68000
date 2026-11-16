@@ -184,7 +184,7 @@ fn parse_layers(text: const u8[:]) -> i32 {
 }
 
 fn tool_layer(name: const u8[:]) -> i32 {
-    if name == "arcl_screenshot" || name == "arcl_joypad" || name == "arcl_key" || name == "arcl_clear_input" || name == "arcl_input_state" || name == "arcl_type" || name == "arcl_input_macro" || name == "arcl_audio_record" { return MCP_LAYER_L0; }
+    if name == "arcl_screenshot" || name == "arcl_joypad" || name == "arcl_mouse" || name == "arcl_key" || name == "arcl_clear_input" || name == "arcl_input_state" || name == "arcl_type" || name == "arcl_input_macro" || name == "arcl_audio_record" { return MCP_LAYER_L0; }
     if name == "arcl_console_read" || name == "arcl_mount" || name == "arcl_command" || name == "arcl_host_dir" { return MCP_LAYER_L1; }
     if name == "arcl_registers" || name == "arcl_run_ahead" || name == "arcl_read_mem" || name == "arcl_write_mem" || name == "arcl_write_registers" || name == "arcl_step" || name == "arcl_disasm" || name == "arcl_breakpoint" || name == "arcl_stack" { return MCP_LAYER_L2; }
     if name == "arcl_video" || name == "arcl_palette" || name == "arcl_sprites" || name == "arcl_dma" || name == "arcl_irq" || name == "arcl_vram" || name == "x68k_opm" { return MCP_LAYER_L3; }
@@ -579,6 +579,31 @@ fn tool_input_state(emu: X68kEmulator&, args: const u8[:], id_buf: const u8[:]) 
     write_object(id_buf, obj);
 }
 
+// マウス (SCC) を dx, dy 動かし、left / right が 0 か 1 ならボタンをその状態にする (省けば今のまま)。
+// 動きはソフトが次にマウスを読んだときに届く。
+fn tool_mouse(emu: X68kEmulator&, args: const u8[:], id_buf: const u8[:]) {
+    let dx = extract_json_int(args, "dx", 0);
+    let dy = extract_json_int(args, "dy", 0);
+    let left = extract_json_int(args, "left", -1);
+    let right = extract_json_int(args, "right", -1);
+    guard dx >= -4096 && dx <= 4096 && dy >= -4096 && dy <= 4096 else {
+        write_text(id_buf, "dx and dy must be between -4096 and 4096", true);
+        return;
+    }
+    guard left >= -1 && left <= 1 && right >= -1 && right <= 1 else {
+        write_text(id_buf, "left and right must be 0 or 1", true);
+        return;
+    }
+    let scc .= emu.mmu.scc;
+    scc.move(dx, dy);
+    let l = if left < 0 { (scc.buttons & 1) != 0 } else { left == 1 };
+    let r = if right < 0 { (scc.buttons & 2) != 0 } else { right == 1 };
+    scc.set_buttons(l, r);
+    var obj: u8[>..] = [];
+    format(obj, "{\"pending_dx\":", scc.move_x, ",\"pending_dy\":", scc.move_y, ",\"left\":", l, ",\"right\":", r, "}");
+    write_object(id_buf, obj);
+}
+
 fn tool_joypad(emu: X68kEmulator&, args: const u8[:], id_buf: const u8[:]) {
     var btn_buf: u8[>..] = [];
     if !extract_json_str(args, "button", btn_buf) {
@@ -887,6 +912,10 @@ fn input_call(emu: X68kEmulator&, tool_name: const u8[:], args: const u8[:], id_
         tool_joypad(emu, args, id_buf);
         return true;
     }
+    if tool_name == "arcl_mouse" {
+        tool_mouse(emu, args, id_buf);
+        return true;
+    }
     if tool_name == "arcl_command" {
         tool_command(emu, args, id_buf);
         return true;
@@ -1159,6 +1188,7 @@ fn tools_list(id_buf: const u8[:]) {
         resp.append(",{\"name\":\"arcl_type\",\"description\":\"Type an ASCII string\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"text\":{\"type\":\"string\"},\"frames\":{\"type\":\"integer\"}},\"required\":[\"text\"]}}");
         resp.append(",{\"name\":\"arcl_clear_input\",\"description\":\"Release held keys and joypad buttons\",\"inputSchema\":{\"type\":\"object\",\"properties\":{}}}");
         resp.append(",{\"name\":\"arcl_joypad\",\"description\":\"Set joypad button state\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"button\":{\"type\":\"string\"},\"action\":{\"type\":\"string\"},\"port\":{\"type\":\"integer\"}}}}");
+        resp.append(",{\"name\":\"arcl_mouse\",\"description\":\"Move the mouse by dx, dy (right and down are positive) and set the buttons (left/right 0 or 1; omit to keep)\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"dx\":{\"type\":\"integer\"},\"dy\":{\"type\":\"integer\"},\"left\":{\"type\":\"integer\"},\"right\":{\"type\":\"integer\"}}}}");
         resp.append(",{\"name\":\"arcl_input_state\",\"description\":\"Report held keys and joypad buttons\",\"inputSchema\":{\"type\":\"object\",\"properties\":{}}}");
         resp.append(",{\"name\":\"arcl_input_macro\",\"description\":\"Run up to 16 input steps\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"steps\":{\"type\":\"array\"}},\"required\":[\"steps\"]}}");
         resp.append(",{\"name\":\"arcl_audio_record\",\"description\":\"Start, stop, or query audio capture\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"action\":{\"type\":\"string\"},\"path\":{\"type\":\"string\"}}}}");
